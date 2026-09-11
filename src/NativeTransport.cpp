@@ -16,14 +16,16 @@ void Log(const char* fmt,...) {
     FILE* f{};if(!fopen_s(&f,"DeusExHRVR-transport.log","a")){fprintf(f,"[%llu] %s\n",GetTickCount64(),line);fclose(f);}
 }
 struct Producer {
-    HANDLE mapping{},process{};Transport::Header* header{};
+    HANDLE mapping{},process{},frameEvent{};Transport::Header* header{};
     ComPtr<ID3D11Device> device;ComPtr<ID3D11DeviceContext> context;
     ComPtr<ID3D11Texture2D> shared;ComPtr<IDXGIKeyedMutex> keyed;
     UINT width{},height{};DXGI_FORMAT format{};uint64_t frame{},sent{},retry{};
     IDXGISwapChain* owner{};bool f8=false;
+    uint64_t rateTick{},rateFrame{},rateSent{};
     void ClearTexture(){keyed.Reset();shared.Reset();device.Reset();context.Reset();width=height=0;}
     void Reset(){
         ClearTexture();EngineCamera::SetChannel(nullptr);if(header)UnmapViewOfFile(header);if(mapping)CloseHandle(mapping);if(process)CloseHandle(process);
+        if(frameEvent)CloseHandle(frameEvent);frameEvent=nullptr;
         header=nullptr;mapping=process=nullptr;owner=nullptr;
     }
     bool Init(ID3D11Device* dev,const D3D11_TEXTURE2D_DESC& d,UINT h) {
@@ -35,6 +37,7 @@ struct Producer {
             header=static_cast<Transport::Header*>(MapViewOfFile(mapping,FILE_MAP_ALL_ACCESS,0,0,sizeof(Transport::Header)));
             if(!header)return false;
             header->magic=Transport::Magic;header->version=Transport::Version;header->pid=GetCurrentProcessId();
+            Transport::FrameEventName(name,GetCurrentProcessId());frameEvent=CreateEventW(nullptr,FALSE,FALSE,name);
             EngineCamera::SetChannel(header);
         }
         ClearTexture();device=dev;dev->GetImmediateContext(&context);
@@ -95,22 +98,18 @@ void Present(IDXGISwapChain* chain,ID3D11Texture2D* pair,UINT h,bool swap) {
     if(p.process&&WaitForSingleObject(p.process,0)==WAIT_OBJECT_0){p.Reset();p.retry=GetTickCount64()+5000;}
     if(GetTickCount64()<p.retry)return;
     ComPtr<ID3D11Device> dev;pair->GetDevice(&dev);
-    if(p.frame==1 || p.frame==120 || p.frame==600) {
-        ComPtr<ID3D11DeviceContext> captureContext;dev->GetImmediateContext(&captureContext);
-        Log("Capture native frame=%llu success=%d",p.frame,int(CaptureNativePair(dev.Get(),captureContext.Get(),pair,h,p.frame)));
-    }
     if(!p.shared||p.device.Get()!=dev.Get()||d.Width!=p.width||h!=p.height||d.Format!=p.format) {
         if(!p.Init(dev.Get(),d,h)){p.Reset();p.retry=GetTickCount64()+5000;return;}
         p.owner=chain;
     }
     bool key=(GetAsyncKeyState(VK_F8)&0x8000)!=0;
-    // Two bounded startup captures establish whether the game renders both regions.
+    // CPU readback is opt-in; automatic captures stall at headset resolution.
     if(key&&!p.f8) {
         Log("Capture native frame=%llu success=%d",p.frame,int(CaptureNativePair(p.device.Get(),p.context.Get(),pair,h,p.frame)));
     }
     p.f8=key;
     if(!p.Launch()){p.Reset();p.retry=GetTickCount64()+5000;return;}
-    HRESULT hr=p.keyed->AcquireSync(0,0);
+    HRESULT hr=p.keyed->AcquireSync(0,100);
     if(hr==WAIT_TIMEOUT)return; // Drop the WHOLE pair if companion has not consumed it.
     if(hr!=S_OK){Log("Producer keyed mutex failed=%08lx",hr);p.Reset();p.retry=GetTickCount64()+5000;return;}
     p.context->CopyResource(p.shared.Get(),pair);p.context->Flush();
@@ -119,6 +118,19 @@ void Present(IDXGISwapChain* chain,ID3D11Texture2D* pair,UINT h,bool swap) {
     MemoryBarrier();hr=p.keyed->ReleaseSync(1);
     if(FAILED(hr)){Log("Producer ReleaseSync failed=%08lx",hr);p.Reset();return;}
     ++p.sent;if(p.sent==1||p.sent%300==0)Log("sentPairs=%llu nativePresent=%llu",p.sent,p.frame);
+    // One game pair per OpenXR frame request. A bounded wait leaves the game
+    // responsive if the headset is removed, the session stops, or the host exits.
+    Transport::Tracking tracking{};
+    if(p.frameEvent && Transport::ReadTracking(p.header,tracking) && tracking.tick && GetTickCount64()-tracking.tick<250) {
+        HANDLE waits[]={p.frameEvent,p.process};WaitForMultipleObjects(2,waits,FALSE,100);
+    }
+    auto now=GetTickCount64();
+    if(!p.rateTick){p.rateTick=now;p.rateFrame=p.frame;p.rateSent=p.sent;}
+    else if(now-p.rateTick>=5000){
+        double seconds=double(now-p.rateTick)/1000.;
+        Log("Measured native=%.2f pairs/s delivered=%.2f pairs/s eye=%ux%u",double(p.frame-p.rateFrame)/seconds,double(p.sent-p.rateSent)/seconds,p.width,p.height);
+        p.rateTick=now;p.rateFrame=p.frame;p.rateSent=p.sent;
+    }
 }
 void Shutdown(){std::lock_guard lock(guard);p.Reset();}
 uint64_t SubmittedPairs(){std::lock_guard lock(guard);return p.sent;}

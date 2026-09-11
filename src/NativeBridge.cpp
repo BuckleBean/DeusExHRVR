@@ -17,6 +17,7 @@ namespace NativeBridge {
 namespace {
 std::recursive_mutex mutex;
 Transport::Header* trackingChannel{};
+HANDLE frameReadyEvent{};
 Transport::RenderInfo renderInfo{};
 uint64_t trackingId{};
 void Log(const char* fmt, ...) {
@@ -40,6 +41,10 @@ struct Bridge {
     std::vector<XrSwapchainImageD3D11KHR> images;
     XrPosef anchor{{0,0,0,1},{0,0,-2}};
     uint64_t pairs=0, sourceFrame=0, nextRetry=0;
+    HeadsetDisplay::Settings display{};
+    PFN_xrGetDisplayRefreshRateFB getRefresh{};
+    uint64_t rateTick=0,ratePairs=0;
+    XrDuration lastPeriod{};
     IDXGISwapChain* owner{};
 
     void DestroySwapchain() {
@@ -57,6 +62,7 @@ struct Bridge {
         system=XR_NULL_SYSTEM_ID; running=anchorValid=false;
         context.Reset(); device.Reset(); owner=nullptr;
         state=XR_SESSION_STATE_UNKNOWN;
+        display={};getRefresh=nullptr;lastPeriod=0;rateTick=ratePairs=0;
     }
     bool Init(ID3D11Device* dev) {
         uint32_t n=0;
@@ -66,20 +72,40 @@ struct Bridge {
         if(std::none_of(ext.begin(),ext.end(),[](const auto& e){return !strcmp(e.extensionName,XR_KHR_D3D11_ENABLE_EXTENSION_NAME);})) {
             Log("Runtime lacks XR_KHR_D3D11_enable"); return false;
         }
-        const char* enabled[]={XR_KHR_D3D11_ENABLE_EXTENSION_NAME};
+        std::vector<const char*> enabled{XR_KHR_D3D11_ENABLE_EXTENSION_NAME};
+        bool refreshExtension=std::any_of(ext.begin(),ext.end(),[](const auto& e){return !strcmp(e.extensionName,XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME);});
+        if(refreshExtension)enabled.push_back(XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME);
         XrInstanceCreateInfo ci{XR_TYPE_INSTANCE_CREATE_INFO};
         strcpy_s(ci.applicationInfo.applicationName,"DeusExHRVR native stereo");
         ci.applicationInfo.applicationVersion=1; ci.applicationInfo.apiVersion=XR_API_VERSION_1_0;
-        ci.enabledExtensionCount=1; ci.enabledExtensionNames=enabled;
+        ci.enabledExtensionCount=uint32_t(enabled.size()); ci.enabledExtensionNames=enabled.data();
         if(!Good(xrCreateInstance(&ci,&instance),"xrCreateInstance"))return false;
         XrInstanceProperties ip{XR_TYPE_INSTANCE_PROPERTIES};
         if(Good(xrGetInstanceProperties(instance,&ip),"xrGetInstanceProperties"))Log("%u-bit runtime: %s",unsigned(sizeof(void*)*8),ip.runtimeName);
         XrSystemGetInfo gi{XR_TYPE_SYSTEM_GET_INFO}; gi.formFactor=XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
         if(!Good(xrGetSystem(instance,&gi,&system),"xrGetSystem (headset must be connected)"))return false;
+        XrViewConfigurationView viewConfig[2]{{XR_TYPE_VIEW_CONFIGURATION_VIEW},{XR_TYPE_VIEW_CONFIGURATION_VIEW}};
+        uint32_t views=0;
+        if(!Good(xrEnumerateViewConfigurationViews(instance,system,XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,2,&views,viewConfig),"xrEnumerateViewConfigurationViews") || views!=2)return false;
+        display.magic=HeadsetDisplay::Magic;
+        for(auto& v:viewConfig){display.width=std::max(display.width,v.recommendedImageRectWidth);display.height=std::max(display.height,v.recommendedImageRectHeight);}
+        if(!HeadsetDisplay::Valid(display)){Log("Headset dimensions exceed the native pair texture limits");return false;}
         PFN_xrGetD3D11GraphicsRequirementsKHR requirements{};
         if(!Good(xrGetInstanceProcAddr(instance,"xrGetD3D11GraphicsRequirementsKHR",reinterpret_cast<PFN_xrVoidFunction*>(&requirements)),"xrGetInstanceProcAddr"))return false;
         XrGraphicsRequirementsD3D11KHR req{XR_TYPE_GRAPHICS_REQUIREMENTS_D3D11_KHR};
         if(!Good(requirements(instance,system,&req),"xrGetD3D11GraphicsRequirementsKHR"))return false;
+        ComPtr<ID3D11Device> queryDevice;
+        if(!dev) {
+            ComPtr<IDXGIFactory1> factory;ComPtr<IDXGIAdapter1> selected;
+            if(FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))))return false;
+            for(UINT i=0;;++i){
+                ComPtr<IDXGIAdapter1> candidate;if(factory->EnumAdapters1(i,&candidate)==DXGI_ERROR_NOT_FOUND)break;
+                DXGI_ADAPTER_DESC1 ad{};
+                if(candidate && SUCCEEDED(candidate->GetDesc1(&ad)) && !memcmp(&ad.AdapterLuid,&req.adapterLuid,sizeof(LUID))){selected=candidate;break;}
+            }
+            if(!selected || FAILED(D3D11CreateDevice(selected.Get(),D3D_DRIVER_TYPE_UNKNOWN,nullptr,0,nullptr,0,D3D11_SDK_VERSION,&queryDevice,nullptr,nullptr)))return false;
+            dev=queryDevice.Get();
+        }
         ComPtr<IDXGIDevice> dxdev; ComPtr<IDXGIAdapter> adapter; DXGI_ADAPTER_DESC ad{};
         if(FAILED(dev->QueryInterface(IID_PPV_ARGS(&dxdev))) || FAILED(dxdev->GetAdapter(&adapter)) || FAILED(adapter->GetDesc(&ad)))return false;
         if(memcmp(&ad.AdapterLuid,&req.adapterLuid,sizeof(LUID)) || dev->GetFeatureLevel()<req.minFeatureLevel) {
@@ -88,6 +114,9 @@ struct Bridge {
         XrGraphicsBindingD3D11KHR binding{XR_TYPE_GRAPHICS_BINDING_D3D11_KHR}; binding.device=dev;
         XrSessionCreateInfo si{XR_TYPE_SESSION_CREATE_INFO}; si.next=&binding; si.systemId=system;
         if(!Good(xrCreateSession(instance,&si,&session),"xrCreateSession"))return false;
+        if(refreshExtension && XR_SUCCEEDED(xrGetInstanceProcAddr(instance,"xrGetDisplayRefreshRateFB",reinterpret_cast<PFN_xrVoidFunction*>(&getRefresh))) && getRefresh)
+            getRefresh(session,&display.refreshHz);
+        Log("Headset recommended eye=%ux%u refresh=%.3f Hz (0=not exposed; use xrWaitFrame timing)",display.width,display.height,display.refreshHz);
         XrReferenceSpaceCreateInfo ri{XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
         ri.referenceSpaceType=XR_REFERENCE_SPACE_TYPE_LOCAL; ri.poseInReferenceSpace.orientation.w=1;
         if(!Good(xrCreateReferenceSpace(session,&ri,&space),"xrCreateReferenceSpace LOCAL"))return false;
@@ -172,9 +201,14 @@ struct Bridge {
     void Frame(ID3D11Texture2D* pair,UINT h,bool swap,bool capture,bool recenter) {
         D3D11_TEXTURE2D_DESC d{}; pair->GetDesc(&d);
         if(capture)Capture(pair,h,sourceFrame);
-        if(!running)return;
+        if(!running){Sleep(10);return;}
         XrFrameWaitInfo wi{XR_TYPE_FRAME_WAIT_INFO}; XrFrameState fs{XR_TYPE_FRAME_STATE};
         if(!Good(xrWaitFrame(session,&wi,&fs),"xrWaitFrame")) {failed=true; return;}
+        if(fs.predictedDisplayPeriod!=lastPeriod) {
+            lastPeriod=fs.predictedDisplayPeriod;
+            if(getRefresh)getRefresh(session,&display.refreshHz);
+            Log("Runtime pacing: period=%.3f ms applicationTarget=%.3f Hz displayRefresh=%.3f Hz",double(lastPeriod)/1e6,lastPeriod>0?1e9/double(lastPeriod):0.,display.refreshHz);
+        }
         Transport::Tracking tracking{};tracking.id=++trackingId;tracking.tick=GetTickCount64();
         XrViewLocateInfo locate{XR_TYPE_VIEW_LOCATE_INFO};locate.viewConfigurationType=XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
         locate.displayTime=fs.predictedDisplayTime;locate.space=space;
@@ -193,6 +227,7 @@ struct Bridge {
             tracking.valid=1;
         }
         Transport::WriteTracking(trackingChannel,tracking);
+        if(frameReadyEvent)SetEvent(frameReadyEvent);
         XrFrameBeginInfo bi{XR_TYPE_FRAME_BEGIN_INFO};
         if(!Good(xrBeginFrame(session,&bi),"xrBeginFrame")){failed=true;return;}
         XrCompositionLayerQuad quads[2]{{XR_TYPE_COMPOSITION_LAYER_QUAD},{XR_TYPE_COMPOSITION_LAYER_QUAD}};
@@ -259,6 +294,9 @@ struct Bridge {
                 static uint32_t lastMode=99;
                 if(pairs==1 || pairs%300==0 || lastMode!=renderInfo.mode)Log("submittedPairs=%llu sourceFrame=%llu leftFrame=%llu rightFrame=%llu mode=%s pose=%llu eyeMask=%u",pairs,sourceFrame,sourceFrame,sourceFrame,renderInfo.mode?"native-tracked-projection":"native-stereo-screen",renderInfo.tracking.id,renderInfo.eyeMask);
                 lastMode=renderInfo.mode;
+                auto now=GetTickCount64();
+                if(!rateTick){rateTick=now;ratePairs=pairs;}
+                else if(now-rateTick>=5000){Log("Measured submission rate=%.2f pairs/s eye=%ux%u displayRefresh=%.3f Hz",1000.*double(pairs-ratePairs)/double(now-rateTick),width,height,display.refreshHz);rateTick=now;ratePairs=pairs;}
             }
         } else failed=true;
     }
@@ -297,6 +335,16 @@ void Present(IDXGISwapChain* chain,ID3D11Texture2D* pair,UINT h,bool swap) {
 void Shutdown() {std::lock_guard lock(mutex);bridge.Reset();}
 uint64_t SubmittedPairs() {std::lock_guard lock(mutex);return bridge.pairs;}
 void SetSourceFrame(uint64_t frame) {std::lock_guard lock(mutex);externalFrame=frame;}
-void SetTrackingChannel(Transport::Header* shared) {std::lock_guard lock(mutex);trackingChannel=shared;}
+void SetTrackingChannel(Transport::Header* shared) {
+    std::lock_guard lock(mutex);trackingChannel=shared;
+    if(frameReadyEvent)CloseHandle(frameReadyEvent);frameReadyEvent=nullptr;
+    if(shared){wchar_t name[96];Transport::FrameEventName(name,shared->pid);frameReadyEvent=OpenEventW(EVENT_MODIFY_STATE,FALSE,name);}
+}
 void SetRenderInfo(const Transport::RenderInfo& info) {std::lock_guard lock(mutex);renderInfo=info;}
+bool QueryDisplaySettings(HeadsetDisplay::Settings& settings) {
+    std::lock_guard lock(mutex);Bridge query;
+    bool ok=query.Init(nullptr);
+    if(ok)settings=query.display;
+    query.Reset();return ok && HeadsetDisplay::Valid(settings);
+}
 }

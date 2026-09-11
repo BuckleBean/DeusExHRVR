@@ -41,4 +41,5 @@ inline void WriteTracking(Header* h,const Tracking& value) {
     h->tracking=value;InterlockedExchange(&h->trackingLock,0);
 }
 inline void Name(wchar_t (&name)[96],DWORD pid) {swprintf_s(name,L"Local\\DeusExHRVR-%lu",pid);}
+inline void FrameEventName(wchar_t (&name)[96],DWORD pid) {swprintf_s(name,L"Local\\DeusExHRVR-frame-%lu",pid);}
 }

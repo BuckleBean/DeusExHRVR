@@ -279,6 +279,10 @@ __declspec(dllexport) void AmdQbProxy_SetConvergence(float conv)
 
 typedef HRESULT (STDMETHODCALLTYPE *PFN_Present)(IDXGISwapChain*, UINT, UINT);
 static PFN_Present g_pfnOrigPresent = nullptr;
+using PFN_SetFullscreen=HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain*,BOOL,IDXGIOutput*);
+using PFN_GetFullscreen=HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain*,BOOL*,IDXGIOutput**);
+static PFN_SetFullscreen originalSetFullscreen{};
+static PFN_GetFullscreen originalGetFullscreen{};
 
 typedef HRESULT (STDMETHODCALLTYPE *PFN_Present1)(IDXGISwapChain1*, UINT, UINT, const DXGI_PRESENT_PARAMETERS*);
 static PFN_Present1 g_pfnOrigPresent1 = nullptr;
@@ -292,6 +296,7 @@ struct ShadowData {
     ID3D11ShaderResourceView* pSRV;     // SRV for compositor input
     UINT                      origH;    // original (non-doubled) height
     UINT                      gameW;    // game's intended width (non-zero in full SBS mode only)
+    bool virtualFullscreen{};
     void Release() {
         if (pSRV) { pSRV->Release(); pSRV = nullptr; }
         if (pTex) { pTex->Release(); pTex = nullptr; }
@@ -300,6 +305,17 @@ struct ShadowData {
     }
 };
 static std::unordered_map<IDXGISwapChain*, ShadowData> g_scShadow;
+static HRESULT STDMETHODCALLTYPE HookSetFullscreen(IDXGISwapChain* sc,BOOL fullscreen,IDXGIOutput* output) {
+    auto it=g_scShadow.find(sc);
+    if(HeadsetDisplay::Active() && it!=g_scShadow.end()){it->second.virtualFullscreen=fullscreen!=FALSE;return S_OK;}
+    return originalSetFullscreen(sc,fullscreen,output);
+}
+static HRESULT STDMETHODCALLTYPE HookGetFullscreen(IDXGISwapChain* sc,BOOL* fullscreen,IDXGIOutput** output) {
+    HRESULT hr=originalGetFullscreen(sc,fullscreen,output);
+    auto it=g_scShadow.find(sc);
+    if(SUCCEEDED(hr) && fullscreen && HeadsetDisplay::Active() && it!=g_scShadow.end())*fullscreen=it->second.virtualFullscreen;
+    return hr;
+}
 
 static bool g_bPresentLogOnce = false;
 static int  g_nPresentCount  = 0;    // Diagnostic: count Present calls
@@ -438,6 +454,14 @@ static HRESULT STDMETHODCALLTYPE HookedCreateSwapChain(
         pDescToPass = &descForDriver;
     }
 
+    if(pDesc && g_bStereoActive && HeadsetDisplay::Active()) {
+        descForDriver=*pDescToPass;
+        descForDriver.Windowed=TRUE;
+        descForDriver.BufferDesc.RefreshRate={0,1};
+        descForDriver.Flags &= ~DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
+        pDescToPass=&descForDriver;
+        WriteLog("[DeusExHRVR] Headset-sized render target, windowed asynchronous desktop mirror\n");
+    }
     HRESULT hr = g_pfnOrigCreateSwapChain(pFactory, pDevice, pDescToPass, ppSC);
     if (SUCCEEDED(hr) && ppSC && *ppSC && origH > 0)
     {
@@ -452,6 +476,7 @@ static HRESULT STDMETHODCALLTYPE HookedCreateSwapChain(
             if (CreateShadow(pSC, pDev, desc.BufferDesc.Width, origH,
                              desc.BufferDesc.Format, gameW))
             {
+                g_scShadow[pSC].virtualFullscreen=pDesc && !pDesc->Windowed;
                 // NOTE: Do NOT modify pDesc->BufferDesc.Height here.
                 // On real AMD hardware the driver doubles the BB internally
                 // but leaves the caller's DXGI_SWAP_CHAIN_DESC struct
@@ -572,6 +597,7 @@ static HRESULT STDMETHODCALLTYPE HookedGetDesc(
         if (it != g_scShadow.end() && it->second.origH > 0)
         {
             pDesc->BufferDesc.Height = it->second.origH;
+            if(HeadsetDisplay::Active())pDesc->Windowed=!it->second.virtualFullscreen;
             if (it->second.gameW > 0)
                 pDesc->BufferDesc.Width = it->second.gameW;
             static bool s_bLogOnce = false;
@@ -613,6 +639,7 @@ static HRESULT STDMETHODCALLTYPE HookedGetDesc1(
 static HRESULT STDMETHODCALLTYPE HookedResizeTarget(
     IDXGISwapChain* pSC, const DXGI_MODE_DESC* pNewTargetParameters)
 {
+    if(HeadsetDisplay::Active() && g_scShadow.count(pSC))return S_OK;
     if (pNewTargetParameters)
     {
         auto it = g_scShadow.find(pSC);
@@ -680,6 +707,10 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* sc, UINT sync, UI
             }
         }
     }
+    if(!(flags & DXGI_PRESENT_TEST) && g_bStereoActive && g_scShadow.count(sc)) {
+        HRESULT hr=g_pfnOrigPresent(sc,0,flags|DXGI_PRESENT_DO_NOT_WAIT);
+        return hr==DXGI_ERROR_WAS_STILL_DRAWING?S_OK:hr;
+    }
     return g_pfnOrigPresent(sc, sync, flags);
 }
 
@@ -696,6 +727,7 @@ static HRESULT STDMETHODCALLTYPE HookedPresent1(IDXGISwapChain1* pSC1, UINT Sync
 
 static void InstallPresentHook()
 {
+    HeadsetDisplay::Install();
     if (g_bHooked || !g_pDevice11) return;
 
     // Create a throwaway window to host the dummy swap chain
@@ -733,6 +765,8 @@ static void InstallPresentHook()
     {
         // IDXGISwapChain::Present is vtable slot 8 (0-indexed)
         void** vtable    = *reinterpret_cast<void***>(pDummy);
+        if(MH_CreateHook(vtable[10],&HookSetFullscreen,reinterpret_cast<void**>(&originalSetFullscreen))==MH_OK)MH_EnableHook(vtable[10]);
+        if(MH_CreateHook(vtable[11],&HookGetFullscreen,reinterpret_cast<void**>(&originalGetFullscreen))==MH_OK)MH_EnableHook(vtable[11]);
         void*  presentFn = vtable[8];
 
         if (MH_CreateHook(presentFn,

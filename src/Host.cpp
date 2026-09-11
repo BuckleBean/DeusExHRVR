@@ -5,6 +5,18 @@
 #include <cstdlib>
 using Microsoft::WRL::ComPtr;
 int wmain(int argc,wchar_t** argv) {
+    if(argc>=2 && !wcscmp(argv[1],L"--display-query")) {
+        HeadsetDisplay::Settings display{};
+        if(!NativeBridge::QueryDisplaySettings(display))return 10;
+        if(argc==2){printf("{\"width\":%u,\"height\":%u,\"refreshHz\":%.3f}\n",display.width,display.height,display.refreshHz);return 0;}
+        if(argc!=3)return 1;
+        DWORD pid=wcstoul(argv[2],nullptr,10);if(!pid)return 1;
+        wchar_t name[96];HeadsetDisplay::Name(name,pid);
+        HANDLE mapping=OpenFileMappingW(FILE_MAP_ALL_ACCESS,FALSE,name);if(!mapping)return 11;
+        auto* shared=static_cast<HeadsetDisplay::Settings*>(MapViewOfFile(mapping,FILE_MAP_ALL_ACCESS,0,0,sizeof(display)));
+        if(!shared){CloseHandle(mapping);return 12;}
+        *shared=display;UnmapViewOfFile(shared);CloseHandle(mapping);return 0;
+    }
     if(argc!=3||wcscmp(argv[1],L"--game-pid"))return 1;
     DWORD pid=wcstoul(argv[2],nullptr,10);if(!pid)return 1;
     HANDLE game=OpenProcess(SYNCHRONIZE,FALSE,pid);if(!game)return 2;

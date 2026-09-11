@@ -30,6 +30,14 @@ Run the installer as the Windows user who plays the game. It backs up replaced f
 
 Keep the companion in the game's `DeusExHRVR/DeusExHRVRHost.exe` subfolder so it cannot load the game's 32-bit proxy DLLs.
 
+## Headset resolution and refresh rate
+
+Connect the headset before launching. The mod queries the active OpenXR runtime at startup and renders each eye at its recommended resolution, including the runtime's current resolution setting. It does not upscale the old desktop-sized image. Restart the game after changing the headset's resolution setting. If the startup query fails, the mod logs the failure and retains the game's original resolution for that run.
+
+Complete native stereo pairs are paced by OpenXR frame requests. The desktop mirror uses a windowed, nonblocking presentation path so desktop VSync and a 60 Hz monitor do not throttle VR. The headset's selected refresh rate is retained; the mod does not switch it to the highest available rate. Runtime reprojection and GPU/CPU limits can still lower the rate of newly rendered frames.
+
+The initial live check confirmed 1344 × 1600 per eye and approximately 90 native pairs/submissions per second on a headset set to 90 Hz. Gameplay and HUD appearance were confirmed in-headset. This is one tested configuration, not a guarantee of that performance at higher resolutions.
+
 ## Controls
 
 | Key | Action |
@@ -63,9 +71,9 @@ The backup restores original files and graphics settings. Logs, captures, and th
 
 ## How it works
 
-The 32-bit game renders a double-height native texture: at the tested resolution, two 1920 × 1080 eyes in a 1920 × 2160 texture. A D3D11 keyed mutex transfers the entire GPU pair to a 64-bit OpenXR companion on the same graphics adapter, which copies it into a two-slice OpenXR swapchain.
+The 32-bit game renders a double-height native texture: two complete headset-sized eyes stacked vertically. A D3D11 keyed mutex transfers the entire GPU pair to a 64-bit OpenXR companion on the same graphics adapter, which copies it into a two-slice OpenXR swapchain.
 
-Tracking is attached to the engine scene and carried with the completed native pair. Projection submission requires both eyes to use the same recorded tracking sample. If the companion is busy, the producer drops the whole pair. Live transport uses GPU copies; CPU readback is limited to diagnostics. The frame loops are not yet tightly synchronized around OpenXR prediction, so latency optimization remains future work.
+Tracking is attached to the engine scene and carried with the completed native pair. Projection submission requires both eyes to use the same recorded tracking sample. The companion signals the game after `xrWaitFrame`; bounded waits pace the producer and drop a whole pair on timeout. Live transport uses GPU copies; CPU readback is limited to F8 diagnostics. The original render pose remains attached to the image; further prediction and latency optimization remains future work.
 
 ## Build from source
 
