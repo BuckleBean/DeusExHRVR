@@ -94,7 +94,8 @@ void Present(IDXGISwapChain* chain,ID3D11Texture2D* pair,UINT h,bool swap) {
     if(p.owner&&p.owner!=chain)return;
     ++p.frame;
     bool captureKey=(GetAsyncKeyState(VK_F8)&0x8000)!=0;
-    auto rendered=EngineCamera::OnPresent(p.frame,captureKey&&!p.f8);
+    bool capture=captureKey&&!p.f8;
+    auto rendered=EngineCamera::OnPresent(p.frame,capture);
     if(p.process&&WaitForSingleObject(p.process,0)==WAIT_OBJECT_0){p.Reset();p.retry=GetTickCount64()+5000;}
     if(GetTickCount64()<p.retry)return;
     ComPtr<ID3D11Device> dev;pair->GetDevice(&dev);
@@ -117,7 +118,7 @@ void Present(IDXGISwapChain* chain,ID3D11Texture2D* pair,UINT h,bool swap) {
     p.header->rendered=rendered;
     MemoryBarrier();hr=p.keyed->ReleaseSync(1);
     if(FAILED(hr)){Log("Producer ReleaseSync failed=%08lx",hr);p.Reset();return;}
-    ++p.sent;if(p.sent==1||p.sent%300==0)Log("sentPairs=%llu nativePresent=%llu",p.sent,p.frame);
+    ++p.sent;if(p.sent==1||capture)Log("sentPairs=%llu nativePresent=%llu",p.sent,p.frame);
     // One game pair per OpenXR frame request. A bounded wait leaves the game
     // responsive if the headset is removed, the session stops, or the host exits.
     Transport::Tracking tracking{};
@@ -126,7 +127,7 @@ void Present(IDXGISwapChain* chain,ID3D11Texture2D* pair,UINT h,bool swap) {
     }
     auto now=GetTickCount64();
     if(!p.rateTick){p.rateTick=now;p.rateFrame=p.frame;p.rateSent=p.sent;}
-    else if(now-p.rateTick>=5000){
+    else if(capture && now>p.rateTick){
         double seconds=double(now-p.rateTick)/1000.;
         Log("Measured native=%.2f pairs/s delivered=%.2f pairs/s eye=%ux%u",double(p.frame-p.rateFrame)/seconds,double(p.sent-p.rateSent)/seconds,p.width,p.height);
         p.rateTick=now;p.rateFrame=p.frame;p.rateSent=p.sent;

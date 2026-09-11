@@ -249,19 +249,21 @@ void Install() {
 Transport::RenderInfo OnPresent(uint64_t frame,bool capture) {
     static std::once_flag once;std::call_once(once,Install);
     frameId=frame;
-    budget=(capture || frame==1 || frame%600==0)?32:0;
+    // Detailed camera dumps perform synchronous file IO. Never schedule them
+    // periodically on the render thread; F8 is the explicit diagnostic request.
+    budget=capture?32:0;
     std::lock_guard lock(stateMutex);
     auto completed=pairInfo;pairInfo={};
     lastWorld={};
     if(completed.mode==1 && completed.eyeMask!=3)completed.mode=2;
     static uint32_t lastMode=99;
-    if(completed.mode!=lastMode || (requested && frame%300==0)) {
+    if(completed.mode!=lastMode || capture) {
         FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")) {
             fprintf(f,"nativePair frame=%llu mode=%u eyeMask=%u pose=%llu active=%d taggedScenes=%llu stereoCalls=%llu\n",frame,completed.mode,completed.eyeMask,completed.tracking.id,current.active,taggedScenes,stereoCalls);fclose(f);
         }
         lastMode=completed.mode;
     }
-    if(capture || (requested && frame%300==0)) {
+    if(capture) {
         FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")){fprintf(f,"HUD plane draws=%llu matrices=%llu frame=%llu\n",hudDraws,hudMatrices,frame);fclose(f);}
     }
     bool f6=(GetAsyncKeyState(VK_F6)&0x8000)!=0,f9=(GetAsyncKeyState(VK_F9)&0x8000)!=0;

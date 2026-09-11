@@ -292,11 +292,11 @@ struct Bridge {
             if(layerCount) {
                 pairs++;
                 static uint32_t lastMode=99;
-                if(pairs==1 || pairs%300==0 || lastMode!=renderInfo.mode)Log("submittedPairs=%llu sourceFrame=%llu leftFrame=%llu rightFrame=%llu mode=%s pose=%llu eyeMask=%u",pairs,sourceFrame,sourceFrame,sourceFrame,renderInfo.mode?"native-tracked-projection":"native-stereo-screen",renderInfo.tracking.id,renderInfo.eyeMask);
+                if(pairs==1 || capture || lastMode!=renderInfo.mode)Log("submittedPairs=%llu sourceFrame=%llu leftFrame=%llu rightFrame=%llu mode=%s pose=%llu eyeMask=%u",pairs,sourceFrame,sourceFrame,sourceFrame,renderInfo.mode?"native-tracked-projection":"native-stereo-screen",renderInfo.tracking.id,renderInfo.eyeMask);
                 lastMode=renderInfo.mode;
                 auto now=GetTickCount64();
                 if(!rateTick){rateTick=now;ratePairs=pairs;}
-                else if(now-rateTick>=5000){Log("Measured submission rate=%.2f pairs/s eye=%ux%u displayRefresh=%.3f Hz",1000.*double(pairs-ratePairs)/double(now-rateTick),width,height,display.refreshHz);rateTick=now;ratePairs=pairs;}
+                else if(capture && now>rateTick){Log("Measured submission rate=%.2f pairs/s eye=%ux%u displayRefresh=%.3f Hz",1000.*double(pairs-ratePairs)/double(now-rateTick),width,height,display.refreshHz);rateTick=now;ratePairs=pairs;}
             }
         } else failed=true;
     }
