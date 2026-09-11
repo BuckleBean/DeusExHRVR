@@ -50,14 +50,16 @@ The game starts on a stereo screen in VR; F6 enables the tracked view. Gameplay 
 
 The HUD uses a shared plane projected through the recorded eye poses. Alignment of the health bar, minimap, and item bar has been confirmed in-headset.
 
-World scale is provisional. An optional `DeusExHRVR.ini` in the game folder can override it; restart after changing it:
+World scale is provisional. Copy `DeusExHRVR.ini.example` to `DeusExHRVR.ini` beside `DXHRDC.exe` to adjust it. Keep the `[VR]` section header; a setting outside that section is ignored. Restart the game after changing it and enable tracked VR with F6:
 
 ```ini
 [VR]
 WorldUnitsPerMetre=100
 ```
 
-The accepted range is 10–1000.
+The accepted range is 10–1000. Higher values make the world appear smaller and increase close-range stereo depth; lower values make it appear larger and reduce depth. Physical head translation uses the same scale. To confirm that your edit was read, check `unitsPerMetre=` in the latest `Camera hooks` line in `DeusExHRVR-camera.log`.
+
+The game's stereo separation/convergence sliders do not calibrate tracked VR: that path uses the headset eye poses and `WorldUnitsPerMetre`. The original stereo settings remain relevant to the untracked screen mode.
 
 ## Restore the original game
 
