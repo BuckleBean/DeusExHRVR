@@ -44,9 +44,12 @@ The initial live check confirmed 1344 × 1600 per eye and approximately 90 nativ
 |---|---|
 | F6 | Toggle tracked VR and capture a neutral head pose |
 | F9 | Recenter |
-| F8 | Save both-eye diagnostic captures locally |
+| F8 | Save both-eye images, camera trace, and any armed rolling recording locally |
+| F10 | Toggle the rolling stereo-frame recorder (off by default) |
 
 The game starts on a stereo screen in VR; F6 enables the tracked view. Gameplay input remains the game's keyboard/mouse or gamepad input.
+
+For an intermittent visual problem, press F10 before waiting for it, then F8 immediately after it appears. The recorder retains 360 reduced-size stereo pairs (about four seconds at 90 Hz), together with their tracking and submission data. It uses about 106 MB while armed; saving with F8 can briefly pause playback. Images and camera-history CSV files stay in the local `DeusExHRVR-captures` folder. F10 turns recording off again.
 
 The HUD uses a shared plane projected through the recorded eye poses. Alignment of the health bar, minimap, and item bar has been confirmed in-headset.
 
@@ -101,7 +104,7 @@ Offline builds can set `FETCHCONTENT_SOURCE_DIR_OPENXR` and `FETCHCONTENT_SOURCE
 
 Validation tools:
 
-- `DeusExHRVRCameraMathProbe`: pose conversion, inverse matrices, asymmetric eye frusta, and binocular HUD alignment.
+- `DeusExHRVRCameraMathProbe`: camera-cache lifetime, tracking mailbox contention, pose conversion, inverse matrices, asymmetric eye frusta, and binocular HUD alignment. Pass a camera-history CSV path to replay scene creation/drawing through the cache.
 - `DeusExHRVRProbe`: D3D11 pair bounds and GPU eye-array copies. Optional `--xr` renders red/green diagnostics; use x64 with the tested runtime.
 - `DeusExHRVRTransportProbe`: optional x86 target exercising the complete GPU transport. Place the x64 companion in its `DeusExHRVR` subfolder.
 

@@ -1,9 +1,54 @@
 #include "CameraMath.h"
+#include "SceneCache.h"
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
+#include <sstream>
+#include <string>
 void Check(bool value,const char* name){if(!value){fprintf(stderr,"FAIL %s\n",name);std::exit(1);}}
 bool Near(float a,float b){return std::abs(a-b)<0.0001f;}
-int main() {
+int main(int argc,char** argv) {
+    {
+        SceneCache<uint64_t> scenes;
+        for(uintptr_t i=1;i<=5000;i++)scenes.Store(reinterpret_cast<void*>(i),42,10);
+        for(uintptr_t i=1;i<=5000;i++)Check(scenes.Find(reinterpret_cast<void*>(i))==42,"large native pair retains every camera tag");
+        scenes.Store(reinterpret_cast<void*>(1),43,11);
+        scenes.Complete(11);
+        Check(scenes.Size()==5000,"recent completed scenes retained");
+        scenes.Complete(12);
+        Check(scenes.Size()==1 && scenes.Find(reinterpret_cast<void*>(1))==43,"old scenes expire without erasing reused address");
+        scenes.Store(reinterpret_cast<void*>(2),44,14);
+        scenes.Complete(13);
+        Check(scenes.Size()==1 && scenes.Find(reinterpret_cast<void*>(2))==44,"future queued scene survives cleanup");
+        scenes.Erase(reinterpret_cast<void*>(2));
+        Check(!scenes.Find(reinterpret_cast<void*>(2)),"untracked reuse removes old tag");
+    }
+    if(argc==2) {
+        // Replay a private camera-history CSV through the production cache.
+        // The bounded recording can begin in the middle of a frame.
+        std::ifstream input(argv[1]);Check(bool(input),"open camera history");
+        std::string line;std::getline(input,line);
+        SceneCache<uint64_t> scenes;uint64_t first=0,previous=0,draws=0,recovered=0;
+        while(std::getline(input,line)) {
+            std::istringstream row(line);std::string columns[7];
+            for(auto& c:columns)Check(bool(std::getline(row,c,',')),"parse camera history");
+            uint64_t frame=std::stoull(columns[0]),pose=std::stoull(columns[2]);
+            auto scene=reinterpret_cast<void*>(static_cast<uintptr_t>(std::stoull(columns[3])));
+            int event=std::stoi(columns[4]),reason=std::stoi(columns[5]);
+            if(!first)first=frame;
+            if(previous && previous!=frame)scenes.Complete(previous);
+            previous=frame;
+            if(event==1) {
+                if(reason==5 || reason==6 || reason==7)scenes.Store(scene,pose,frame);else scenes.Erase(scene);
+            } else if(event==2 && frame!=first) {
+                Check(scenes.Find(scene)!=0,"recorded world draw retains its camera");
+                if(pose)Check(scenes.Find(scene)==pose,"recorded draw retains the correct pose");
+                ++draws;if(reason==1)++recovered;
+            }
+        }
+        Check(draws>0,"camera replay contains draws");
+        printf("PASS camera history replay: %llu draws, %llu previously missing camera tags recovered\n",draws,recovered);
+    }
     {
         Transport::Header mailbox{};Transport::TrackingReader reader;Transport::Tracking sample{},result{};
         sample.id=7;sample.tick=1000;sample.valid=1;Transport::WriteTracking(&mailbox,sample);

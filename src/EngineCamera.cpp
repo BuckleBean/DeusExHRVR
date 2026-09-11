@@ -1,13 +1,16 @@
 #include "EngineCamera.h"
 #include "CameraMath.h"
+#include "SceneCache.h"
 #include <windows.h>
 #include <MinHook.h>
 #include <atomic>
 #include <mutex>
 #include <cstdio>
 #include <cstring>
-#include <unordered_map>
 #include <algorithm>
+#include <array>
+#include <filesystem>
+#include <fstream>
 
 // Supported executable only. All preferred addresses are rebased for ASLR.
 // F6 opt-in experiment. Camera poses are attached to the scene and then to the
@@ -31,7 +34,7 @@ struct Snapshot {
     bool active{};
 };
 Snapshot current;
-std::unordered_map<void*,Snapshot> scenes;
+SceneCache<Snapshot> scenes;
 Transport::RenderInfo pairInfo{};
 uint64_t taggedScenes{},stereoCalls{};
 uint64_t hudDraws{},hudMatrices{};
@@ -41,6 +44,27 @@ thread_local unsigned drawnEyes{};
 thread_local Snapshot lastWorld;
 thread_local Snapshot uiSnapshot;
 thread_local bool uiDrawing{};
+struct SceneTrace {
+    uint64_t frame{},tick{},pose{};
+    uintptr_t scene{};
+    uint32_t event{},reason{},cached{};
+    float fov{},nearZ{},farZ{};
+    CameraMath::Matrix viewport,original,tracked;
+};
+std::array<SceneTrace,32768> sceneTrace{};
+size_t traceNext{},traceCount{};
+void Trace(SceneTrace t){sceneTrace[traceNext]=t;traceNext=(traceNext+1)%sceneTrace.size();traceCount=std::min(traceCount+1,sceneTrace.size());}
+void SaveTrace(uint64_t frame) {
+    std::error_code ec;std::filesystem::create_directory("DeusExHRVR-captures",ec);if(ec)return;
+    char name[180];sprintf_s(name,"DeusExHRVR-captures/camera-history-%lu-%llu.csv",GetCurrentProcessId(),frame);
+    std::ofstream out(name);out<<"frame,tick,pose,scene,event,reason,cached,fov,near,far";
+    for(const char* name:{"viewport","original","tracked"})for(int i=0;i<16;i++)out<<','<<name<<i;out<<'\n';
+    for(size_t i=0;i<traceCount;i++) {
+        const auto& t=sceneTrace[(traceNext+sceneTrace.size()-traceCount+i)%sceneTrace.size()];
+        out<<t.frame<<','<<t.tick<<','<<t.pose<<','<<t.scene<<','<<t.event<<','<<t.reason<<','<<t.cached<<','<<t.fov<<','<<t.nearZ<<','<<t.farZ;
+        for(const auto* m:{&t.viewport,&t.original,&t.tracked})for(float v:m->m)out<<','<<v;out<<'\n';
+    }
+}
 using Update = void(__thiscall*)(void*);
 using CreateScene = void*(__thiscall*)(void*,void*,void*,void*,void*,void*,uint32_t);
 using Getter = void*(__thiscall*)(void*);
@@ -121,9 +145,13 @@ void* __fastcall CreateHook(void* self,void*,void* viewport,void* target,void* d
     Snapshot snapshot;
     {std::lock_guard lock(stateMutex);snapshot=current;}
     alignas(16) unsigned char adjusted[0xf0];
+    SceneTrace trace{};trace.event=1;trace.reason=1;
+    if(viewport){auto v=static_cast<float*>(viewport);trace.fov=v[8];trace.nearZ=v[6];trace.farZ=v[7];trace.viewport=CameraMath::Load(v+12);}
+    trace.original=snapshot.originalWorld;trace.tracked=snapshot.world;trace.pose=snapshot.tracking.id;
     if(viewport && snapshot.active) {
         auto p=static_cast<float*>(viewport);auto matrix=CameraMath::Load(p+12);
         if(p[8]>0 && p[7]>1000 && (Match(matrix,snapshot.originalWorld)||Match(matrix,snapshot.world))) {
+            trace.reason=Match(matrix,snapshot.originalWorld)?5:6;
             memcpy(adjusted,viewport,sizeof(adjusted));auto v=reinterpret_cast<float*>(adjusted);
             memcpy(v+12,snapshot.world.m,64);for(int i=4;i<7;i++)v[12+i]=-v[12+i];
             float maxX=0,maxY=0;
@@ -132,13 +160,14 @@ void* __fastcall CreateHook(void* self,void*,void* viewport,void* target,void* d
                 maxY=std::max(maxY,std::max(std::abs(std::tan(eye.up)),std::abs(std::tan(eye.down))));
             }
             v[8]=2*std::atan(maxY);v[9]=maxX/maxY;viewport=adjusted;
-        } else snapshot.active=false;
+        } else {trace.reason=(p[8]>0 && p[7]>1000)?2:3;snapshot.active=false;}
     }
     void* result=originalCreate(self,viewport,target,depth,source,sourceDepth,flags);
     {
         std::lock_guard lock(stateMutex);
-        if(snapshot.active && result) {if(scenes.size()>4096)scenes.clear();scenes[result]=snapshot;++taggedScenes;}
-        else scenes.erase(result);
+        if(snapshot.active && result) {scenes.Store(result,snapshot,frameId.load()+1);++taggedScenes;}
+        else scenes.Erase(result);
+        if(trace.fov>0 && trace.farZ>1000){trace.frame=frameId.load()+1;trace.tick=GetTickCount64();trace.scene=reinterpret_cast<uintptr_t>(result);trace.cached=uint32_t(scenes.Size());Trace(trace);}
     }
     if(budget.load()>0 && budget.fetch_sub(1)>0 && viewport && result) {
         std::lock_guard lock(output);
@@ -155,7 +184,15 @@ void* __fastcall CreateHook(void* self,void*,void* viewport,void* target,void* d
 }
 void __fastcall DrawHook(void* self,void*,uint32_t pass,void* other) {
     auto previous=drawing;auto previousEyes=drawnEyes;
-    {std::lock_guard lock(stateMutex);auto it=scenes.find(static_cast<unsigned char*>(self)-4);drawing=it==scenes.end()?Snapshot{}:it->second;}
+    {
+        std::lock_guard lock(stateMutex);auto scene=static_cast<unsigned char*>(self)-4;drawing=scenes.Find(scene);
+        auto v=reinterpret_cast<float*>(scene+0x10);
+        if(v[8]>0 && v[7]>1000){
+            SceneTrace trace{};trace.frame=frameId.load()+1;trace.tick=GetTickCount64();trace.pose=drawing.tracking.id;trace.scene=reinterpret_cast<uintptr_t>(scene);
+            trace.event=2;trace.reason=drawing.active?5:1;trace.cached=uint32_t(scenes.Size());trace.fov=v[8];trace.nearZ=v[6];trace.farZ=v[7];
+            trace.viewport=CameraMath::Load(v+12);trace.original=drawing.originalWorld;trace.tracked=drawing.world;Trace(trace);
+        }
+    }
     drawnEyes=0;
     originalDraw(self,pass,other);
     if(drawing.active && drawnEyes) {
@@ -255,6 +292,7 @@ Transport::RenderInfo OnPresent(uint64_t frame,bool capture) {
     budget=capture?32:0;
     std::lock_guard lock(stateMutex);
     auto completed=pairInfo;pairInfo={};
+    scenes.Complete(frame);
     lastWorld={};
     if(completed.mode==1 && completed.eyeMask!=3)completed.mode=2;
     static uint32_t lastMode=99;
@@ -265,6 +303,7 @@ Transport::RenderInfo OnPresent(uint64_t frame,bool capture) {
         lastMode=completed.mode;
     }
     if(capture) {
+        SaveTrace(frame);
         FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")){fprintf(f,"HUD plane draws=%llu matrices=%llu frame=%llu trackingReadContentions=%llu rejectedSamples=%llu\n",hudDraws,hudMatrices,frame,trackingReader.reused,trackingReader.rejected);fclose(f);}
     }
     bool f6=(GetAsyncKeyState(VK_F6)&0x8000)!=0,f9=(GetAsyncKeyState(VK_F9)&0x8000)!=0;

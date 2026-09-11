@@ -1,4 +1,5 @@
 #include "NativeBridge.h"
+#include "PairHistory.h"
 #include <windows.h>
 #include <wrl/client.h>
 #include <cstdio>
@@ -33,6 +34,18 @@ int main(int argc,char** argv) {
         ctx->Unmap(read.Get(),e);if(!valid)return 6;
     }
     printf("PASS: %u-bit D3D11 native pair bounds and GPU eye-array copies/readback.\n",unsigned(sizeof(void*)*8));
+    if(argc>=2 && !strcmp(argv[1],"--history")) {
+        PairHistory history;
+        for(UINT i=0;i<PairHistory::Capacity+3;i++)if(!history.Record(dev.Get(),ctx.Get(),pair.Get(),{i,GetTickCount64()}))return 20;
+        if(history.Count()!=PairHistory::Capacity || !history.Save(ctx.Get(),"history-probe"))return 21;
+        std::ifstream image("history-probe/frame-0000.bmp",std::ios::binary);std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(image)),{});
+        size_t offset=sizeof(BITMAPFILEHEADER)+sizeof(BITMAPINFOHEADER);
+        auto check=[&](UINT x,UINT y,bool right){size_t p=offset+(y*PairHistory::Width+x)*4;return bytes.size()>p+3 && bytes[p]==0x30 && bytes[p+1]==(right?0xd0:0x30) && bytes[p+2]==(right?0x30:0xd0);};
+        if(!check(20,20,false)||!check(PairHistory::Width-20,20,true)||!check(20,PairHistory::Height-20,false))return 22;
+        std::ifstream csv("history-probe/frames.csv");std::string line;std::getline(csv,line);std::getline(csv,line);
+        if(line.rfind("0,3,",0)!=0)return 23;
+        puts("PASS rolling GPU history: eye colours, upright layout, wraparound order and export");return 0;
+    }
     if(argc<2||strcmp(argv[1],"--xr"))return 0;
     printf("Testing OpenXR for 20 seconds. Left red, right green.\n");
     ULONGLONG end=GetTickCount64()+20000;

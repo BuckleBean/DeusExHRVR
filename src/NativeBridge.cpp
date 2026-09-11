@@ -1,4 +1,5 @@
 #include "NativeBridge.h"
+#include "PairHistory.h"
 #include <windows.h>
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
@@ -45,6 +46,8 @@ struct Bridge {
     PFN_xrGetDisplayRefreshRateFB getRefresh{};
     uint64_t rateTick=0,ratePairs=0;
     XrDuration lastPeriod{};
+    PairHistory history;
+    bool historyArmed{},f10Down{};
     IDXGISwapChain* owner{};
 
     void DestroySwapchain() {
@@ -53,6 +56,7 @@ struct Bridge {
         swapchain=XR_NULL_HANDLE; width=height=0;
     }
     void Reset() {
+        history.Reset();historyArmed=false;f10Down=false;
         DestroySwapchain();
         if(headSpace) xrDestroySpace(headSpace);
         if(space) xrDestroySpace(space);
@@ -200,6 +204,13 @@ struct Bridge {
     }
     void Frame(ID3D11Texture2D* pair,UINT h,bool swap,bool capture,bool recenter) {
         D3D11_TEXTURE2D_DESC d{}; pair->GetDesc(&d);
+        bool f10=(GetAsyncKeyState(VK_F10)&0x8000)!=0;
+        if(f10&&!f10Down){historyArmed=!historyArmed;if(!historyArmed)history.Reset();Log("Rolling native-pair history %s (F8 saves previous 360 frames)",historyArmed?"armed":"off");}
+        f10Down=f10;
+        if(capture && history.Count()) {
+            char folder[180];sprintf_s(folder,"DeusExHRVR-captures/history-%lu-%llu",GetCurrentProcessId(),sourceFrame);
+            Log("History save: frames=%u success=%d folder=%s",history.Count(),int(history.Save(context.Get(),folder)),folder);
+        }
         if(capture)Capture(pair,h,sourceFrame);
         if(!running){Sleep(10);return;}
         XrFrameWaitInfo wi{XR_TYPE_FRAME_WAIT_INFO}; XrFrameState fs{XR_TYPE_FRAME_STATE};
@@ -299,6 +310,9 @@ struct Bridge {
                 else if(capture && now>rateTick){Log("Measured submission rate=%.2f pairs/s eye=%ux%u displayRefresh=%.3f Hz",1000.*double(pairs-ratePairs)/double(now-rateTick),width,height,display.refreshHz);rateTick=now;ratePairs=pairs;}
             }
         } else failed=true;
+        if(historyArmed && !history.Record(device.Get(),context.Get(),pair,{sourceFrame,GetTickCount64(),uint64_t(fs.predictedDisplayTime),layerCount,uint32_t(fs.shouldRender),uint32_t(swap),renderInfo})) {
+            Log("Rolling history initialization/copy failed; recording disabled");historyArmed=false;history.Reset();
+        }
     }
 };
 Bridge bridge;
