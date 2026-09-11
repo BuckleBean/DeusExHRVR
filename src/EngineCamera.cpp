@@ -20,6 +20,7 @@ std::atomic<uint64_t> frameId{};
 std::mutex output;
 std::mutex stateMutex;
 Transport::Header* channel{};
+Transport::TrackingReader trackingReader;
 bool requested{},referenceValid{},recenterRequested{},f6Down{},f9Down{};
 Transport::Pose reference{};
 float worldScale=100.f;
@@ -68,7 +69,7 @@ void __fastcall UpdateHook(void* self,void*) {
         auto manager=static_cast<unsigned char*>(self);
         auto active=*reinterpret_cast<unsigned char**>(manager+0x30);
         Transport::Tracking t{};
-        if(requested && active==manager+0x6f0 && Transport::ReadTracking(channel,t) && t.valid && GetTickCount64()-t.tick<250) {
+        if(requested && active==manager+0x6f0 && trackingReader.Read(channel,t,GetTickCount64())) {
             if(!referenceValid || recenterRequested){reference=t.head;referenceValid=true;recenterRequested=false;}
             current.originalWorld=CameraMath::Load(active+0x40);
             current.world=CameraMath::HeadWorld(current.originalWorld,reference,t.head,worldScale);
@@ -264,7 +265,7 @@ Transport::RenderInfo OnPresent(uint64_t frame,bool capture) {
         lastMode=completed.mode;
     }
     if(capture) {
-        FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")){fprintf(f,"HUD plane draws=%llu matrices=%llu frame=%llu\n",hudDraws,hudMatrices,frame);fclose(f);}
+        FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")){fprintf(f,"HUD plane draws=%llu matrices=%llu frame=%llu trackingReadContentions=%llu rejectedSamples=%llu\n",hudDraws,hudMatrices,frame,trackingReader.reused,trackingReader.rejected);fclose(f);}
     }
     bool f6=(GetAsyncKeyState(VK_F6)&0x8000)!=0,f9=(GetAsyncKeyState(VK_F9)&0x8000)!=0;
     if(f6&&!f6Down){requested=!requested;referenceValid=false;current.active=false;}
@@ -274,5 +275,5 @@ Transport::RenderInfo OnPresent(uint64_t frame,bool capture) {
     }
     f6Down=f6;f9Down=f9;return completed;
 }
-void SetChannel(Transport::Header* header){std::lock_guard lock(stateMutex);channel=header;if(!header){current.active=false;referenceValid=false;}}
+void SetChannel(Transport::Header* header){std::lock_guard lock(stateMutex);channel=header;trackingReader={};if(!header){current.active=false;referenceValid=false;}}
 }

@@ -40,6 +40,20 @@ inline void WriteTracking(Header* h,const Tracking& value) {
     if(!h || InterlockedCompareExchange(&h->trackingLock,1,0))return;
     h->tracking=value;InterlockedExchange(&h->trackingLock,0);
 }
+// A contended nonblocking mailbox read is not loss of tracking. Preserve the
+// last sample briefly, but honour newly received invalid data and sample age.
+struct TrackingReader {
+    Tracking latest{};
+    uint64_t reused{},rejected{};
+    bool Read(Header* h,Tracking& result,uint64_t now) {
+        if(!h){latest={};++rejected;return false;}
+        Tracking incoming{};
+        if(ReadTracking(h,incoming))latest=incoming;
+        else ++reused;
+        if(!latest.valid || !latest.tick || now<latest.tick || now-latest.tick>=250){++rejected;return false;}
+        result=latest;return true;
+    }
+};
 inline void Name(wchar_t (&name)[96],DWORD pid) {swprintf_s(name,L"Local\\DeusExHRVR-%lu",pid);}
 inline void FrameEventName(wchar_t (&name)[96],DWORD pid) {swprintf_s(name,L"Local\\DeusExHRVR-frame-%lu",pid);}
 }

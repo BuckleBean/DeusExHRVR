@@ -4,6 +4,20 @@
 void Check(bool value,const char* name){if(!value){fprintf(stderr,"FAIL %s\n",name);std::exit(1);}}
 bool Near(float a,float b){return std::abs(a-b)<0.0001f;}
 int main() {
+    {
+        Transport::Header mailbox{};Transport::TrackingReader reader;Transport::Tracking sample{},result{};
+        sample.id=7;sample.tick=1000;sample.valid=1;Transport::WriteTracking(&mailbox,sample);
+        Check(reader.Read(&mailbox,result,1000) && result.id==7,"read fresh tracking");
+        InterlockedExchange(&mailbox.trackingLock,1);
+        Check(reader.Read(&mailbox,result,1011) && result.id==7,"writer contention preserves fresh camera sample");
+        Check(!reader.Read(&mailbox,result,1250),"contended sample expires after 250ms");
+        InterlockedExchange(&mailbox.trackingLock,0);
+        sample.id=8;sample.tick=1250;Transport::WriteTracking(&mailbox,sample);
+        Check(reader.Read(&mailbox,result,1251) && result.id==8,"fresh sample replaces contended cache");
+        sample.valid=0;Transport::WriteTracking(&mailbox,sample);
+        Check(!reader.Read(&mailbox,result,1252),"runtime tracking loss invalidates cached sample");
+        Check(!reader.Read(nullptr,result,1253) && !reader.latest.valid,"closed channel clears sample cache");
+    }
     using namespace CameraMath;
     Matrix game=Rotation({0,0,0,1});game.m[12]=10;game.m[13]=20;game.m[14]=30;
     Pose reference{{0,0,0,1},{0,0,0}},head=reference;
@@ -43,5 +57,5 @@ int main() {
             Check(Near(commonX,x*1.6f),"both HUD eye rays meet the same plane point");
         }
     }
-    puts("PASS camera math, asymmetric stereo frustum and binocular HUD alignment");
+    puts("PASS tracking mailbox contention/expiry, camera math, asymmetric stereo frustum and binocular HUD alignment");
 }
