@@ -1,6 +1,8 @@
 #include "EngineCamera.h"
 #include "CameraMath.h"
 #include "SceneCache.h"
+#include "EngineShaderTrace.h"
+#include "EffectShader.h"
 #include <windows.h>
 #include <MinHook.h>
 #include <atomic>
@@ -24,7 +26,7 @@ std::mutex output;
 std::mutex stateMutex;
 Transport::Header* channel{};
 Transport::TrackingReader trackingReader;
-bool requested{},referenceValid{},recenterRequested{},f6Down{},f9Down{},f7Down{},effectsFix=true,f4Down{},eyeViewFix=true;
+bool requested{},referenceValid{},recenterRequested{},f6Down{},f9Down{},f7Down{},effectsFix=true,f4Down{},eyeViewFix=true,f3Down{},instanceFix=true;
 Transport::Pose reference{};
 float worldScale=100.f;
 struct Snapshot {
@@ -45,6 +47,7 @@ thread_local Snapshot lastWorld;
 thread_local Snapshot uiSnapshot;
 thread_local bool uiDrawing{};
 bool effectsCapture{};
+EngineShaderTrace shaderTrace;
 struct EffectTrace {
     uintptr_t primitive{},material{};
     uint32_t flags{},eye{},active{},stereo{},overrideStereo{};
@@ -98,6 +101,30 @@ Getter originalWorld{},originalView{},originalManager{};
 Draw originalDraw{};Stereo originalStereo{};
 Primitive originalPrimitive{};Update originalMatrices{};
 Update originalUniforms{};
+Update originalRenderState{};
+EffectShader effectShaders;
+uint64_t instanceCorrections{};
+void __fastcall RenderStateHook(void* self,void*) {
+    auto state=static_cast<unsigned char*>(self);
+    float* instance{};CameraMath::Matrix saved;
+    if(drawing.active && effectsFix && instanceFix && EffectShader::UsesCentreViewMatrix(effectShaders.Identify(*reinterpret_cast<uintptr_t*>(state+0x198)))) {
+        auto cb=*reinterpret_cast<unsigned char**>(state+0x5b8);
+        if(cb && *reinterpret_cast<unsigned*>(cb+12)>=4) {
+            instance=*reinterpret_cast<float**>(cb+8);
+            if(instance) {
+                saved=CameraMath::Load(instance);
+                auto eye=CameraMath::EyeWorld(drawing.tracking,state[0x5ea]?0:1,worldScale);
+                auto corrected=CameraMath::Multiply(eye,saved);memcpy(instance,corrected.m,64);
+                state[0x5c8]=1;state[0x1c]=1;++instanceCorrections;
+            }
+        }
+    }
+    originalRenderState(self);
+    if(effectsCapture)shaderTrace.Record(state,drawing.active);
+    // Upload copied the corrected constants. Restore the engine's centre-view
+    // copy so subsequent draws/eyes cannot accumulate the eye transform.
+    if(instance){memcpy(instance,saved.m,64);state[0x5c8]=1;state[0x1c]=1;}
+}
 void __fastcall UniformsHook(void* self,void*) {
     originalUniforms(self);
     if(!drawing.active)return;
@@ -152,13 +179,15 @@ void __fastcall UpdateHook(void* self,void*) {
         auto manager=static_cast<unsigned char*>(self);
         auto active=*reinterpret_cast<unsigned char**>(manager+0x30);
         Transport::Tracking t{};
-        if(requested && active==manager+0x6f0 && trackingReader.Read(channel,t,GetTickCount64())) {
+        if(requested && active && trackingReader.Read(channel,t,GetTickCount64())) {
             if(!referenceValid || recenterRequested){reference=t.head;referenceValid=true;recenterRequested=false;}
-            current.originalWorld=CameraMath::Load(active+0x40);
+            // Interaction cameras implement the same virtual getters as the
+            // player camera; use that interface instead of its private layout.
+            current.originalWorld=CameraMath::Load(originalWorld(self));
             current.world=CameraMath::HeadWorld(current.originalWorld,reference,t.head,worldScale);
             current.view=CameraMath::InverseRigid(current.world);
             current.manager=CameraMath::Load(manager+0x13b0);
-            auto oldView=CameraMath::Load(active+0x80);
+            auto oldView=CameraMath::Load(originalView(self));
             for(int col=0;col<3;col++) {
                 float scale=0;for(int row=0;row<3;row++)scale+=current.manager.m[row*4+col]*oldView.m[row*4+col];
                 for(int row=0;row<3;row++)current.manager.m[row*4+col]=current.view.m[row*4+col]*scale;
@@ -337,6 +366,7 @@ void Install() {
         {0x532c70,(void*)&PrimitiveHook,(void**)&originalPrimitive,"\x83\xec\x20\x53\x8b\x5c\x24\x28",8},
         {0x550930,(void*)&MatricesHook,(void**)&originalMatrices,"\x55\x8b\xec\x83\xe4\xf0\x81\xec\x84\x00\x00\x00",12}
         ,{0x545cf0,(void*)&UniformsHook,(void**)&originalUniforms,"\x55\x8b\xec\x83\xe4\xf0\x81\xec\x04\x02\x00\x00",12}
+        ,{0x552130,(void*)&RenderStateHook,(void**)&originalRenderState,"\x56\x8b\xf1\x80\x7e\x19\x00",7}
     };
     for(auto& h:hooks)if(memcmp((void*)VA(h.address),h.bytes,h.length))return;
     bool enabled=true;
@@ -360,7 +390,8 @@ Transport::RenderInfo OnPresent(uint64_t frame,bool capture) {
     // periodically on the render thread; F8 is the explicit diagnostic request.
     budget=capture?32:0;
     std::lock_guard lock(stateMutex);
-    if(effectsCapture){SaveEffects(frame);effectCount=0;}effectsCapture=capture;
+    if(effectsCapture){SaveEffects(frame);effectCount=0;shaderTrace.End();}effectsCapture=capture;
+    if(capture)shaderTrace.Begin(frame+1);
     auto completed=pairInfo;pairInfo={};
     scenes.Complete(frame);
     lastWorld={};
@@ -381,6 +412,9 @@ Transport::RenderInfo OnPresent(uint64_t frame,bool capture) {
     if(f7&&!f7Down){effectsFix=!effectsFix;FILE* f{};if(!fopen_s(&f,"DeusExHRVR-effects.log","a")){fprintf(f,"effectsFix=%d frame=%llu\n",effectsFix,frame);fclose(f);}}f7Down=f7;
     bool f4=(GetAsyncKeyState(VK_F4)&0x8000)!=0;
     if(f4&&!f4Down){eyeViewFix=!eyeViewFix;FILE* f{};if(!fopen_s(&f,"DeusExHRVR-effects.log","a")){fprintf(f,"eyeViewFix=%d frame=%llu\n",eyeViewFix,frame);fclose(f);}}f4Down=f4;
+    bool f3=(GetAsyncKeyState(VK_F3)&0x8000)!=0;
+    if(f3&&!f3Down){instanceFix=!instanceFix;FILE* f{};if(!fopen_s(&f,"DeusExHRVR-effects.log","a")){fprintf(f,"instanceFix=%d frame=%llu\n",instanceFix,frame);fclose(f);}}f3Down=f3;
+    if(capture){FILE* f{};if(!fopen_s(&f,"DeusExHRVR-effects.log","a")){fprintf(f,"instanceFix=%d correctedDraws=%llu frame=%llu\n",instanceFix,instanceCorrections,frame);fclose(f);}}
     if(f6&&!f6Down){requested=!requested;referenceValid=false;current.active=false;}
     if(f9&&!f9Down)recenterRequested=true;
     if((f6&&!f6Down)||(f9&&!f9Down)) {

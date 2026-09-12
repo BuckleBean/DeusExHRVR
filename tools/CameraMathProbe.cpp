@@ -112,6 +112,31 @@ int main(int argc,char** argv) {
             Check(Near(clip[0]/clip[3],2*u-1)&&Near(clip[1]/clip[3],1-2*v),"lighting depth reconstruction matches asymmetric eye projection");
         }
     }
+    {
+        // A captured projected-shadow transform. Both eyes must sample the
+        // same effect location for one surface point, including canted views.
+        Matrix effect{{-.000248601f,.00188389f,-.00010397f,0,
+            .00197977f,.000278757f,.00000880958f,0,
+            -.000136736f,.000610938f,.000316581f,0,
+            -2.01755f,-7.06894f,-.484532f,1}};
+        auto sample=t;
+        for(float cant:{0.f,.08f})for(unsigned eye=0;eye<2;eye++) {
+            float angle=eye?cant:-cant;
+            sample.eyes[eye].pose.orientation={0,std::sin(angle/2),0,std::cos(angle/2)};
+            auto eyeWorld=EyeWorld(sample,eye,300);
+            auto corrected=Multiply(eyeWorld,effect);
+            auto centreToEye=InverseRigid(eyeWorld);
+            for(float depth:{30.f,300.f,3000.f}) {
+                float centre[]={17,-21,depth,1},local[4]{},expected[4]{},actual[4]{};
+                for(int j=0;j<4;j++)for(int k=0;k<4;k++) {
+                    local[j]+=centre[k]*centreToEye.m[k*4+j];
+                    expected[j]+=centre[k]*effect.m[k*4+j];
+                }
+                for(int j=0;j<4;j++)for(int k=0;k<4;k++)actual[j]+=local[k]*corrected.m[k*4+j];
+                for(int j=0;j<4;j++)Check(Near(actual[j],expected[j]),"projected effect stays on one surface for both eyes");
+            }
+        }
+    }
     for(unsigned eye=0;eye<2;eye++) {
         auto hud=HudClipTransform(t,eye);
         for(float x:{-.9f,0.f,.9f}) {

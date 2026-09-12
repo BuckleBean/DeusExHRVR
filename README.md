@@ -42,6 +42,8 @@ The initial live check confirmed 1344 × 1600 per eye and approximately 90 nativ
 
 | Key | Action |
 |---|---|
+| F3 | Toggle per-eye projected light/shadow transforms (on by default) |
+| F4 | Toggle per-eye shader camera inputs (on by default; requires F7) |
 | F6 | Toggle tracked VR and capture a neutral head pose |
 | F7 | Toggle the shared lighting-depth correction (on by default) |
 | F9 | Recenter |
