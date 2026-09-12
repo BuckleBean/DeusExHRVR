@@ -3,6 +3,7 @@
 #include "SceneCache.h"
 #include "EngineShaderTrace.h"
 #include "EffectShader.h"
+#include "ScreenMode.h"
 #include <windows.h>
 #include <MinHook.h>
 #include <atomic>
@@ -15,7 +16,7 @@
 #include <fstream>
 
 // Supported executable only. All preferred addresses are rebased for ASLR.
-// F6 opt-in experiment. Camera poses are attached to the scene and then to the
+// F6 toggles tracking. Camera poses are attached to the scene and then to the
 // completed native pair, never replaced with the companion's newer predicted pose.
 namespace EngineCamera {
 namespace {
@@ -26,7 +27,19 @@ std::mutex output;
 std::mutex stateMutex;
 Transport::Header* channel{};
 Transport::TrackingReader trackingReader;
-bool requested{},referenceValid{},recenterRequested{},f6Down{},f9Down{},f7Down{},effectsFix=true,f4Down{},eyeViewFix=true,f3Down{},instanceFix=true;
+bool requested=true,referenceValid{},recenterRequested{},f6Down{},f9Down{},f7Down{},effectsFix=true,f4Down{},eyeViewFix=true,f3Down{},instanceFix=true;
+bool interactionScreen{};
+ScreenMode screenMode;
+unsigned screenReasons{};
+void RefreshScreenMode() {
+    unsigned reasons=(interactionScreen?1u:0u)|(ScreenMode::Menu(base)?2u:0u)|(screenMode.Video()?4u:0u);
+    if(reasons!=screenReasons) {
+        screenReasons=reasons;
+        FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")) {
+            fprintf(f,"automaticScreen reasons=%u requested=%d frame=%llu\n",reasons,requested,frameId.load());fclose(f);
+        }
+    }
+}
 Transport::Pose reference{};
 float worldScale=100.f;
 struct Snapshot {
@@ -102,6 +115,13 @@ Draw originalDraw{};Stereo originalStereo{};
 Primitive originalPrimitive{};Update originalMatrices{};
 Update originalUniforms{};
 Update originalRenderState{};
+using VideoCreate=void*(__thiscall*)(void*,void*);
+VideoCreate originalVideoCreate{};
+Update originalVideoDestroy{};
+void* __fastcall VideoCreateHook(void* self,void*,void* heap) {
+    auto result=originalVideoCreate(self,heap);if(result)screenMode.Add(result);return result;
+}
+void __fastcall VideoDestroyHook(void* self,void*) {screenMode.Remove(self);originalVideoDestroy(self);}
 EffectShader effectShaders;
 uint64_t instanceCorrections{};
 void __fastcall RenderStateHook(void* self,void*) {
@@ -178,8 +198,20 @@ void __fastcall UpdateHook(void* self,void*) {
         current.active=false;
         auto manager=static_cast<unsigned char*>(self);
         auto active=*reinterpret_cast<unsigned char**>(manager+0x30);
+        // Supported build: PlayerCamera embeds CameraMode_Hacking at +0x430.
+        // Its enter/leave methods (0x6a1c50 / 0x6a1dc0) set/clear +0x104.
+        // Check the exact class before reading its active flag.
+        auto hacking=manager+0x6f0+0x430;
+        bool screen=*reinterpret_cast<uintptr_t*>(hacking)==base+0xaa774c-0x400000 && hacking[0x104]!=0;
+        if(screen!=interactionScreen) {
+            interactionScreen=screen;
+            FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")) {
+                fprintf(f,"interactionScreen=%d requested=%d frame=%llu\n",screen,requested,frameId.load());fclose(f);
+            }
+        }
         Transport::Tracking t{};
-        if(requested && active && trackingReader.Read(channel,t,GetTickCount64())) {
+        RefreshScreenMode();
+        if(requested && !screenReasons && active && trackingReader.Read(channel,t,GetTickCount64())) {
             if(!referenceValid || recenterRequested){reference=t.head;referenceValid=true;recenterRequested=false;}
             // Interaction cameras implement the same virtual getters as the
             // player camera; use that interface instead of its private layout.
@@ -367,6 +399,8 @@ void Install() {
         {0x550930,(void*)&MatricesHook,(void**)&originalMatrices,"\x55\x8b\xec\x83\xe4\xf0\x81\xec\x84\x00\x00\x00",12}
         ,{0x545cf0,(void*)&UniformsHook,(void**)&originalUniforms,"\x55\x8b\xec\x83\xe4\xf0\x81\xec\x04\x02\x00\x00",12}
         ,{0x552130,(void*)&RenderStateHook,(void**)&originalRenderState,"\x56\x8b\xf1\x80\x7e\x19\x00",7}
+        ,{0x986cd0,(void*)&VideoCreateHook,(void**)&originalVideoCreate,"\x33\xc0\x56\x8b\xf1",5}
+        ,{0x986b40,(void*)&VideoDestroyHook,(void**)&originalVideoDestroy,"\x56\x8b\xf1\x57",4}
     };
     for(auto& h:hooks)if(memcmp((void*)VA(h.address),h.bytes,h.length))return;
     bool enabled=true;
@@ -390,6 +424,9 @@ Transport::RenderInfo OnPresent(uint64_t frame,bool capture) {
     // periodically on the render thread; F8 is the explicit diagnostic request.
     budget=capture?32:0;
     std::lock_guard lock(stateMutex);
+    // Menus/videos can keep presenting while simulation (and camera updates)
+    // is paused. Refresh here as well, before the following frame is built.
+    RefreshScreenMode();if(screenReasons)current.active=false;
     if(effectsCapture){SaveEffects(frame);effectCount=0;shaderTrace.End();}effectsCapture=capture;
     if(capture)shaderTrace.Begin(frame+1);
     auto completed=pairInfo;pairInfo={};

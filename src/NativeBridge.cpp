@@ -263,6 +263,9 @@ struct Bridge {
                     if(Good(xrReleaseSwapchainImage(swapchain,&ri),"xrReleaseSwapchainImage")) {
                         bool tracked=renderInfo.mode==1 && renderInfo.eyeMask==3 && renderInfo.tracking.valid;
                         if(tracked) {
+                            // Place the next interaction screen in front of the
+                            // user, rather than at the startup menu's old anchor.
+                            anchorValid=false;
                             for(UINT eye=0;eye<2;eye++) {
                                 auto& v=projectionViews[eye];auto& e=renderInfo.tracking.eyes[eye];
                                 memcpy(&v.pose,&e.pose,sizeof(v.pose));v.fov={e.left,e.right,e.up,e.down};
@@ -290,7 +293,9 @@ struct Bridge {
                             q.eyeVisibility=eye?XR_EYE_VISIBILITY_RIGHT:XR_EYE_VISIBILITY_LEFT;
                             q.subImage.swapchain=swapchain; q.subImage.imageArrayIndex=eye;
                             q.subImage.imageRect={{0,0},{int32_t(d.Width),int32_t(h)}};
-                            q.pose=anchor; q.size={3.2f,3.2f*float(h)/float(d.Width)};
+                            // The native screen camera retains its 16:9 logical
+                            // aspect even when rendering to tall headset textures.
+                            q.pose=anchor; q.size={3.2f,1.8f};
                             layers[layerCount++]=reinterpret_cast<XrCompositionLayerBaseHeader*>(&q);
                         }
                     } else failed=true;

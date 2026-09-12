@@ -24,7 +24,7 @@ Other executable versions and the original non-Director's Cut release are not su
    powershell -ExecutionPolicy Bypass -File .\install.ps1 -GameDirectory "E:\SteamLibrary\steamapps\common\Deus Ex Human Revolution Director's Cut"
    ```
 
-4. Launch `DXHRDC.exe`, load a save, face forward, and press **F6**.
+4. Launch `DXHRDC.exe` and load a save. Gameplay enters full VR automatically. Press **F9** to recenter if needed.
 
 Run the installer as the Windows user who plays the game. It backs up replaced files and original graphics settings to `DeusExHRVR-backup` in the game folder. It enables DX11/native stereo and disables VSync and antialiasing for the tested configuration.
 
@@ -50,7 +50,9 @@ The initial live check confirmed 1344 × 1600 per eye and approximately 90 nativ
 | F8 | Save both-eye images, camera trace, and any armed rolling recording locally |
 | F10 | Toggle the rolling stereo-frame recorder (off by default) |
 
-The game starts on a stereo screen in VR; F6 enables the tracked view. Gameplay input remains the game's keyboard/mouse or gamepad input.
+Full VR is enabled by default and starts automatically when gameplay loads. F6 manually toggles between full VR and the virtual screen. Gameplay input remains the game's keyboard/mouse or gamepad input.
+
+Terminal interaction, hacking, the main/pause menus, and prerecorded video playback automatically use the 16:9 virtual screen. Full VR resumes afterward unless you disabled it with F6. The screen appears in front of your current head position; VR rendering retains the headset resolution and refresh rate.
 
 For an intermittent visual problem, press F10 before waiting for it, then F8 immediately after it appears. The recorder retains 360 reduced-size stereo pairs (about four seconds at 90 Hz), together with their tracking and submission data. It uses about 106 MB while armed; saving with F8 can briefly pause playback. Images and camera-history CSV files stay in the local `DeusExHRVR-captures` folder. F10 turns recording off again.
 
@@ -58,7 +60,7 @@ The HUD uses a shared plane projected through the recorded eye poses. Alignment 
 
 Shared lighting-depth reconstruction uses the same eye frusta as world geometry. This fixes the tested hanging yellow lights; other light and shadow effects still have known stereo issues. F7 provides a live comparison while those remaining effects are investigated.
 
-World scale is provisional. Copy `DeusExHRVR.ini.example` to `DeusExHRVR.ini` beside `DXHRDC.exe` to adjust it. Keep the `[VR]` section header; a setting outside that section is ignored. Restart the game after changing it and enable tracked VR with F6:
+World scale is provisional. Copy `DeusExHRVR.ini.example` to `DeusExHRVR.ini` beside `DXHRDC.exe` to adjust it. Keep the `[VR]` section header; a setting outside that section is ignored. Restart the game after changing it:
 
 ```ini
 [VR]

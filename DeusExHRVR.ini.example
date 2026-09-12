@@ -1,6 +1,6 @@
 [VR]
 ; Copy this file to DeusExHRVR.ini beside DXHRDC.exe. Keep the [VR] section.
-; Restart the game after editing; this setting applies to tracked VR (F6).
+; Restart the game after editing; this setting applies to tracked VR.
 ; Higher values = smaller apparent world, stronger close-range stereo depth.
 ; Lower values = larger apparent world, weaker close-range stereo depth.
 ; Also scales physical head translation. Accepted range: 10-1000.
