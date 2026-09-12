@@ -44,12 +44,15 @@ inline Matrix EyeWorld(const Transport::Tracking& t,unsigned eye,float scale) {
     eyeWorld.m[12]=pos.x*scale;eyeWorld.m[13]=pos.y*scale;eyeWorld.m[14]=-pos.z*scale;
     return eyeWorld;
 }
-inline Matrix EyeProjection(const Matrix& original,const Transport::Tracking& t,unsigned eye,float scale) {
+inline Matrix EyeFrustum(const Matrix& original,const Transport::Tracking& t,unsigned eye) {
     const auto& e=t.eyes[eye];
     float l=std::tan(e.left),r=std::tan(e.right),u=std::tan(e.up),d=std::tan(e.down);
     Matrix p;p.m[0]=2/(r-l);p.m[5]=2/(u-d);p.m[8]=-(r+l)/(r-l);p.m[9]=-(u+d)/(u-d);
     p.m[10]=original.m[10];p.m[11]=1;p.m[14]=original.m[14];
-    return Multiply(InverseRigid(EyeWorld(t,eye,scale)),p);
+    return p;
+}
+inline Matrix EyeProjection(const Matrix& original,const Transport::Tracking& t,unsigned eye,float scale) {
+    return Multiply(InverseRigid(EyeWorld(t,eye,scale)),EyeFrustum(original,t,eye));
 }
 // Reconstruct world positions from (textureU * eyeDepth, textureV *
 // eyeDepth, eyeDepth, 1). Lighting must invert the same eye frustum as geometry.

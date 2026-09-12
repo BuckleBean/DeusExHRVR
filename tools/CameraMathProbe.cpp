@@ -94,6 +94,14 @@ int main(int argc,char** argv) {
     t.eyes[1].left=-.7f;t.eyes[1].right=.9f;
     for(unsigned eye=0;eye<2;eye++) {
         Matrix world=Rotation({0,0,0,1});world.m[12]=100;world.m[13]=-20;world.m[14]=300;
+        auto centreView=InverseRigid(world);
+        auto fullEyeView=Multiply(centreView,InverseRigid(EyeWorld(t,eye,300)));
+        auto oldCombined=Multiply(centreView,EyeProjection(p,t,eye,300));
+        auto newCombined=Multiply(fullEyeView,EyeFrustum(p,t,eye));
+        for(int i=0;i<16;i++)Check(Near(oldCombined.m[i],newCombined.m[i]),"explicit eye view preserves geometry clip positions");
+        auto eyeAbsolute=Multiply(EyeWorld(t,eye,300),world);
+        auto viewIdentity=Multiply(eyeAbsolute,fullEyeView);
+        for(int i=0;i<16;i++)Check(Near(viewIdentity.m[i],i%5==0?1.f:0.f),"shader eye position and view agree");
         auto reconstruct=DepthToWorld(world,t,eye,300);
         auto project=EyeProjection(p,t,eye,300);
         for(float z:{100.f,1000.f})for(float u:{.1f,.5f,.9f})for(float v:{.2f,.8f}) {

@@ -24,7 +24,7 @@ std::mutex output;
 std::mutex stateMutex;
 Transport::Header* channel{};
 Transport::TrackingReader trackingReader;
-bool requested{},referenceValid{},recenterRequested{},f6Down{},f9Down{},f7Down{},effectsFix=true;
+bool requested{},referenceValid{},recenterRequested{},f6Down{},f9Down{},f7Down{},effectsFix=true,f4Down{},eyeViewFix=true;
 Transport::Pose reference{};
 float worldScale=100.f;
 struct Snapshot {
@@ -110,6 +110,15 @@ void __fastcall UniformsHook(void* self,void*) {
     float before[20];memcpy(before,data+15*4,sizeof(before));
     if(effectsFix) {
         auto world=CameraMath::Load(scene+0x40);
+        if(eyeViewFix) {
+            // Keep V * eyeInverse * P unchanged for geometry, but expose the
+            // actual eye view and camera position to all shared shader inputs.
+            auto eyeWorld=CameraMath::EyeWorld(drawing.tracking,eye,worldScale);
+            auto view=CameraMath::Multiply(CameraMath::Load(scene+0x2b0),CameraMath::InverseRigid(eyeWorld));
+            memcpy(state+0x480,view.m,64);state[0x545]=1;
+            auto eyeWorldAbsolute=CameraMath::Multiply(eyeWorld,world);
+            for(int i=0;i<3;i++){data[10*4+i]=eyeWorldAbsolute.m[12+i];data[11*4+i]=eyeWorldAbsolute.m[8+i];}
+        }
         auto depth=CameraMath::DepthToWorld(world,drawing.tracking,eye,worldScale);
         // SceneBuffer stores the three output components as transposed rows.
         for(int col=0;col<3;col++)for(int row=0;row<4;row++)data[(15+col)*4+row]=depth.m[row*4+col];
@@ -120,7 +129,7 @@ void __fastcall UniformsHook(void* self,void*) {
     }
     if(effectsCapture) {
         FILE* f{};if(!fopen_s(&f,"DeusExHRVR-effects.log","a")) {
-            fprintf(f,"depth frame=%llu eye=%u fix=%d scene=%p\n",frameId.load()+1,eye,effectsFix,self);
+            fprintf(f,"depth frame=%llu eye=%u fix=%d eyeView=%d scene=%p\n",frameId.load()+1,eye,effectsFix,eyeViewFix,self);
             fprintf(f,"before");for(float v:before)fprintf(f," %.8g",v);fprintf(f,"\nafter");
             for(int i=0;i<20;i++)fprintf(f," %.8g",data[15*4+i]);fprintf(f,"\n");fclose(f);
         }
@@ -298,7 +307,8 @@ void __fastcall PrimitiveHook(void* self,void*,void* stream,bool backBeforeFront
 void __cdecl StereoHook(float* projection,bool firstEye,float width,float plane) {
     if(drawing.active && std::abs(projection[11]-1.f)<0.001f && std::abs(projection[15])<0.001f) {
         unsigned eye=firstEye?0:1;
-        auto p=CameraMath::EyeProjection(CameraMath::Load(projection),drawing.tracking,eye,worldScale);
+        auto source=CameraMath::Load(projection);
+        auto p=effectsFix&&eyeViewFix?CameraMath::EyeFrustum(source,drawing.tracking,eye):CameraMath::EyeProjection(source,drawing.tracking,eye,worldScale);
         memcpy(projection,p.m,64);drawnEyes|=1u<<eye;
         {std::lock_guard lock(stateMutex);++stereoCalls;}
     } else originalStereo(projection,firstEye,width,plane);
@@ -369,6 +379,8 @@ Transport::RenderInfo OnPresent(uint64_t frame,bool capture) {
     bool f6=(GetAsyncKeyState(VK_F6)&0x8000)!=0,f9=(GetAsyncKeyState(VK_F9)&0x8000)!=0;
     bool f7=(GetAsyncKeyState(VK_F7)&0x8000)!=0;
     if(f7&&!f7Down){effectsFix=!effectsFix;FILE* f{};if(!fopen_s(&f,"DeusExHRVR-effects.log","a")){fprintf(f,"effectsFix=%d frame=%llu\n",effectsFix,frame);fclose(f);}}f7Down=f7;
+    bool f4=(GetAsyncKeyState(VK_F4)&0x8000)!=0;
+    if(f4&&!f4Down){eyeViewFix=!eyeViewFix;FILE* f{};if(!fopen_s(&f,"DeusExHRVR-effects.log","a")){fprintf(f,"eyeViewFix=%d frame=%llu\n",eyeViewFix,frame);fclose(f);}}f4Down=f4;
     if(f6&&!f6Down){requested=!requested;referenceValid=false;current.active=false;}
     if(f9&&!f9Down)recenterRequested=true;
     if((f6&&!f6Down)||(f9&&!f9Down)) {
