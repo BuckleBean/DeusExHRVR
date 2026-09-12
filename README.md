@@ -43,6 +43,7 @@ The initial live check confirmed 1344 × 1600 per eye and approximately 90 nativ
 | Key | Action |
 |---|---|
 | F6 | Toggle tracked VR and capture a neutral head pose |
+| F7 | Toggle the shared lighting-depth correction (on by default) |
 | F9 | Recenter |
 | F8 | Save both-eye images, camera trace, and any armed rolling recording locally |
 | F10 | Toggle the rolling stereo-frame recorder (off by default) |
@@ -52,6 +53,8 @@ The game starts on a stereo screen in VR; F6 enables the tracked view. Gameplay 
 For an intermittent visual problem, press F10 before waiting for it, then F8 immediately after it appears. The recorder retains 360 reduced-size stereo pairs (about four seconds at 90 Hz), together with their tracking and submission data. It uses about 106 MB while armed; saving with F8 can briefly pause playback. Images and camera-history CSV files stay in the local `DeusExHRVR-captures` folder. F10 turns recording off again.
 
 The HUD uses a shared plane projected through the recorded eye poses. Alignment of the health bar, minimap, and item bar has been confirmed in-headset.
+
+Shared lighting-depth reconstruction uses the same eye frusta as world geometry. This fixes the tested hanging yellow lights; other light and shadow effects still have known stereo issues. F7 provides a live comparison while those remaining effects are investigated.
 
 World scale is provisional. Copy `DeusExHRVR.ini.example` to `DeusExHRVR.ini` beside `DXHRDC.exe` to adjust it. Keep the `[VR]` section header; a setting outside that section is ignored. Restart the game after changing it and enable tracked VR with F6:
 

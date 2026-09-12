@@ -35,17 +35,29 @@ inline Matrix HeadWorld(const Matrix& game,const Pose& reference,const Pose& hea
     for(int j=0;j<3;j++)result.m[12+j]+=scale*(delta.x*game.m[j]-delta.y*game.m[4+j]-delta.z*game.m[8+j]);
     return result;
 }
-inline Matrix EyeProjection(const Matrix& original,const Transport::Tracking& t,unsigned eye,float scale) {
+inline Matrix EyeWorld(const Transport::Tracking& t,unsigned eye,float scale) {
     const auto& e=t.eyes[eye];
-    float l=std::tan(e.left),r=std::tan(e.right),u=std::tan(e.up),d=std::tan(e.down);
-    Matrix p;p.m[0]=2/(r-l);p.m[5]=2/(u-d);p.m[8]=-(r+l)/(r-l);p.m[9]=-(u+d)/(u-d);
-    p.m[10]=original.m[10];p.m[11]=1;p.m[14]=original.m[14];
     auto q=Multiply(Inverse(t.head.orientation),e.pose.orientation);
     auto pos=Rotate(Inverse(t.head.orientation),{e.pose.position.x-t.head.position.x,e.pose.position.y-t.head.position.y,e.pose.position.z-t.head.position.z});
     // RenderViewport coordinates are left-handed right/up/forward.
     auto eyeWorld=Rotation({-q.x,-q.y,q.z,q.w});
     eyeWorld.m[12]=pos.x*scale;eyeWorld.m[13]=pos.y*scale;eyeWorld.m[14]=-pos.z*scale;
-    return Multiply(InverseRigid(eyeWorld),p);
+    return eyeWorld;
+}
+inline Matrix EyeProjection(const Matrix& original,const Transport::Tracking& t,unsigned eye,float scale) {
+    const auto& e=t.eyes[eye];
+    float l=std::tan(e.left),r=std::tan(e.right),u=std::tan(e.up),d=std::tan(e.down);
+    Matrix p;p.m[0]=2/(r-l);p.m[5]=2/(u-d);p.m[8]=-(r+l)/(r-l);p.m[9]=-(u+d)/(u-d);
+    p.m[10]=original.m[10];p.m[11]=1;p.m[14]=original.m[14];
+    return Multiply(InverseRigid(EyeWorld(t,eye,scale)),p);
+}
+// Reconstruct world positions from (textureU * eyeDepth, textureV *
+// eyeDepth, eyeDepth, 1). Lighting must invert the same eye frustum as geometry.
+inline Matrix DepthToWorld(const Matrix& viewportWorld,const Transport::Tracking& t,unsigned eye,float scale) {
+    const auto& e=t.eyes[eye];
+    float l=std::tan(e.left),r=std::tan(e.right),u=std::tan(e.up),d=std::tan(e.down);
+    Matrix rays;rays.m[0]=r-l;rays.m[5]=d-u;rays.m[8]=l;rays.m[9]=u;rays.m[10]=rays.m[15]=1;
+    return Multiply(Multiply(rays,EyeWorld(t,eye,scale)),viewportWorld);
 }
 inline Matrix Load(const void* p){Matrix m;std::memcpy(m.m,p,64);return m;}
 // Map the UI's original clip rectangle to one head-relative plane, then project

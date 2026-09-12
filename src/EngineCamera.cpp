@@ -24,7 +24,7 @@ std::mutex output;
 std::mutex stateMutex;
 Transport::Header* channel{};
 Transport::TrackingReader trackingReader;
-bool requested{},referenceValid{},recenterRequested{},f6Down{},f9Down{};
+bool requested{},referenceValid{},recenterRequested{},f6Down{},f9Down{},f7Down{},effectsFix=true;
 Transport::Pose reference{};
 float worldScale=100.f;
 struct Snapshot {
@@ -44,6 +44,27 @@ thread_local unsigned drawnEyes{};
 thread_local Snapshot lastWorld;
 thread_local Snapshot uiSnapshot;
 thread_local bool uiDrawing{};
+bool effectsCapture{};
+struct EffectTrace {
+    uintptr_t primitive{},material{};
+    uint32_t flags{},eye{},active{},stereo{},overrideStereo{};
+    float params[8]{};
+    CameraMath::Matrix projection,view,world;
+};
+std::array<EffectTrace,2048> effectTrace{};
+size_t effectCount{};
+void SaveEffects(uint64_t frame) {
+    std::error_code ec;std::filesystem::create_directory("DeusExHRVR-captures",ec);if(ec)return;
+    char name[180];sprintf_s(name,"DeusExHRVR-captures/effects-%lu-%llu.csv",GetCurrentProcessId(),frame);
+    std::ofstream out(name);out<<"primitive,material,flags,eye,active,stereo,overrideStereo";
+    for(int i=0;i<8;i++)out<<",param"<<i;
+    for(const char* name:{"projection","view","world"})for(int i=0;i<16;i++)out<<','<<name<<i;out<<'\n';
+    for(size_t i=0;i<effectCount;i++) {
+        const auto& t=effectTrace[i];out<<t.primitive<<','<<t.material<<','<<t.flags<<','<<t.eye<<','<<t.active<<','<<t.stereo<<','<<t.overrideStereo;
+        for(float v:t.params)out<<','<<v;
+        for(const auto* m:{&t.projection,&t.view,&t.world})for(float v:m->m)out<<','<<v;out<<'\n';
+    }
+}
 struct SceneTrace {
     uint64_t frame{},tick{},pose{};
     uintptr_t scene{};
@@ -76,6 +97,35 @@ CreateScene originalCreate{};
 Getter originalWorld{},originalView{},originalManager{};
 Draw originalDraw{};Stereo originalStereo{};
 Primitive originalPrimitive{};Update originalMatrices{};
+Update originalUniforms{};
+void __fastcall UniformsHook(void* self,void*) {
+    originalUniforms(self);
+    if(!drawing.active)return;
+    auto scene=static_cast<unsigned char*>(self);
+    auto device=*reinterpret_cast<unsigned char**>(base+0x12ab940-0x400000);
+    auto state=*reinterpret_cast<unsigned char**>(device+0x150);
+    unsigned eye=state[0x5ea]?0:1;
+    auto cb=*reinterpret_cast<unsigned char**>(state+0x5ac);
+    auto data=*reinterpret_cast<float**>(cb+8);
+    float before[20];memcpy(before,data+15*4,sizeof(before));
+    if(effectsFix) {
+        auto world=CameraMath::Load(scene+0x40);
+        auto depth=CameraMath::DepthToWorld(world,drawing.tracking,eye,worldScale);
+        // SceneBuffer stores the three output components as transposed rows.
+        for(int col=0;col<3;col++)for(int row=0;row<4;row++)data[(15+col)*4+row]=depth.m[row*4+col];
+        const auto& e=drawing.tracking.eyes[eye];
+        float l=std::tan(e.left),r=std::tan(e.right),u=std::tan(e.up),d=std::tan(e.down);
+        float view[]={r-l,d-u,l,u,1/(r-l),1/(d-u),0,0};memcpy(data+18*4,view,sizeof(view));
+        state[0x5c5]=1;state[0x1c]=1;
+    }
+    if(effectsCapture) {
+        FILE* f{};if(!fopen_s(&f,"DeusExHRVR-effects.log","a")) {
+            fprintf(f,"depth frame=%llu eye=%u fix=%d scene=%p\n",frameId.load()+1,eye,effectsFix,self);
+            fprintf(f,"before");for(float v:before)fprintf(f," %.8g",v);fprintf(f,"\nafter");
+            for(int i=0;i<20;i++)fprintf(f," %.8g",data[15*4+i]);fprintf(f,"\n");fclose(f);
+        }
+    }
+}
 uintptr_t VA(uintptr_t preferred) { return base+preferred-0x400000; }
 void Matrix(FILE* f,const char* name,const void* data) {
     const float* m=static_cast<const float*>(data);
@@ -226,6 +276,14 @@ void __fastcall PrimitiveHook(void* self,void*,void* stream,bool backBeforeFront
     auto snapshot=drawing.active?drawing:lastWorld;
     // scaleformData is consumed only by the engine's UI shader path at 0x532d3c.
     bool isUI=stream && snapshot.active && primitiveState && *reinterpret_cast<void**>(primitiveState+0x20);
+    if(effectsCapture && stream && primitiveState && !*reinterpret_cast<void**>(primitiveState+0x20) && effectCount<effectTrace.size()) {
+        auto device=*reinterpret_cast<unsigned char**>(VA(0x12ab940));auto state=*reinterpret_cast<unsigned char**>(device+0x150);
+        auto& t=effectTrace[effectCount++];t={};t.primitive=reinterpret_cast<uintptr_t>(self);t.material=*reinterpret_cast<uintptr_t*>(primitiveState+0xc);
+        t.flags=*reinterpret_cast<uint32_t*>(primitiveState);t.eye=state[0x5ea]?0:1;t.active=snapshot.active;t.stereo=state[0x5e9];t.overrideStereo=state[0x5e8];
+        auto params=*reinterpret_cast<float**>(primitiveState+0x1c);if(params)memcpy(t.params,params,sizeof(t.params));
+        auto projection=*reinterpret_cast<float**>(state+0x540);t.projection=CameraMath::Load(projection?projection:reinterpret_cast<float*>(state+0x440));
+        t.view=CameraMath::Load(state+0x480);t.world=CameraMath::Load(state+0x500);
+    }
     if(!isUI){originalPrimitive(self,stream,backBeforeFront,flags);return;}
     auto device=*reinterpret_cast<unsigned char**>(VA(0x12ab940));
     auto state=*reinterpret_cast<unsigned char**>(device+0x150);
@@ -268,6 +326,7 @@ void Install() {
         {0x51ebf0,(void*)&StereoHook,(void**)&originalStereo,"\x55\x8b\xec\x83\xe4\xf0\x81\xec\x1c\x01\x00\x00",12},
         {0x532c70,(void*)&PrimitiveHook,(void**)&originalPrimitive,"\x83\xec\x20\x53\x8b\x5c\x24\x28",8},
         {0x550930,(void*)&MatricesHook,(void**)&originalMatrices,"\x55\x8b\xec\x83\xe4\xf0\x81\xec\x84\x00\x00\x00",12}
+        ,{0x545cf0,(void*)&UniformsHook,(void**)&originalUniforms,"\x55\x8b\xec\x83\xe4\xf0\x81\xec\x04\x02\x00\x00",12}
     };
     for(auto& h:hooks)if(memcmp((void*)VA(h.address),h.bytes,h.length))return;
     bool enabled=true;
@@ -291,6 +350,7 @@ Transport::RenderInfo OnPresent(uint64_t frame,bool capture) {
     // periodically on the render thread; F8 is the explicit diagnostic request.
     budget=capture?32:0;
     std::lock_guard lock(stateMutex);
+    if(effectsCapture){SaveEffects(frame);effectCount=0;}effectsCapture=capture;
     auto completed=pairInfo;pairInfo={};
     scenes.Complete(frame);
     lastWorld={};
@@ -307,6 +367,8 @@ Transport::RenderInfo OnPresent(uint64_t frame,bool capture) {
         FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")){fprintf(f,"HUD plane draws=%llu matrices=%llu frame=%llu trackingReadContentions=%llu rejectedSamples=%llu\n",hudDraws,hudMatrices,frame,trackingReader.reused,trackingReader.rejected);fclose(f);}
     }
     bool f6=(GetAsyncKeyState(VK_F6)&0x8000)!=0,f9=(GetAsyncKeyState(VK_F9)&0x8000)!=0;
+    bool f7=(GetAsyncKeyState(VK_F7)&0x8000)!=0;
+    if(f7&&!f7Down){effectsFix=!effectsFix;FILE* f{};if(!fopen_s(&f,"DeusExHRVR-effects.log","a")){fprintf(f,"effectsFix=%d frame=%llu\n",effectsFix,frame);fclose(f);}}f7Down=f7;
     if(f6&&!f6Down){requested=!requested;referenceValid=false;current.active=false;}
     if(f9&&!f9Down)recenterRequested=true;
     if((f6&&!f6Down)||(f9&&!f9Down)) {

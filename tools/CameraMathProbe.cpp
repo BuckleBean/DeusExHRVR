@@ -93,6 +93,18 @@ int main(int argc,char** argv) {
     t.eyes[0].left=-.9f;t.eyes[0].right=.7f;
     t.eyes[1].left=-.7f;t.eyes[1].right=.9f;
     for(unsigned eye=0;eye<2;eye++) {
+        Matrix world=Rotation({0,0,0,1});world.m[12]=100;world.m[13]=-20;world.m[14]=300;
+        auto reconstruct=DepthToWorld(world,t,eye,300);
+        auto project=EyeProjection(p,t,eye,300);
+        for(float z:{100.f,1000.f})for(float u:{.1f,.5f,.9f})for(float v:{.2f,.8f}) {
+            float input[]={u*z,v*z,z,1},point[4]{},clip[4]{};
+            for(int j=0;j<4;j++)for(int k=0;k<4;k++)point[j]+=input[k]*reconstruct.m[k*4+j];
+            point[0]-=100;point[1]+=20;point[2]-=300;
+            for(int j=0;j<4;j++)for(int k=0;k<4;k++)clip[j]+=point[k]*project.m[k*4+j];
+            Check(Near(clip[0]/clip[3],2*u-1)&&Near(clip[1]/clip[3],1-2*v),"lighting depth reconstruction matches asymmetric eye projection");
+        }
+    }
+    for(unsigned eye=0;eye<2;eye++) {
         auto hud=HudClipTransform(t,eye);
         for(float x:{-.9f,0.f,.9f}) {
             float clipX=x*hud.m[0]+hud.m[12],clipW=x*hud.m[3]+hud.m[15];
