@@ -38,7 +38,7 @@ public:
         draws.close();shaders.clear();count=0;
         char name[180];sprintf_s(name,"DeusExHRVR-captures/shaders-%lu-%llu",GetCurrentProcessId(),frame);
         folder=name;std::error_code ec;std::filesystem::create_directories(folder,ec);if(ec)return;
-        draws.open(folder/"draws.csv");draws<<"draw,eye,tracked,ps,vs,cb1,cb2,cb3,cb4\n";
+        draws.open(folder/"draws.csv");draws<<"draw,eye,tracked,ps,vs,cb0,cb1,cb2,cb3,cb4,skyEnabled,skyLayer\n";
     }
     void End(){draws.close();}
     void Record(unsigned char* state,bool tracked) {
@@ -46,13 +46,13 @@ public:
         auto ps=Shader(*reinterpret_cast<uintptr_t*>(state+0x198),"ps");
         auto vs=Shader(*reinterpret_cast<uintptr_t*>(state+0x19c),"vs");
         draws<<count<<','<<(state[0x5ea]?0:1)<<','<<tracked<<','<<std::hex<<ps<<','<<vs<<std::dec;
-        for(unsigned slot=1;slot<=4;slot++) {
+        for(unsigned slot=0;slot<=4;slot++) {
             uintptr_t cb=*reinterpret_cast<uintptr_t*>(state+0x5a8+slot*4);
             std::array<uint32_t,5> info{};std::array<float,256> data{};
             if(Read(cb,info.data(),sizeof(info))){auto rows=std::min(info[3],64u);if(Read(info[2],data.data(),rows*16)){
                 draws<<",\"";for(unsigned i=0;i<rows*4;i++){if(i)draws<<' ';draws<<data[i];}draws<<'\"';continue;
             }}draws<<',';
         }
-        draws<<'\n';++count;
+        draws<<','<<unsigned(state[0x5a4])<<','<<unsigned(state[0x5a5])<<'\n';++count;
     }
 };

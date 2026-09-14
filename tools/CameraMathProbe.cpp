@@ -1,4 +1,6 @@
 #include "CameraMath.h"
+#include "DirectionConfig.h"
+#include "NativeBounds.h"
 #include "SceneCache.h"
 #include <cstdio>
 #include <cstdlib>
@@ -7,7 +9,9 @@
 #include <string>
 void Check(bool value,const char* name){if(!value){fprintf(stderr,"FAIL %s\n",name);std::exit(1);}}
 bool Near(float a,float b){return std::abs(a-b)<0.0001f;}
+#include "GamepadChecks.h"
 int main(int argc,char** argv) {
+    CheckGamepadMapping();
     {
         SceneCache<uint64_t> scenes;
         for(uintptr_t i=1;i<=5000;i++)scenes.Store(reinterpret_cast<void*>(i),42,10);
@@ -64,6 +68,107 @@ int main(int argc,char** argv) {
         Check(!reader.Read(nullptr,result,1253) && !reader.latest.valid,"closed channel clears sample cache");
     }
     using namespace CameraMath;
+    {
+        struct Volume {float data[20]{};uint32_t type{},canary=0x12345678;} v;
+        static_assert(offsetof(Volume,type)==0x50);
+        v.data[0]=100;v.data[1]=-500;v.data[2]=90;v.data[3]=25;
+        Check(NativeBounds::ExpandWeapon(&v,1200) && v.type==0 && v.canary==0x12345678,
+            "controlled gun uses finite sphere accepted by loading cell callbacks");
+        Check(v.data[0]==100 && v.data[1]==-500 && v.data[2]==90 && v.data[3]==1225,
+            "expanded sphere preserves world centre and includes native bounds plus controller reach");
+        v={};v.type=5;v.data[0]=3;v.data[5]=4;v.data[10]=12;v.data[12]=99;
+        Check(NativeBounds::ExpandWeapon(&v,1200) && v.type==0 && v.data[0]==99 && v.data[3]>=1213,
+            "native box converts to a containing finite sphere");
+        v.type=7;auto old=v;
+        Check(!NativeBounds::ExpandWeapon(&v,1200) && !std::memcmp(&v,&old,sizeof(v)),
+            "unknown bounds retain original game data");
+    }
+    {
+        using namespace DirectionConfig;
+        Check(Parse(L"headset",Source::Mouse)==Source::Headset && Parse(L"Controller",Source::Mouse)==Source::Controller,
+            "direction settings accept readable case-insensitive device names");
+        Check(Parse(L"invalid",Source::Mouse)==Source::Mouse,"invalid direction safely retains mouse mode");
+        Matrix level{{1,0,0,0, 0,0,-1,0, 0,1,0,0, 10,20,30,1}};
+        for(float nativeYaw:{-2.f,0.f,1.5f})for(float turn:{-1.2f,0.f,1.4f})for(float pitch:{-1.5707963f,-.8f,0.f,.9f,1.5707963f}) {
+            auto base=Multiply(level,Rotation({0,0,std::sin(nativeYaw/2),std::cos(nativeYaw/2)}));
+            auto yawed=Multiply(base,Rotation({0,0,std::sin(turn/2),std::cos(turn/2)}));
+            auto aimed=Multiply(Rotation({std::sin(pitch/2),0,0,std::cos(pitch/2)}),yawed);
+            aimed.m[12]+=200;aimed.m[14]+=150;
+            auto move=HorizontalDirection(aimed,base);
+            Check(Near(move.m[10],0) && Near(std::hypot(move.m[8],move.m[9]),1),"movement remains horizontal and normalized through vertical aim");
+            Check(Near(move.m[8],yawed.m[8]) && Near(move.m[9],yawed.m[9]),"head/controller pitch does not alter walking heading");
+            Check(Near(HeadingDelta(base,aimed),turn),"walking yaw delta preserves native heading convention across turns");
+            for(auto input:{MovementAxes{0,1},MovementAxes{1,0},MovementAxes{0,-1},MovementAxes{-.4f,.6f}}) {
+                auto axes=ReorientMovement(input.strafe,input.walk,base,aimed);
+                Check(Near(std::hypot(axes.strafe,axes.walk),std::hypot(input.strafe,input.walk)),"walking remap preserves analog speed");
+                // Native input angle is atan2(strafe,walk), whose yaw sense
+                // opposes ordinary Cartesian rotation of an (x,y) vector.
+                float expected=std::atan2(input.strafe,input.walk)+turn;
+                Check(Near(std::remainder(std::atan2(axes.strafe,axes.walk)-expected,6.28318530718f),0),
+                    "native movement angle adds selected heading instead of mirroring it");
+                auto restored=ReorientMovement(axes.strafe,axes.walk,aimed,base);
+                Check(Near(restored.strafe,input.strafe) && Near(restored.walk,input.walk),"movement heading remap is reversible");
+            }
+            for(int j=12;j<15;j++)Check(Near(move.m[j],base.m[j]),"walking reference position stays at native player camera");
+        }
+        Matrix left{{0,1,0,0, 0,0,-1,0, -1,0,0,0, 0,0,0,1}};
+        auto axes=ReorientMovement(0,1,level,left);
+        Check(Near(axes.strafe,1) && Near(axes.walk,0),"regression: native north plus headset west uses positive quarter-turn input");
+        axes=ReorientMovement(1,0,level,left);
+        Check(Near(axes.strafe,0) && Near(axes.walk,-1),"quarter-turn remaps the strafe axis with the opposite cross term");
+        Matrix right{{0,-1,0,0, 0,0,-1,0, 1,0,0,0, 0,0,0,1}};
+        axes=ReorientMovement(0,1,level,right);
+        Check(Near(axes.strafe,-1) && Near(axes.walk,0),"east and west heading corrections are opposite");
+    }
+    {
+        Matrix base{{1,0,0,0, 0,0,-1,0, 0,1,0,0, 100,200,300,1}};
+        Pose reference{{0,0,0,1},{0,0,0}};
+        for(float yaw:{-.7f,0.f,.8f}) {
+            Pose aim{{0,std::sin(yaw/2),0,std::cos(yaw/2)},{.3f,-.2f,-.4f}};
+            auto hand=HeadWorld(base,reference,aim,300);
+            auto muzzle=ControllerMuzzle(base,reference,aim,300,.25f);
+            auto firing=FiringFromMuzzle(muzzle);
+            for(int j=0;j<3;j++) {
+                Check(Near(-muzzle.m[4+j],hand.m[8+j]),"native -Y muzzle direction follows controller aim");
+                Check(Near(muzzle.m[8+j],-hand.m[4+j]),"gun top follows controller up, not down");
+                Check(Near(firing.m[8+j],hand.m[8+j]),"player raycast +Z aims along the visible gun barrel");
+                Check(Near(firing.m[12+j],muzzle.m[12+j]),"player shot starts at the controlled muzzle");
+                Check(Near(muzzle.m[12+j],hand.m[12+j]+hand.m[8+j]*75),"muzzle offset uses game world scale");
+            }
+            auto native=base;auto delta=Multiply(InverseRigid(native),muzzle);
+            auto visible=Multiply(native,delta);
+            for(int i=0;i<16;i++)Check(Near(visible.m[i],muzzle.m[i]),"visual muzzle and native firing query share one target transform");
+            auto bone=base;bone.m[12]+=15;bone.m[14]+=20;
+            auto nativeRelative=Multiply(bone,InverseRigid(native));
+            auto controlledRelative=Multiply(Multiply(bone,delta),InverseRigid(muzzle));
+            for(int i=0;i<16;i++)Check(std::abs(nativeRelative.m[i]-controlledRelative.m[i])<.001f,"weapon animation is preserved relative to its muzzle");
+            auto expectedBone=Multiply(bone,delta);
+            for(float nativeW:{0.f,1.f}) {
+                auto skin=bone;skin.m[15]=nativeW;
+                auto moved=MoveSkinMatrix(skin,delta);
+                for(int i=0;i<15;i++)Check(Near(moved.m[i],expectedBone.m[i]),"native zero-w skinning bones retain controller translation");
+                Check(moved.m[15]==nativeW,"native skinning padding is preserved");
+            }
+        }
+    }
+    {
+        Matrix level{{1,0,0,0, 0,0,-1,0, 0,1,0,0, 10,20,30,1}};
+        Pose neutral{{0,0,0,1},{0,0,0}};
+        for(float yaw:{-2.f,0.f,1.3f})for(float pitch:{-1.55f,-.4f,0.f,.7f,1.55f}) {
+            auto base=Multiply(level,Rotation({0,0,std::sin(yaw/2),std::cos(yaw/2)}));
+            auto aiming=Multiply(Rotation({std::sin(pitch/2),0,0,std::cos(pitch/2)}),base);
+            auto savedAim=aiming;
+            auto camera=WithoutLookPitch(aiming);
+            Check(!memcmp(&aiming,&savedAim,sizeof(aiming)),"camera lock leaves native gun aiming matrix unchanged");
+            Check(Near(aiming.m[10],std::sin(pitch)),"native gun still aims up and down");
+            for(int i=0;i<16;i++)Check(Near(camera.m[i],base.m[i]),"camera lock preserves yaw and position across near-vertical native aim");
+            for(float headPitch:{-.6f,0.f,.5f}) {
+                auto head=neutral;head.orientation={std::sin(headPitch/2),0,0,std::cos(headPitch/2)};
+                auto tracked=HeadWorld(camera,neutral,head,300);
+                Check(Near(tracked.m[10],std::sin(headPitch)),"headset pitch stays independent of native gun pitch");
+            }
+        }
+    }
     Matrix game=Rotation({0,0,0,1});game.m[12]=10;game.m[13]=20;game.m[14]=30;
     Pose reference{{0,0,0,1},{0,0,0}},head=reference;
     auto neutral=HeadWorld(game,reference,head,100);
@@ -136,6 +241,26 @@ int main(int argc,char** argv) {
                 for(int j=0;j<4;j++)Check(Near(actual[j],expected[j]),"projected effect stays on one surface for both eyes");
             }
         }
+    }
+    {
+        auto dome=Rotation({0,0,0,1});dome.m[12]=58577;dome.m[13]=-9471;
+        auto camera=Rotation({0,0,0,1});camera.m[12]=58580;camera.m[13]=-9470;
+        for(unsigned eye=0;eye<2;eye++) {
+            auto sky=SkyProjection(dome,camera,p,t,eye);
+            auto moved=camera;moved.m[12]+=100;moved.m[14]-=200;
+            auto same=SkyProjection(dome,moved,p,t,eye);
+            for(int i=0;i<16;i++)Check(Near(sky.m[i],same.m[i]),"sky ignores head translation");
+            const auto& e=t.eyes[eye];float l=std::tan(e.left),r=std::tan(e.right);
+            for(float z:{100.f,10000.f}) {
+                float ndc=(.2f*z*sky.m[0]+z*sky.m[8]+sky.m[12])/z;
+                float ray=(ndc*(r-l)+(r+l))*.5f;
+                Check(Near(ray,.2f),"cloud direction has no finite IPD disparity in asymmetric eyes");
+            }
+        }
+        auto turned=Rotation({0,std::sqrt(.5f),0,std::sqrt(.5f)});
+        auto sky=SkyProjection(dome,turned,p,t,0);
+        auto expected=Multiply(InverseRigid(turned),EyeProjection(p,t,0,0));
+        for(int i=0;i<16;i++)Check(Near(sky.m[i],expected.m[i]),"sky follows world orientation under head turns");
     }
     for(unsigned eye=0;eye<2;eye++) {
         auto hud=HudClipTransform(t,eye);

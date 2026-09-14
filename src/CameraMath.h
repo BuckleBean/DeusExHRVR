@@ -35,6 +35,67 @@ inline Matrix HeadWorld(const Matrix& game,const Pose& reference,const Pose& hea
     for(int j=0;j<3;j++)result.m[12+j]+=scale*(delta.x*game.m[j]-delta.y*game.m[4+j]-delta.z*game.m[8+j]);
     return result;
 }
+// Remove native look pitch from a rendering copy only. The game's Z-up
+// PlayerCamera uses right/down/forward axes; rotation about local right
+// preserves its yaw, roll and position. OpenXR pitch is applied afterward.
+inline Matrix WithoutLookPitch(const Matrix& game) {
+    float pitch=std::atan2(game.m[10],-game.m[6]);
+    return Multiply(Rotation({-std::sin(pitch*.5f),0,0,std::cos(pitch*.5f)}),game);
+}
+inline Matrix HorizontalDirection(const Matrix& source,const Matrix& fallback) {
+    float x=source.m[8],y=source.m[9];
+    float length=std::hypot(x,y);
+    // At a vertical aim, the right axis still supplies a usable heading.
+    if(length<.001f){x=-source.m[1];y=source.m[0];length=std::hypot(x,y);}
+    if(length<.001f){x=fallback.m[8];y=fallback.m[9];length=std::hypot(x,y);}
+    if(length<.001f){x=0;y=1;length=1;}
+    x/=length;y/=length;
+    Matrix result{{y,-x,0,0, 0,0,-1,0, x,y,0,0, fallback.m[12],fallback.m[13],fallback.m[14],1}};
+    return result;
+}
+inline float HeadingDelta(const Matrix& from,const Matrix& to) {
+    auto a=HorizontalDirection(from,from),b=HorizontalDirection(to,from);
+    return std::atan2(a.m[8]*b.m[9]-a.m[9]*b.m[8],a.m[8]*b.m[8]+a.m[9]*b.m[9]);
+}
+struct MovementAxes {float strafe,walk;};
+inline MovementAxes ReorientMovement(float strafe,float walk,const Matrix& native,const Matrix& target) {
+    // Native locomotion actions use the opposite yaw sense to the camera's
+    // right/forward basis. Direct world-vector projection mirrored the turn:
+    // mouse north + head west sent W east. Rotate in native input coordinates.
+    float yaw=HeadingDelta(native,target),c=std::cos(yaw),s=std::sin(yaw);
+    return {c*strafe+s*walk,-s*strafe+c*walk};
+}
+inline Matrix ControllerMuzzle(const Matrix& base,const Pose& reference,const Pose& aim,float scale,float muzzleForward) {
+    auto hand=HeadWorld(base,reference,aim,scale);
+    Matrix muzzle=hand;
+    // Native muzzle firing direction is -Y (callers at 0x75313c/0x6df718).
+    // Its top is +Z. PlayerCamera's second row points DOWN, so the first
+    // experiment's [right,-forward,down] basis rolled the gun upside down.
+    for(int j=0;j<3;j++) {
+        muzzle.m[j]=-hand.m[j];
+        muzzle.m[4+j]=-hand.m[8+j];muzzle.m[8+j]=-hand.m[4+j];
+        muzzle.m[12+j]+=hand.m[8+j]*muzzleForward*scale;
+    }
+    return muzzle;
+}
+inline Matrix FiringFromMuzzle(const Matrix& muzzle) {
+    auto firing=muzzle;
+    // Native 0x750dc0 converts muzzle -Y to the +Z row consumed by the
+    // player's spread/raycast calculation (0x763370 -> 0x762e80).
+    for(int j=0;j<3;j++) {
+        firing.m[4+j]=muzzle.m[8+j];firing.m[8+j]=-muzzle.m[4+j];
+    }
+    return firing;
+}
+inline Matrix MoveSkinMatrix(const Matrix& skin,const Matrix& delta) {
+    // 0x538160 stores skinning translation with w=0, despite the shader
+    // using it as a POSITION. Ordinary 4x4 multiplication loses delta's
+    // translation for these bones, leaving animated weapon parts behind.
+    auto affine=skin;affine.m[3]=affine.m[7]=affine.m[11]=0;affine.m[15]=1;
+    auto moved=Multiply(affine,delta);
+    for(int i:{3,7,11,15})moved.m[i]=skin.m[i];
+    return moved;
+}
 inline Matrix EyeWorld(const Transport::Tracking& t,unsigned eye,float scale) {
     const auto& e=t.eyes[eye];
     auto q=Multiply(Inverse(t.head.orientation),e.pose.orientation);
@@ -53,6 +114,12 @@ inline Matrix EyeFrustum(const Matrix& original,const Transport::Tracking& t,uns
 }
 inline Matrix EyeProjection(const Matrix& original,const Transport::Tracking& t,unsigned eye,float scale) {
     return Multiply(InverseRigid(EyeWorld(t,eye,scale)),EyeFrustum(original,t,eye));
+}
+// A camera-centred sky dome represents directions, not nearby geometry.
+// Keep its rotation and native depth range, but remove head/eye translation.
+inline Matrix SkyProjection(Matrix world,Matrix viewportWorld,const Matrix& projection,const Transport::Tracking& t,unsigned eye) {
+    for(int i=12;i<15;i++){world.m[i]=0;viewportWorld.m[i]=0;}
+    return Multiply(Multiply(world,InverseRigid(viewportWorld)),EyeProjection(projection,t,eye,0));
 }
 // Reconstruct world positions from (textureU * eyeDepth, textureV *
 // eyeDepth, eyeDepth, 1). Lighting must invert the same eye frustum as geometry.

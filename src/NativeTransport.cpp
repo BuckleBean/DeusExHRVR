@@ -2,6 +2,7 @@
 #include "SharedPair.h"
 #include "PairCapture.h"
 #include "EngineCamera.h"
+#include "GamepadBridge.h"
 #include <wrl/client.h>
 #include <mutex>
 #include <cstdio>
@@ -24,7 +25,7 @@ struct Producer {
     uint64_t rateTick{},rateFrame{},rateSent{};
     void ClearTexture(){keyed.Reset();shared.Reset();device.Reset();context.Reset();width=height=0;}
     void Reset(){
-        ClearTexture();EngineCamera::SetChannel(nullptr);if(header)UnmapViewOfFile(header);if(mapping)CloseHandle(mapping);if(process)CloseHandle(process);
+        ClearTexture();GamepadBridge::SetChannel(nullptr);EngineCamera::SetChannel(nullptr);if(header)UnmapViewOfFile(header);if(mapping)CloseHandle(mapping);if(process)CloseHandle(process);
         if(frameEvent)CloseHandle(frameEvent);frameEvent=nullptr;
         header=nullptr;mapping=process=nullptr;owner=nullptr;
     }
@@ -39,6 +40,7 @@ struct Producer {
             header->magic=Transport::Magic;header->version=Transport::Version;header->pid=GetCurrentProcessId();
             Transport::FrameEventName(name,GetCurrentProcessId());frameEvent=CreateEventW(nullptr,FALSE,FALSE,name);
             EngineCamera::SetChannel(header);
+            GamepadBridge::SetChannel(header);
         }
         ClearTexture();device=dev;dev->GetImmediateContext(&context);
         auto sd=d;sd.Usage=D3D11_USAGE_DEFAULT;sd.CPUAccessFlags=0;
@@ -95,6 +97,7 @@ void Present(IDXGISwapChain* chain,ID3D11Texture2D* pair,UINT h,bool swap) {
     ++p.frame;
     bool captureKey=(GetAsyncKeyState(VK_F8)&0x8000)!=0;
     bool capture=captureKey&&!p.f8;
+    GamepadBridge::OnPresent(capture);
     auto rendered=EngineCamera::OnPresent(p.frame,capture);
     if(p.process&&WaitForSingleObject(p.process,0)==WAIT_OBJECT_0){p.Reset();p.retry=GetTickCount64()+5000;}
     if(GetTickCount64()<p.retry)return;

@@ -2,7 +2,7 @@
 
 Experimental VR mod for **Deus Ex: Human Revolution — Director's Cut**, using the game's native AMD HD3D stereo renderer. **Both eyes are rendered in the same game frame. No AER.**
 
-The initial gameplay build has been tested in a headset with stereo depth, headset-driven camera movement, OpenXR projection views, and corrected HUD alignment. This is an early prerelease; broader testing of missions, menus, cutscenes, culling, aiming, and effects remains outstanding. Motion-controller input is not implemented.
+Gameplay stereo, headset tracking, HUD alignment, motion-controlled weapon aiming, controller buttons, and selectable interaction/walking directions have been tested in-headset. Automatic widescreen menus and several lighting, shadow and sky corrections are included. This remains an experimental prerelease; weapon visibility at extreme viewing angles and untested missions/effects still need broader testing.
 
 ## Download and install
 
@@ -25,6 +25,8 @@ Other executable versions and the original non-Director's Cut release are not su
    ```
 
 4. Launch `DXHRDC.exe` and load a save. Gameplay enters full VR automatically. Press **F9** to recenter if needed.
+
+For motion-controlled weapons, copy `DeusExHRVR.ini.example` beside `DXHRDC.exe` as `DeusExHRVR.ini`, set `ExperimentalMotionControls=1`, and restart. `MotionControls=1` enables controller buttons; `InteractionAim` and `MovementDirection` independently accept `Mouse`, `Headset`, or `Controller`. The confirmed local setup uses `WorldUnitsPerMetre=300` with both direction settings at `Headset`; adjust scale for comfort. Upgrading replaces both the game DLL and its companion together. Existing INI settings are preserved.
 
 Run the installer as the Windows user who plays the game. It backs up replaced files and original graphics settings to `DeusExHRVR-backup` in the game folder. It enables DX11/native stereo and disables VSync and antialiasing for the tested configuration.
 
@@ -50,9 +52,44 @@ The initial live check confirmed 1344 × 1600 per eye and approximately 90 nativ
 | F8 | Save both-eye images, camera trace, and any armed rolling recording locally |
 | F10 | Toggle the rolling stereo-frame recorder (off by default) |
 
-Full VR is enabled by default and starts automatically when gameplay loads. F6 manually toggles between full VR and the virtual screen. Gameplay input remains the game's keyboard/mouse or gamepad input.
+Full VR is enabled by default and starts automatically when gameplay loads. F6 manually toggles between full VR and the virtual screen. Gameplay accepts keyboard/mouse, physical gamepad, or the motion controllers through the game's Xbox input path.
 
-Terminal interaction, hacking, the main/pause menus, and prerecorded video playback automatically use the 16:9 virtual screen. Full VR resumes afterward unless you disabled it with F6. The screen appears in front of your current head position; VR rendering retains the headset resolution and refresh rate.
+Two independent `[VR]` settings choose where interaction targeting and walking point:
+
+```ini
+InteractionAim=Headset
+MovementDirection=Headset
+```
+
+Each accepts `Mouse`, `Headset`, or `Controller` (the right controller's aim). Omitted settings default to `Mouse`, retaining native mouse/gamepad look direction. Interaction aim selects doors and items independently of the gun. Walking uses horizontal heading only; looking up/down does not tilt movement. Controller direction works with the gun holstered and does not require the weapon experiment. Menus, virtual-screen modes and unavailable tracking retain native direction. Restart after changing settings. These direction options are experimental and need in-game validation.
+
+Terminal interaction, hacking, the main/pause/game-over menus, sniper scope aiming, and prerecorded video playback automatically use the 16:9 virtual screen. Full VR resumes afterward unless you disabled it with F6. The screen appears in front of your current head position; VR rendering retains the headset resolution and refresh rate.
+
+Set `LockVerticalCamera=1` under `[VR]` in `DeusExHRVR.ini` to keep mouse/gamepad aiming pitch out of the full-VR camera. The gun still aims vertically, while the VR camera uses a level base plus your headset pitch. Horizontal look stays available. Virtual-screen modes, including scoped aiming, retain the native camera. The option defaults to `0` (off); restart the game after changing it.
+
+Set `MotionControls=0` under `[VR]` to disable all motion-controller features, including controller tracking, the weapon experiment, and controller-based interaction/walking. Headset VR and `Headset` direction settings stay available; `Controller` directions fall back to native mouse/gamepad direction. `MotionControls=1` enables controller features selected by the other settings and is the default for compatibility. Restart after changing it.
+
+`ExperimentalMotionControls=1` enables a right-controller weapon experiment when `MotionControls=1`. It moves the equipped gun's render pose and supplies the controller muzzle to the player's firing-direction calculation. Motion-controller buttons use the Xbox bindings below; keyboard/mouse and physical gamepad input also remain available. `ControllerHideArms=1` (default) hides the player's actor/arms mesh during controller aiming. It falls back to normal weapon handling in virtual-screen modes or when controller tracking is unavailable. `ControllerMuzzleForwardMetres` sets the muzzle distance ahead of the controller (default `0.25`). Restart after changing these options. This remains experimental; alignment, shot impacts and different weapon models need in-game verification.
+
+Motion-controller buttons emulate Xbox controller 1 when `MotionControls=1`; no virtual-controller driver is required. `ExperimentalMotionControls` controls the weapon pose separately. The mapping uses the game's default Xbox layout with Y and B exchanged:
+
+| Motion controller | Xbox input / default game action |
+| --- | --- |
+| Left stick / click | Move / crouch |
+| Right stick / quick click | Camera turn / iron sight or scope |
+| Left trigger | LT / take cover |
+| Right trigger | RT / fire |
+| Left grip | LB / sprint |
+| Right grip | RB / throw grenade |
+| Left X | X / interact or reload |
+| Left Y | B / non-lethal takedown; hold for lethal takedown |
+| Right A | A / jump |
+| Right B | Y / holster or draw; hold for quick inventory |
+| Hold right-stick click + left stick | D-pad: up cloaking, down smart vision, left move silently, right Typhoon |
+| Left menu: release before 1.5 seconds | Back / in-game menu |
+| Left menu: hold at least 1.5 seconds | Start / pause menu, once per hold |
+
+While right-stick click is held, the left stick sends only D-pad input. Diagonals choose the dominant direction. A quick right-stick click under 350ms still toggles scope on release if no D-pad direction was used; a longer hold sends no scope click. Menu short presses are delayed until release so a long press opens only pause. Tracking/focus loss releases the emulated inputs. `MotionControls=0` disables button emulation together with all other controller features; restart to apply. Native rumble is not yet mapped to VR haptics. F8 includes a private input diagnostic log.
 
 For an intermittent visual problem, press F10 before waiting for it, then F8 immediately after it appears. The recorder retains 360 reduced-size stereo pairs (about four seconds at 90 Hz), together with their tracking and submission data. It uses about 106 MB while armed; saving with F8 can briefly pause playback. Images and camera-history CSV files stay in the local `DeusExHRVR-captures` folder. F10 turns recording off again.
 

@@ -5,3 +5,31 @@
 ; Lower values = larger apparent world, weaker close-range stereo depth.
 ; Also scales physical head translation. Accepted range: 10-1000.
 WorldUnitsPerMetre=100
+
+; Optional: keep mouse/gamepad aiming pitch out of the VR camera.
+; The gun still aims vertically; headset pitch and horizontal look remain free.
+; Virtual-screen modes retain the native camera. Restart to apply.
+LockVerticalCamera=0
+
+; Master switch for ALL right-controller features. 0 disables controller
+; tracking, Xbox button emulation, weapon motion, and controller directions.
+; Headset VR and Headset direction settings still work. Restart to apply.
+MotionControls=1
+
+; Independent directions: Mouse, Headset, or Controller (right-hand aim).
+; Mouse retains native mouse/gamepad look direction. Restart after editing.
+; Interaction selects doors/items; it does not change weapon aiming.
+InteractionAim=Mouse
+; Walking uses horizontal heading only, including W/A/S/D and gamepad movement.
+MovementDirection=Mouse
+; Screen modes and missing tracking fall back to Mouse. Controller choices
+; also work with ExperimentalMotionControls=0 and with the gun holstered,
+; provided MotionControls=1. MotionControls=0 makes Controller use Mouse.
+
+; Experimental right-controller weapon pose. Xbox button emulation works independently.
+; Automatically falls back in screen modes or when controller tracking is lost.
+ExperimentalMotionControls=0
+; Hide the player's actor/arms mesh during controller aiming (experiment only).
+ControllerHideArms=1
+; Position the muzzle this far ahead of the controller aim pose (0-1 metre).
+ControllerMuzzleForwardMetres=0.25

@@ -3,19 +3,28 @@
 #include <cstdint>
 #include <cwchar>
 namespace Transport {
-inline constexpr uint32_t Magic=0x52485844, Version=2;
+inline constexpr uint32_t Magic=0x52485844, Version=4;
 struct Quaternion {float x,y,z,w;};
 struct Vector {float x,y,z;};
 struct Pose {Quaternion orientation;Vector position;};
 struct Eye {Pose pose;float left,right,up,down;};
+struct Controller {Pose aim;uint32_t valid;};
+struct Gamepad {
+    uint32_t valid;
+    uint16_t buttons;uint8_t leftTrigger,rightTrigger;
+    int16_t leftX,leftY,rightX,rightY;
+};
+static_assert(sizeof(Gamepad)==16);
 struct alignas(8) Tracking {
     uint64_t id,tick;
     Pose head;
     Eye eyes[2];
     uint32_t valid;
+    Controller rightController;
+    Gamepad gamepad;
 };
 struct RenderInfo {Tracking tracking;uint32_t mode,eyeMask;};
-static_assert(sizeof(Tracking)==136 && sizeof(RenderInfo)==144);
+static_assert(sizeof(Tracking)==184 && sizeof(RenderInfo)==192);
 // Identical ABI in the x86 game and x64 companion. GPU keyed mutex protects
 // texture contents + frameId; generation publishes a new texture description.
 struct alignas(8) Header {
@@ -31,7 +40,7 @@ struct alignas(8) Header {
     Tracking tracking;
     RenderInfo rendered;
 };
-static_assert(sizeof(Header)==352);
+static_assert(sizeof(Header)==448);
 inline bool ReadTracking(Header* h,Tracking& result) {
     if(!h || InterlockedCompareExchange(&h->trackingLock,1,0))return false;
     result=h->tracking;InterlockedExchange(&h->trackingLock,0);return true;

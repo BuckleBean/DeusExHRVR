@@ -1,5 +1,7 @@
 #include "NativeBridge.h"
 #include "PairHistory.h"
+#include "ControllerInput.h"
+#include "DirectionConfig.h"
 #include <windows.h>
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
@@ -47,6 +49,7 @@ struct Bridge {
     uint64_t rateTick=0,ratePairs=0;
     XrDuration lastPeriod{};
     PairHistory history;
+    ControllerInput controller;
     bool historyArmed{},f10Down{};
     IDXGISwapChain* owner{};
 
@@ -58,6 +61,7 @@ struct Bridge {
     void Reset() {
         history.Reset();historyArmed=false;f10Down=false;
         DestroySwapchain();
+        controller.Reset();
         if(headSpace) xrDestroySpace(headSpace);
         if(space) xrDestroySpace(space);
         if(session) xrDestroySession(session);
@@ -126,6 +130,11 @@ struct Bridge {
         if(!Good(xrCreateReferenceSpace(session,&ri,&space),"xrCreateReferenceSpace LOCAL"))return false;
         ri.referenceSpaceType=XR_REFERENCE_SPACE_TYPE_VIEW;
         if(!Good(xrCreateReferenceSpace(session,&ri,&headSpace),"xrCreateReferenceSpace VIEW"))return false;
+        wchar_t config[MAX_PATH]{};GetFullPathNameW(L"DeusExHRVR.ini",MAX_PATH,config,nullptr);
+        if(trackingChannel && DirectionConfig::MotionEnabled(config)) {
+            bool ok=controller.Init(instance,session);Log("Motion controller aim and Xbox buttons: %s",ok?"ready":"unavailable; native input retained");
+            if(!ok)controller.Reset();
+        }
         device=dev; dev->GetImmediateContext(&context);
         Log("OpenXR session created. F6 switches experimental engine tracking; untracked frames use the stereo screen.");
         return true;
@@ -237,6 +246,7 @@ struct Bridge {
             }
             tracking.valid=1;
         }
+        controller.Sample(session,space,fs.predictedDisplayTime,state==XR_SESSION_STATE_FOCUSED,tracking);
         Transport::WriteTracking(trackingChannel,tracking);
         if(frameReadyEvent)SetEvent(frameReadyEvent);
         XrFrameBeginInfo bi{XR_TYPE_FRAME_BEGIN_INFO};

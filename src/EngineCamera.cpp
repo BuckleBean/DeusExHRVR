@@ -1,5 +1,7 @@
 #include "EngineCamera.h"
 #include "CameraMath.h"
+#include "DirectionConfig.h"
+#include "NativeBounds.h"
 #include "SceneCache.h"
 #include "EngineShaderTrace.h"
 #include "EffectShader.h"
@@ -14,6 +16,7 @@
 #include <array>
 #include <filesystem>
 #include <fstream>
+#include <intrin.h>
 
 // Supported executable only. All preferred addresses are rebased for ASLR.
 // F6 toggles tracking. Camera poses are attached to the scene and then to the
@@ -28,11 +31,25 @@ std::mutex stateMutex;
 Transport::Header* channel{};
 Transport::TrackingReader trackingReader;
 bool requested=true,referenceValid{},recenterRequested{},f6Down{},f9Down{},f7Down{},effectsFix=true,f4Down{},eyeViewFix=true,f3Down{},instanceFix=true;
-bool interactionScreen{};
+bool interactionScreen{},scopeScreen{};
+bool lockVerticalCamera{};
+bool experimentalMotionControls{};
+bool motionControls=true;
+bool controllerHideArms=true;
+DirectionConfig::Source interactionAim{},movementDirection{};
+thread_local bool senseQueries{};
+std::atomic<uint64_t> interactionQueries{},movementAxes{};
+std::atomic<void*> walkAction{},strafeAction{};
+float lastMoveInput[2]{},lastMoveOutput[2]{},lastMoveHeading{};
+float controllerMuzzleForward=.25f;
+uint64_t removedFlareSprites{};
+bool skyFix=true,f11Down{};
+uint64_t skyCorrections{};
 ScreenMode screenMode;
 unsigned screenReasons{};
 void RefreshScreenMode() {
-    unsigned reasons=(interactionScreen?1u:0u)|(ScreenMode::Menu(base)?2u:0u)|(screenMode.Video()?4u:0u);
+    unsigned reasons=(interactionScreen?1u:0u)|(ScreenMode::Menu(base)?2u:0u)|(screenMode.Video()?4u:0u)|
+        (ScreenMode::GameOver(base)?8u:0u)|(scopeScreen?16u:0u);
     if(reasons!=screenReasons) {
         screenReasons=reasons;
         FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")) {
@@ -46,9 +63,22 @@ struct Snapshot {
     CameraMath::Matrix originalWorld,world,view,manager;
     Transport::Tracking tracking{};
     uintptr_t managerAddress{};
+    void* playerInstance{};
+    uint32_t inputIndex=~0u;
     bool active{};
 };
 Snapshot current;
+struct WeaponPose {void* weapon{};void* instance{};CameraMath::Matrix muzzle;uint64_t tick{};bool active{};void* owner{};};
+WeaponPose weaponPose;
+std::atomic<uint64_t> controllerDraws{},controllerMuzzles{};
+std::atomic<uint64_t> controllerAimQueries{},controllerHiddenArms{};
+std::atomic<uint64_t> controllerAttachments{},controllerBounds{};
+thread_local bool nativeWeaponQuery{};
+struct AttachmentTrace {uintptr_t caller{};int bone{};bool owner{};uint64_t queries{},corrected{};};
+std::array<AttachmentTrace,96> attachmentTrace{};
+std::mutex attachmentTraceMutex;
+thread_local bool controllerDrawing{};
+thread_local CameraMath::Matrix controllerDelta;
 SceneCache<Snapshot> scenes;
 Transport::RenderInfo pairInfo{};
 uint64_t taggedScenes{},stereoCalls{};
@@ -115,6 +145,212 @@ Draw originalDraw{};Stereo originalStereo{};
 Primitive originalPrimitive{};Update originalMatrices{};
 Update originalUniforms{};
 Update originalRenderState{};
+using WeaponMuzzle=uintptr_t(__thiscall*)(void*,CameraMath::Matrix*,int,bool);
+using WeaponAim=CameraMath::Matrix*(__thiscall*)(void*,CameraMath::Matrix*,bool,bool);
+using WeaponDraw=void(__thiscall*)(void*,void*,void*);
+using Skeleton=void(__cdecl*)(void*,void*,uint32_t,uint32_t,void*);
+using Attachment=uintptr_t(__cdecl*)(void*,void*,int,CameraMath::Matrix*,bool);
+using Bounds=void(__thiscall*)(void*,void*);
+WeaponMuzzle originalWeaponMuzzle{};
+WeaponAim originalWeaponAim{};
+WeaponDraw originalWeaponDraw{};
+WeaponDraw originalActorDraw{};
+Skeleton originalSkeleton{};
+Attachment originalAttachment{};
+Bounds originalBounds{};
+using SenseUpdate=void(__thiscall*)(void*,float);
+using InputAxis=float(__thiscall*)(void*,uint32_t,bool);
+SenseUpdate originalSenseUpdate{};
+Getter originalPlayerWorld{};
+InputAxis originalInputAxis{};
+bool DirectionWorld(DirectionConfig::Source source,CameraMath::Matrix& result,CameraMath::Matrix* native=nullptr,uintptr_t manager=0) {
+    std::lock_guard lock(stateMutex);
+    auto now=GetTickCount64();
+    if(source==DirectionConfig::Source::Mouse || !requested || !current.active || !current.playerInstance || screenReasons ||
+       (manager && manager!=current.managerAddress) || now<current.tracking.tick || now-current.tracking.tick>=250)return false;
+    if(native)*native=current.originalWorld;
+    if(source==DirectionConfig::Source::Headset){result=current.world;return true;}
+    if(!motionControls || !current.tracking.rightController.valid)return false;
+    auto baseWorld=lockVerticalCamera?CameraMath::WithoutLookPitch(current.originalWorld):current.originalWorld;
+    result=CameraMath::HeadWorld(baseWorld,reference,current.tracking.rightController.aim,worldScale);
+    return true;
+}
+void __fastcall SenseUpdateHook(void* self,void*,float dt) {
+    auto previous=senseQueries;
+    {std::lock_guard lock(stateMutex);
+        senseQueries=current.active && current.playerInstance &&
+            *reinterpret_cast<void**>(static_cast<unsigned char*>(self)+8)==current.playerInstance;
+    }
+    originalSenseUpdate(self,dt);senseQueries=previous;
+}
+void* __fastcall PlayerWorldHook(void* self,void*) {
+    if(senseQueries) {
+        thread_local CameraMath::Matrix target;
+        if(DirectionWorld(interactionAim,target)){++interactionQueries;return target.m;}
+    }
+    return originalPlayerWorld(self);
+}
+float __fastcall InputAxisHook(void* self,void*,uint32_t index,bool requireActive) {
+    float value=originalInputAxis(self,index,requireActive);
+    auto walk=walkAction.load(),strafe=strafeAction.load();
+    if(movementDirection==DirectionConfig::Source::Mouse || !walk || !strafe || (self!=walk && self!=strafe))return value;
+    {std::lock_guard lock(stateMutex);if(index!=current.inputIndex)return value;}
+    CameraMath::Matrix target,native;
+    if(!DirectionWorld(movementDirection,target,&native))return value;
+    // Both locomotion actions must be evaluated: W can become a strafe even
+    // when the original strafe action is zero/inactive. Call the trampoline
+    // for the partner axis so the pair is rotated exactly once.
+    float x=self==strafe?value:originalInputAxis(strafe,index,requireActive);
+    float y=self==walk?value:originalInputAxis(walk,index,requireActive);
+    if(!std::isfinite(x) || !std::isfinite(y))return value;
+    auto axes=CameraMath::ReorientMovement(x,y,native,target);
+    ++movementAxes;
+    if(std::abs(x)+std::abs(y)>.01f) {
+        std::lock_guard lock(stateMutex);
+        lastMoveInput[0]=x;lastMoveInput[1]=y;
+        lastMoveOutput[0]=axes.strafe;lastMoveOutput[1]=axes.walk;
+        lastMoveHeading=CameraMath::HeadingDelta(native,target);
+    }
+    return self==strafe?axes.strafe:axes.walk;
+}
+WeaponPose ReadWeaponPose() {
+    std::lock_guard lock(stateMutex);auto pose=weaponPose;
+    auto now=GetTickCount64();
+    pose.active=pose.active && current.active && requested && !screenReasons && now>=pose.tick && now-pose.tick<250;
+    return pose;
+}
+bool RigidWeaponMatrix(const CameraMath::Matrix& m) {
+    for(float v:m.m)if(!std::isfinite(v))return false;
+    if(std::abs(m.m[15]-1.f)>.01f)return false;
+    for(int r=0;r<3;r++)for(int c=r;c<3;c++) {
+        float dot=0;for(int j=0;j<3;j++)dot+=m.m[r*4+j]*m.m[c*4+j];
+        if(std::abs(dot-(r==c?1.f:0.f))>.02f)return false;
+    }
+    return true;
+}
+uintptr_t NativeWeaponMuzzle(void* weapon,CameraMath::Matrix* out,int barrel,bool firstPerson) {
+    auto previous=nativeWeaponQuery;nativeWeaponQuery=true;
+    auto result=originalWeaponMuzzle(weapon,out,barrel,firstPerson);
+    nativeWeaponQuery=previous;return result;
+}
+uintptr_t __cdecl AttachmentHook(void* source,void* instance,int bone,CameraMath::Matrix* out,bool previousFrame) {
+    auto result=originalAttachment(source,instance,bone,out,previousFrame);
+    if(experimentalMotionControls && !nativeWeaponQuery && instance && out) {
+        auto pose=ReadWeaponPose();
+        bool corrected=false;
+        if(pose.active && instance==pose.instance && RigidWeaponMatrix(*out)) {
+            CameraMath::Matrix nativeMuzzle;
+            NativeWeaponMuzzle(pose.weapon,&nativeMuzzle,0,true);
+            if(RigidWeaponMatrix(nativeMuzzle)) {
+                // Effects ask the Instance attachment getter directly, rather
+                // than PrimaryWeapon's firing matrix. Preserve each attachment's
+                // offset (flash, shell ejection, etc.) relative to the barrel.
+                auto delta=CameraMath::Multiply(CameraMath::InverseRigid(nativeMuzzle),pose.muzzle);
+                *out=CameraMath::Multiply(*out,delta);++controllerAttachments;corrected=true;
+            }
+        }
+        if(pose.active && (instance==pose.instance || instance==pose.owner)) {
+            auto caller=reinterpret_cast<uintptr_t>(_ReturnAddress())-base+0x400000;
+            std::lock_guard lock(attachmentTraceMutex);
+            for(auto& t:attachmentTrace)if(!t.queries || (t.caller==caller && t.bone==bone && t.owner==(instance==pose.owner))) {
+                t.caller=caller;t.bone=bone;t.owner=instance==pose.owner;++t.queries;t.corrected+=corrected;break;
+            }
+        }
+    }
+    return result;
+}
+void __fastcall BoundsHook(void* self,void*,void* volume) {
+    originalBounds(self,volume);
+    if(!experimentalMotionControls || !volume || *reinterpret_cast<uintptr_t*>(self)!=base+0xaaf854-0x400000)return;
+    auto pose=ReadWeaponPose();
+    if(pose.active && *reinterpret_cast<void**>(static_cast<unsigned char*>(self)+8)==pose.instance) {
+        // Cell lookup (0x5c8950) has no callback for type 10 (Everything):
+        // forcing it here caused an indirect call through zero while loading.
+        // Enlarge only finite bounds, preserving their native world centre.
+        if(NativeBounds::ExpandWeapon(volume,4.f*worldScale))++controllerBounds;
+    }
+}
+uintptr_t __fastcall WeaponMuzzleHook(void* self,void*,CameraMath::Matrix* out,int barrel,bool firstPerson) {
+    auto result=NativeWeaponMuzzle(self,out,barrel,firstPerson);
+    if(senseQueries)return result;
+    if(experimentalMotionControls && out) {
+        auto pose=ReadWeaponPose();
+        if(pose.active && pose.weapon==self){*out=pose.muzzle;++controllerMuzzles;}
+    }
+    return result;
+}
+CameraMath::Matrix* __fastcall WeaponAimHook(void* self,void*,CameraMath::Matrix* out,bool firstPerson,bool forceCamera) {
+    auto result=originalWeaponAim(self,out,firstPerson,forceCamera);
+    // DXSense may also ask the weapon for an aim ray. Interaction selection
+    // must use its own setting even when the gun follows the controller.
+    if(senseQueries) {
+        CameraMath::Matrix target;
+        if(out && DirectionWorld(interactionAim,target)){*out=target;++interactionQueries;}
+        return result;
+    }
+    if(experimentalMotionControls && out) {
+        auto pose=ReadWeaponPose();
+        // Player hit calculation 0x763370 and aim-ray getter 0x750ef0 both
+        // use this matrix, bypassing WeaponMuzzle for ordinary player shots.
+        // Keep the game's spread, collision and damage calculation intact.
+        if(pose.active && pose.weapon==self){*out=CameraMath::FiringFromMuzzle(pose.muzzle);++controllerAimQueries;}
+    }
+    return result;
+}
+void __fastcall ActorDrawHook(void* self,void*,void* matrix,void* args) {
+    if(experimentalMotionControls && controllerHideArms) {
+        auto pose=ReadWeaponPose();
+        // Suppress only the equipped weapon owner's actor mesh in tracked
+        // player view. Animation, physics and other actors still run normally.
+        if(pose.active && pose.owner && *reinterpret_cast<void**>(static_cast<unsigned char*>(self)+8)==pose.owner) {
+            ++controllerHiddenArms;return;
+        }
+    }
+    originalActorDraw(self,matrix,args);
+}
+void __cdecl SkeletonHook(void* model,void* bones,uint32_t flags,uint32_t count,void* state) {
+    originalSkeleton(model,bones,flags,count,state);
+    if(!controllerDrawing || !state)return;
+    // Verified native PCDX11MatrixState: poseData is +0x10, count at +0,
+    // followed by aligned world-space matrices at +0x10. This is a render
+    // allocation, not the simulation's animation/bone buffer.
+    auto s=static_cast<unsigned char*>(state);
+    if(*reinterpret_cast<uintptr_t*>(s)!=base+0xa97524-0x400000)return;
+    auto data=*reinterpret_cast<unsigned char**>(s+0x10);if(!data)return;
+    auto n=*reinterpret_cast<uint32_t*>(data);if(!n || n>512 || n!=count)return;
+    auto matrices=reinterpret_cast<CameraMath::Matrix*>(data+0x10);
+    for(uint32_t i=0;i<n;i++)matrices[i]=CameraMath::MoveSkinMatrix(matrices[i],controllerDelta);
+    ++controllerDraws;
+}
+void __fastcall WeaponDrawHook(void* self,void*,void* matrix,void* args) {
+    auto previous=controllerDrawing;auto savedDelta=controllerDelta;controllerDrawing=false;
+    if(experimentalMotionControls) {
+        auto pose=ReadWeaponPose();auto drawable=static_cast<unsigned char*>(self);
+        if(pose.active && *reinterpret_cast<void**>(drawable+8)==pose.instance) {
+            CameraMath::Matrix nativeMuzzle;
+            NativeWeaponMuzzle(pose.weapon,&nativeMuzzle,0,true);
+            if(RigidWeaponMatrix(nativeMuzzle)) {
+                controllerDelta=CameraMath::Multiply(CameraMath::InverseRigid(nativeMuzzle),pose.muzzle);
+                controllerDrawing=true;
+            }
+        }
+    }
+    originalWeaponDraw(self,matrix,args);
+    controllerDrawing=previous;controllerDelta=savedDelta;
+}
+struct BillboardTint {float x,y,z,w;};
+// Native stack: matrix +8, sprite-list +12, sprite-count +16, tint +20.
+// Both call sites push count, then list, then matrix (right-to-left).
+using Billboards=void(__cdecl*)(void*,void*,uint32_t,BillboardTint,void*,float);
+Billboards originalBillboards{};
+void __cdecl BillboardsHook(void* matrix,void* items,uint32_t count,BillboardTint tint,void* params,float z) {
+    // Only LensFlareAndCoronaID's call site. Keep the native centre/depth
+    // calculation (used by its remaining light meshes), but emit no sprites.
+    if(reinterpret_cast<uintptr_t>(_ReturnAddress())==base+0x722708-0x400000) {
+        removedFlareSprites+=count;count=0;
+    }
+    originalBillboards(matrix,items,count,tint,params,z);
+}
 using VideoCreate=void*(__thiscall*)(void*,void*);
 VideoCreate originalVideoCreate{};
 Update originalVideoDestroy{};
@@ -127,7 +363,31 @@ uint64_t instanceCorrections{};
 void __fastcall RenderStateHook(void* self,void*) {
     auto state=static_cast<unsigned char*>(self);
     float* instance{};CameraMath::Matrix saved;
-    if(drawing.active && effectsFix && instanceFix && EffectShader::UsesCentreViewMatrix(effectShaders.Identify(*reinterpret_cast<uintptr_t*>(state+0x198)))) {
+    auto shader=effectShaders.Identify(*reinterpret_cast<uintptr_t*>(state+0x198));
+    float* skyConstants{};CameraMath::Matrix savedSky;
+    // Use the native sky-layer marker, shared by sky materials across levels.
+    // Verified in this executable: model draws select +5a5 from depthLayer;
+    // immediate sprites clear it at 0x532d86. Cached depth constants alone
+    // can still describe the preceding sky draw, so require both live flags.
+    if(drawing.active && skyFix && state[0x5a4] && state[0x5a5]) {
+        auto sceneCB=*reinterpret_cast<unsigned char**>(state+0x5ac);
+        auto worldCB=*reinterpret_cast<unsigned char**>(state+0x5a8);
+        auto sceneData=sceneCB?*reinterpret_cast<float**>(sceneCB+8):nullptr;
+        if(sceneData && *reinterpret_cast<unsigned*>(sceneCB+12)>22 && sceneData[22*4+1]>.95f &&
+            worldCB && *reinterpret_cast<unsigned*>(worldCB+12)>=12) {
+            skyConstants=*reinterpret_cast<float**>(worldCB+8);
+            if(skyConstants) {
+                savedSky=CameraMath::Load(skyConstants);
+                auto centre=drawing.world;for(int i=4;i<7;i++)centre.m[i]=-centre.m[i];
+                auto overrideP=*reinterpret_cast<float**>(state+0x540);
+                auto projection=CameraMath::Load(overrideP?static_cast<void*>(overrideP):state+0x440);
+                auto corrected=CameraMath::SkyProjection(CameraMath::Load(skyConstants+16),centre,
+                    projection,drawing.tracking,state[0x5ea]?0:1);
+                memcpy(skyConstants,corrected.m,64);state[0x5c4]=1;state[0x1c]=1;++skyCorrections;
+            }
+        }
+    }
+    if(drawing.active && effectsFix && instanceFix && EffectShader::UsesCentreViewMatrix(shader)) {
         auto cb=*reinterpret_cast<unsigned char**>(state+0x5b8);
         if(cb && *reinterpret_cast<unsigned*>(cb+12)>=4) {
             instance=*reinterpret_cast<float**>(cb+8);
@@ -144,6 +404,7 @@ void __fastcall RenderStateHook(void* self,void*) {
     // Upload copied the corrected constants. Restore the engine's centre-view
     // copy so subsequent draws/eyes cannot accumulate the eye transform.
     if(instance){memcpy(instance,saved.m,64);state[0x5c8]=1;state[0x1c]=1;}
+    if(skyConstants){memcpy(skyConstants,savedSky.m,64);state[0x5c4]=1;state[0x1c]=1;}
 }
 void __fastcall UniformsHook(void* self,void*) {
     originalUniforms(self);
@@ -193,11 +454,19 @@ void __fastcall UpdateHook(void* self,void*) {
     insideUpdate=true;
     originalUpdate(self);
     insideUpdate=false;
+    if(movementDirection!=DirectionConfig::Source::Mouse && (!walkAction.load() || !strafeAction.load())) {
+        using FindAction=void*(__cdecl*)(const char*);
+        auto find=reinterpret_cast<FindAction>(base+0x4ae340-0x400000);
+        walkAction=find("locomotionwalk");strafeAction=find("locomotionstrafe");
+    }
     {
         std::lock_guard lock(stateMutex);
         current.active=false;
+        current.inputIndex=~0u;
+        weaponPose={};
         auto manager=static_cast<unsigned char*>(self);
         auto active=*reinterpret_cast<unsigned char**>(manager+0x30);
+        scopeScreen=ScreenMode::Scope(base,manager);
         // Supported build: PlayerCamera embeds CameraMode_Hacking at +0x430.
         // Its enter/leave methods (0x6a1c50 / 0x6a1dc0) set/clear +0x104.
         // Check the exact class before reading its active flag.
@@ -216,7 +485,10 @@ void __fastcall UpdateHook(void* self,void*) {
             // Interaction cameras implement the same virtual getters as the
             // player camera; use that interface instead of its private layout.
             current.originalWorld=CameraMath::Load(originalWorld(self));
-            current.world=CameraMath::HeadWorld(current.originalWorld,reference,t.head,worldScale);
+            // Keep native aiming/input intact. Level only the VR rendering
+            // base, then add the headset's complete orientation and position.
+            auto renderBase=lockVerticalCamera?CameraMath::WithoutLookPitch(current.originalWorld):current.originalWorld;
+            current.world=CameraMath::HeadWorld(renderBase,reference,t.head,worldScale);
             current.view=CameraMath::InverseRigid(current.world);
             current.manager=CameraMath::Load(manager+0x13b0);
             auto oldView=CameraMath::Load(originalView(self));
@@ -226,6 +498,25 @@ void __fastcall UpdateHook(void* self,void*) {
                 current.manager.m[12+col]+=(current.view.m[12+col]-oldView.m[12+col])*scale;
             }
             current.tracking=t;current.active=true;current.managerAddress=reinterpret_cast<uintptr_t>(self);
+            current.playerInstance=active==manager+0x6f0?*reinterpret_cast<void**>(active+0xaa0):nullptr;
+            if(current.playerInstance && movementDirection!=DirectionConfig::Source::Mouse) {
+                using FindPlayer=unsigned char*(__cdecl*)(void*);
+                auto player=reinterpret_cast<FindPlayer>(base+0x6032c0-0x400000)(current.playerInstance);
+                if(player)current.inputIndex=*reinterpret_cast<uint32_t*>(player+0x1c);
+            }
+            if(experimentalMotionControls && t.rightController.valid && active==manager+0x6f0) {
+                auto entity=*reinterpret_cast<void**>(active+0xaa0);
+                using Equipped=unsigned char*(__cdecl*)(void*);
+                auto holder=entity?reinterpret_cast<Equipped>(base+0x66af40-0x400000)(entity):nullptr;
+                auto weapon=holder?*reinterpret_cast<unsigned char**>(holder+0x14):nullptr;
+                if(weapon && *reinterpret_cast<uintptr_t*>(weapon)==base+0xab1944-0x400000) {
+                    using FindInstance=void*(__cdecl*)(uint32_t);
+                    auto handle=*reinterpret_cast<uint32_t*>(weapon+0x6c);
+                    auto instance=handle!=0x7fffffffu?reinterpret_cast<FindInstance>(base+0x6082a0-0x400000)(handle):nullptr;
+                    if(instance)weaponPose={weapon,instance,CameraMath::ControllerMuzzle(renderBase,reference,
+                        t.rightController.aim,worldScale,controllerMuzzleForward),t.tick,true,*reinterpret_cast<void**>(weapon+0x64)};
+                }
+            }
         }
     }
     if(budget.load()<=0)return;
@@ -239,7 +530,19 @@ void __fastcall UpdateHook(void* self,void*) {
     if(active==manager+0x6f0) {Matrix(f,"playerWorld",active+0x40);Matrix(f,"playerView",active+0x80);}
     fclose(f);
 }
-void* Get(void* self,Getter original,int kind) {
+void* Get(void* self,Getter original,int kind,uintptr_t caller) {
+    if(senseQueries && kind<2) {
+        CameraMath::Matrix target;
+        thread_local CameraMath::Matrix targetMatrices[2];
+        if(DirectionWorld(interactionAim,target,nullptr,reinterpret_cast<uintptr_t>(self))) {
+            targetMatrices[kind]=kind?CameraMath::InverseRigid(target):target;
+            ++interactionQueries;return targetMatrices[kind].m;
+        }
+        return original(self);
+    }
+    // Locomotion already receives reoriented axes; its secondary camera
+    // consumers must keep the native basis to avoid applying head yaw twice.
+    if(kind<2 && caller>=base+0x77a930-0x400000 && caller<base+0x77bd80-0x400000)return original(self);
     if(insideUpdate)return original(self);
     thread_local CameraMath::Matrix values[3];
     {
@@ -251,9 +554,9 @@ void* Get(void* self,Getter original,int kind) {
     }
     return original(self);
 }
-void* __fastcall WorldHook(void* self,void*){return Get(self,originalWorld,0);}
-void* __fastcall ViewHook(void* self,void*){return Get(self,originalView,1);}
-void* __fastcall ManagerHook(void* self,void*){return Get(self,originalManager,2);}
+void* __fastcall WorldHook(void* self,void*){return Get(self,originalWorld,0,reinterpret_cast<uintptr_t>(_ReturnAddress()));}
+void* __fastcall ViewHook(void* self,void*){return Get(self,originalView,1,reinterpret_cast<uintptr_t>(_ReturnAddress()));}
+void* __fastcall ManagerHook(void* self,void*){return Get(self,originalManager,2,reinterpret_cast<uintptr_t>(_ReturnAddress()));}
 bool Match(const CameraMath::Matrix& viewport,const CameraMath::Matrix& player) {
     for(int i=0;i<16;i++) {
         float value=(i>=4&&i<7)?-player.m[i]:player.m[i];
@@ -401,6 +704,17 @@ void Install() {
         ,{0x552130,(void*)&RenderStateHook,(void**)&originalRenderState,"\x56\x8b\xf1\x80\x7e\x19\x00",7}
         ,{0x986cd0,(void*)&VideoCreateHook,(void**)&originalVideoCreate,"\x33\xc0\x56\x8b\xf1",5}
         ,{0x986b40,(void*)&VideoDestroyHook,(void**)&originalVideoDestroy,"\x56\x8b\xf1\x57",4}
+        ,{0x71bb20,(void*)&BillboardsHook,(void**)&originalBillboards,"\x55\x8b\xec\x83\xe4\xf0",6}
+        ,{0x74f3e0,(void*)&WeaponMuzzleHook,(void**)&originalWeaponMuzzle,"\x53\x56\x8b\xf1\x8b\x46\x78",7}
+        ,{0x750dc0,(void*)&WeaponAimHook,(void**)&originalWeaponAim,"\x55\x8b\xec\x83\xe4\xf0",6}
+        ,{0x720930,(void*)&ActorDrawHook,(void**)&originalActorDraw,"\x56\x8b\xf1\x8b\x46\x08",6}
+        ,{0x723190,(void*)&WeaponDrawHook,(void**)&originalWeaponDraw,"\x8b\x44\x24\x08\x56",5}
+        ,{0x60c200,(void*)&SkeletonHook,(void**)&originalSkeleton,"\x55\x8b\xec\x83\xe4\xf0",6}
+        ,{0x4899d0,(void*)&AttachmentHook,(void**)&originalAttachment,"\x55\x8b\xec\x83\xe4\xf0",6}
+        ,{0x5b1a70,(void*)&BoundsHook,(void**)&originalBounds,"\x55\x8b\xec\x83\xe4\xf0",6}
+        ,{0x689b40,(void*)&SenseUpdateHook,(void**)&originalSenseUpdate,"\x55\x8b\xec\x83\xe4\xf0",6}
+        ,{0x69fc90,(void*)&PlayerWorldHook,(void**)&originalPlayerWorld,"\x8d\x41\x40\xc3",4}
+        ,{0x4aeae0,(void*)&InputAxisHook,(void**)&originalInputAxis,"\x80\x7c\x24\x08\x00",5}
     };
     for(auto& h:hooks)if(memcmp((void*)VA(h.address),h.bytes,h.length))return;
     bool enabled=true;
@@ -412,8 +726,17 @@ void Install() {
     wchar_t config[MAX_PATH]{};GetFullPathNameW(L"DeusExHRVR.ini",MAX_PATH,config,nullptr);
     wchar_t scaleText[32];GetPrivateProfileStringW(L"VR",L"WorldUnitsPerMetre",L"100",scaleText,32,config);
     float scale=static_cast<float>(_wtof(scaleText));if(std::isfinite(scale)&&scale>=10&&scale<=1000)worldScale=scale;
+    lockVerticalCamera=GetPrivateProfileIntW(L"VR",L"LockVerticalCamera",0,config)!=0;
+    motionControls=DirectionConfig::MotionEnabled(config);
+    experimentalMotionControls=motionControls && GetPrivateProfileIntW(L"VR",L"ExperimentalMotionControls",0,config)!=0;
+    controllerHideArms=GetPrivateProfileIntW(L"VR",L"ControllerHideArms",1,config)!=0;
+    interactionAim=DirectionConfig::Read(config,L"InteractionAim");
+    movementDirection=DirectionConfig::Read(config,L"MovementDirection");
+    GetPrivateProfileStringW(L"VR",L"ControllerMuzzleForwardMetres",L"0.25",scaleText,32,config);
+    float muzzleForward=static_cast<float>(_wtof(scaleText));
+    if(std::isfinite(muzzleForward) && muzzleForward>=0 && muzzleForward<=1)controllerMuzzleForward=muzzleForward;
     FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")) {
-        fprintf(f,"Camera hooks base=%p enabled=%d unitsPerMetre=%g F6=toggle F9=recenter\n",reinterpret_cast<void*>(base),enabled,worldScale);fclose(f);
+        fprintf(f,"Camera hooks base=%p enabled=%d unitsPerMetre=%g lockVerticalCamera=%d F6=toggle F9=recenter\n",reinterpret_cast<void*>(base),enabled,worldScale,lockVerticalCamera);fclose(f);
     }
 }
 }
@@ -442,14 +765,36 @@ Transport::RenderInfo OnPresent(uint64_t frame,bool capture) {
     }
     if(capture) {
         SaveTrace(frame);
+        FILE* motion{};if(!fopen_s(&motion,"DeusExHRVR-camera.log","a")) {
+            fprintf(motion,"controller enabled=%d valid=%u active=%d weapon=%p instance=%p modelDraws=%llu muzzleQueries=%llu aimQueries=%llu hiddenArms=%llu owner=%p attachments=%llu bounds=%llu\n",
+                experimentalMotionControls,current.tracking.rightController.valid,weaponPose.active,weaponPose.weapon,weaponPose.instance,
+                controllerDraws.load(),controllerMuzzles.load(),controllerAimQueries.load(),controllerHiddenArms.load(),weaponPose.owner,
+                controllerAttachments.load(),controllerBounds.load());
+            Matrix(motion,"controllerMuzzle",weaponPose.muzzle.m);
+            fprintf(motion,"directions interaction=%s movement=%s interactionQueries=%llu movementAxes=%llu motionControls=%d inputIndex=%u actions=%p/%p lastInput=%g,%g lastOutput=%g,%g heading=%g\n",
+                DirectionConfig::Name(interactionAim),DirectionConfig::Name(movementDirection),
+                interactionQueries.load(),movementAxes.load(),motionControls,current.inputIndex,walkAction.load(),strafeAction.load(),
+                lastMoveInput[0],lastMoveInput[1],lastMoveOutput[0],lastMoveOutput[1],lastMoveHeading);
+            {std::lock_guard lock(attachmentTraceMutex);for(const auto& t:attachmentTrace)if(t.queries)
+                fprintf(motion,"attachment caller=%08x bone=%d owner=%d queries=%llu corrected=%llu\n",
+                    unsigned(t.caller),t.bone,t.owner,t.queries,t.corrected);}
+            fclose(motion);
+        }
         FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")){fprintf(f,"HUD plane draws=%llu matrices=%llu frame=%llu trackingReadContentions=%llu rejectedSamples=%llu\n",hudDraws,hudMatrices,frame,trackingReader.reused,trackingReader.rejected);fclose(f);}
     }
     bool f6=(GetAsyncKeyState(VK_F6)&0x8000)!=0,f9=(GetAsyncKeyState(VK_F9)&0x8000)!=0;
+    if(capture) {
+        FILE* f{};if(!fopen_s(&f,"DeusExHRVR-effects.log","a")) {
+            fprintf(f,"sprites frame=%llu flaresRemoved=%llu skyFix=%d skyCorrections=%llu renderPitchLock=%d screenReasons=%u\n",frame,removedFlareSprites,skyFix,skyCorrections,lockVerticalCamera,screenReasons);fclose(f);
+        }
+    }
     bool f7=(GetAsyncKeyState(VK_F7)&0x8000)!=0;
     if(f7&&!f7Down){effectsFix=!effectsFix;FILE* f{};if(!fopen_s(&f,"DeusExHRVR-effects.log","a")){fprintf(f,"effectsFix=%d frame=%llu\n",effectsFix,frame);fclose(f);}}f7Down=f7;
     bool f4=(GetAsyncKeyState(VK_F4)&0x8000)!=0;
     if(f4&&!f4Down){eyeViewFix=!eyeViewFix;FILE* f{};if(!fopen_s(&f,"DeusExHRVR-effects.log","a")){fprintf(f,"eyeViewFix=%d frame=%llu\n",eyeViewFix,frame);fclose(f);}}f4Down=f4;
     bool f3=(GetAsyncKeyState(VK_F3)&0x8000)!=0;
+    bool f11=(GetAsyncKeyState(VK_F11)&0x8000)!=0;
+    if(f11&&!f11Down){skyFix=!skyFix;FILE* f{};if(!fopen_s(&f,"DeusExHRVR-effects.log","a")){fprintf(f,"skyFix=%d frame=%llu\n",skyFix,frame);fclose(f);}}f11Down=f11;
     if(f3&&!f3Down){instanceFix=!instanceFix;FILE* f{};if(!fopen_s(&f,"DeusExHRVR-effects.log","a")){fprintf(f,"instanceFix=%d frame=%llu\n",instanceFix,frame);fclose(f);}}f3Down=f3;
     if(capture){FILE* f{};if(!fopen_s(&f,"DeusExHRVR-effects.log","a")){fprintf(f,"instanceFix=%d correctedDraws=%llu frame=%llu\n",instanceFix,instanceCorrections,frame);fclose(f);}}
     if(f6&&!f6Down){requested=!requested;referenceValid=false;current.active=false;}
