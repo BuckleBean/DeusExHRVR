@@ -1026,4 +1026,14 @@ Transport::RenderInfo OnPresent(uint64_t frame,bool capture) {
     f6Down=f6;f9Down=f9;return completed;
 }
 void SetChannel(Transport::Header* header){std::lock_guard lock(stateMutex);channel=header;trackingReader={};if(!header){current.active=false;referenceValid=false;}}
+// Local patch (snap turn): the game's own camera heading while full tracked VR
+// is showing gameplay. False in menus, terminals, scope and other screen modes.
+unsigned CurrentScreenReasons(){std::lock_guard lock(stateMutex);return screenReasons;}
+bool SnapTurnView(float& yaw) {
+    std::lock_guard lock(stateMutex);
+    auto now=GetTickCount64();
+    if(!current.active || screenReasons || !current.playerInstance || now<current.tracking.tick || now-current.tracking.tick>=250)return false;
+    yaw=std::atan2(current.originalWorld.m[9],current.originalWorld.m[8]);
+    return std::isfinite(yaw);
+}
 }

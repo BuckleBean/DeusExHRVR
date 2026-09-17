@@ -68,3 +68,17 @@ HeadSwayYawLimit=1.5
 ; stick input, head pose) for measuring the walk animation. Costs frame time;
 ; leave at 0 for play.
 BobTrace=0
+
+; Optional button layout. [Buttons] applies to gameplay and scoped aiming,
+; [ScreenButtons] to the title and pause menus, terminals, hacking, videos and
+; game over. It does not yet apply in the in-game hub (map, objectives,
+; inventory), which is not detected as a screen.
+; Omitted entries keep the stock layout. Inputs: RightA, RightB, LeftX, LeftY,
+; LeftGrip, RightGrip, LeftStickClick, RightStickClick, LeftTrigger,
+; RightTrigger. Targets: A B X Y LB RB LS RS LT RT Back Start DPadUp DPadDown
+; DPadLeft DPadRight None. <Input>HoldMs=250 delays the target until the input
+; has been held that long; with a delay set, <Input>Tap=A sends a short pulse
+; when the input is released early.
+[Buttons]
+
+[ScreenButtons]

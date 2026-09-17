@@ -135,6 +135,24 @@ The filter reports the time-average of the heading over the last window, extrapo
 
 `BobTrace=1` writes one line per frame to `DeusExHRVR-bob.csv` (camera position and heading, stick input, head pose; capped at 36000 lines) for measuring the walk animation on other hardware. The values above came from such a trace of walking and sprinting in the first hub. Tracing costs frame time - leave it at `0` for play.
 
+Motion-controller buttons can be remapped in `DeusExHRVR.ini` without touching the game's own bindings. `[Buttons]` applies during gameplay and scoped aiming; `[ScreenButtons]` applies to the title and pause menus, terminals, hacking, videos and game over, where one-handed use and a different Select/Back pairing are often easier. Anything not listed keeps the stock layout above. The in-game hub (map, objectives, inventory) is not yet detected as a screen, so `[ScreenButtons]` does not apply there.
+
+```ini
+[Buttons]
+RightA=A
+RightB=Y
+LeftX=X
+LeftY=B
+LeftGrip=LB
+RightGrip=RB
+LeftStickClick=LS
+RightStickClick=RS
+LeftTrigger=LT
+RightTrigger=RT
+```
+
+Inputs are `RightA`, `RightB`, `LeftX`, `LeftY`, `LeftGrip`, `RightGrip`, `LeftStickClick`, `RightStickClick`, `LeftTrigger`, `RightTrigger`. Targets are `A`, `B`, `X`, `Y`, `LB`, `RB`, `LS`/`L3`, `RS`/`R3`, `LT`, `RT`, `Back`, `Start`, `DPadUp`, `DPadDown`, `DPadLeft`, `DPadRight`, or `None`. Triggers may be mapped to buttons and buttons to triggers. `<Input>HoldMs=250` makes that input send its target only after it has been held that long, so accidental taps send nothing; with a hold delay set, `<Input>Tap=A` sends a different target as a 120 ms pulse when the input is released early. Unrecognized names are logged and ignored. Restart after editing.
+
 ## Restore the original game
 
 Close the game and run `uninstall.ps1` with the same game path:
