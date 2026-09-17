@@ -69,6 +69,20 @@ HeadSwayYawLimit=1.5
 ; leave at 0 for play.
 BobTrace=0
 
+; Snap turn: a horizontal right-stick flick turns the view instantly during
+; gameplay instead of the stick's accelerating smooth turn. Menus, terminals
+; and scoped aiming keep the native right stick.
+SnapTurn=0
+SnapTurnDegrees=30
+; Size of the injected mouse move. Measured after each snap and rewritten here,
+; so it self-calibrates from any starting value.
+SnapTurnMouseCounts=300
+; The game ignores mouse look while the left stick is deflected, so walking is
+; released for at most this long around the injected move.
+SnapTurnPauseMs=60
+; With SnapTurn=1 the right stick's vertical axis is free: RightStickUp and
+; RightStickDown under [Buttons] hold a target while it is pushed up or down.
+
 ; Optional button layout. [Buttons] applies to gameplay and scoped aiming,
 ; [ScreenButtons] to the title and pause menus, terminals, hacking, videos and
 ; game over. It does not yet apply in the in-game hub (map, objectives,
