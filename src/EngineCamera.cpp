@@ -58,6 +58,18 @@ void RefreshScreenMode() {
     }
 }
 Transport::Pose reference{};
+bool levelRecenter=true;
+// Local patch: keep only heading (yaw) from the recenter pose so head pitch/roll
+// at load or F9 does not tilt the world. Position (incl. height) is kept.
+Transport::Pose LevelReference(Transport::Pose p) {
+    if(!levelRecenter)return p;
+    auto f=CameraMath::Rotate(p.orientation,{0,0,-1});
+    float yaw;
+    if(std::hypot(f.x,f.z)<.001f){auto r=CameraMath::Rotate(p.orientation,{1,0,0});yaw=std::atan2(-r.z,r.x);}
+    else yaw=std::atan2(-f.x,-f.z);
+    p.orientation={0,std::sin(yaw*.5f),0,std::cos(yaw*.5f)};
+    return p;
+}
 float worldScale=100.f;
 struct Snapshot {
     CameraMath::Matrix originalWorld,world,view,manager;
@@ -481,7 +493,7 @@ void __fastcall UpdateHook(void* self,void*) {
         Transport::Tracking t{};
         RefreshScreenMode();
         if(requested && !screenReasons && active && trackingReader.Read(channel,t,GetTickCount64())) {
-            if(!referenceValid || recenterRequested){reference=t.head;referenceValid=true;recenterRequested=false;}
+            if(!referenceValid || recenterRequested){reference=LevelReference(t.head);referenceValid=true;recenterRequested=false;}
             // Interaction cameras implement the same virtual getters as the
             // player camera; use that interface instead of its private layout.
             current.originalWorld=CameraMath::Load(originalWorld(self));
@@ -727,6 +739,7 @@ void Install() {
     wchar_t scaleText[32];GetPrivateProfileStringW(L"VR",L"WorldUnitsPerMetre",L"100",scaleText,32,config);
     float scale=static_cast<float>(_wtof(scaleText));if(std::isfinite(scale)&&scale>=10&&scale<=1000)worldScale=scale;
     lockVerticalCamera=GetPrivateProfileIntW(L"VR",L"LockVerticalCamera",0,config)!=0;
+    levelRecenter=GetPrivateProfileIntW(L"VR",L"LevelRecenter",1,config)!=0;
     motionControls=DirectionConfig::MotionEnabled(config);
     experimentalMotionControls=motionControls && GetPrivateProfileIntW(L"VR",L"ExperimentalMotionControls",0,config)!=0;
     controllerHideArms=GetPrivateProfileIntW(L"VR",L"ControllerHideArms",1,config)!=0;
@@ -736,7 +749,7 @@ void Install() {
     float muzzleForward=static_cast<float>(_wtof(scaleText));
     if(std::isfinite(muzzleForward) && muzzleForward>=0 && muzzleForward<=1)controllerMuzzleForward=muzzleForward;
     FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")) {
-        fprintf(f,"Camera hooks base=%p enabled=%d unitsPerMetre=%g lockVerticalCamera=%d F6=toggle F9=recenter\n",reinterpret_cast<void*>(base),enabled,worldScale,lockVerticalCamera);fclose(f);
+        fprintf(f,"Camera hooks base=%p enabled=%d unitsPerMetre=%g lockVerticalCamera=%d levelRecenter=%d F6=toggle F9=recenter\n",reinterpret_cast<void*>(base),enabled,worldScale,lockVerticalCamera,levelRecenter);fclose(f);
     }
 }
 }

@@ -108,6 +108,8 @@ The accepted range is 10–1000. Higher values make the world appear smaller and
 
 The game's stereo separation/convergence sliders do not calibrate tracked VR: that path uses the headset eye poses and `WorldUnitsPerMetre`. The original stereo settings remain relevant to the untracked screen mode.
 
+`LevelRecenter=1` under `[VR]` (default) keeps only the heading of the head pose captured when tracking starts and on F9. A head tilted slightly up or down at that moment no longer tilts the world for the rest of the session; position, including height, is still taken from the captured pose. Set it to `0` for the previous behavior. The effect is most visible with `LockVerticalCamera=1`, where the native look pitch no longer masks the tilt.
+
 ## Restore the original game
 
 Close the game and run `uninstall.ps1` with the same game path:

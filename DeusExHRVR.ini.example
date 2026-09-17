@@ -33,3 +33,8 @@ ExperimentalMotionControls=0
 ControllerHideArms=1
 ; Position the muzzle this far ahead of the controller aim pose (0-1 metre).
 ControllerMuzzleForwardMetres=0.25
+
+; Keep only heading (yaw) from the head pose captured when tracking starts and
+; on F9, so a head tilted up or down at that moment does not tilt the world.
+; Position, including height, is still captured. 0 restores the old behavior.
+LevelRecenter=1
