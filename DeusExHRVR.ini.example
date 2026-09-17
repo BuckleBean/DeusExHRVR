@@ -38,3 +38,8 @@ ControllerMuzzleForwardMetres=0.25
 ; on F9, so a head tilted up or down at that moment does not tilt the world.
 ; Position, including height, is still captured. 0 restores the old behavior.
 LevelRecenter=1
+
+; Take the VR rendering base from the game camera's heading and position only:
+; the headset supplies all pitch and roll, including the walk animation's tilt.
+; Aiming, the gun and virtual-screen modes are unaffected. Restart to apply.
+YawOnlyCamera=0

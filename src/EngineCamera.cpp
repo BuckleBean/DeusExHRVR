@@ -59,6 +59,8 @@ void RefreshScreenMode() {
 }
 Transport::Pose reference{};
 bool levelRecenter=true;
+bool yawOnlyCamera=false; // Local patch: drop game camera pitch/roll (head-bob tilt) from the VR base
+CameraMath::Matrix RenderBase(const CameraMath::Matrix& game);
 // Local patch: keep only heading (yaw) from the recenter pose so head pitch/roll
 // at load or F9 does not tilt the world. Position (incl. height) is kept.
 Transport::Pose LevelReference(Transport::Pose p) {
@@ -71,6 +73,12 @@ Transport::Pose LevelReference(Transport::Pose p) {
     return p;
 }
 float worldScale=100.f;
+CameraMath::Matrix RenderBase(const CameraMath::Matrix& game) {
+    // HorizontalDirection keeps only heading and position in PlayerCamera's
+    // right/down/forward Z-up basis; the headset supplies all pitch and roll.
+    if(yawOnlyCamera)return CameraMath::HorizontalDirection(game,game);
+    return lockVerticalCamera?CameraMath::WithoutLookPitch(game):game;
+}
 struct Snapshot {
     CameraMath::Matrix originalWorld,world,view,manager;
     Transport::Tracking tracking{};
@@ -183,7 +191,7 @@ bool DirectionWorld(DirectionConfig::Source source,CameraMath::Matrix& result,Ca
     if(native)*native=current.originalWorld;
     if(source==DirectionConfig::Source::Headset){result=current.world;return true;}
     if(!motionControls || !current.tracking.rightController.valid)return false;
-    auto baseWorld=lockVerticalCamera?CameraMath::WithoutLookPitch(current.originalWorld):current.originalWorld;
+    auto baseWorld=RenderBase(current.originalWorld);
     result=CameraMath::HeadWorld(baseWorld,reference,current.tracking.rightController.aim,worldScale);
     return true;
 }
@@ -499,7 +507,7 @@ void __fastcall UpdateHook(void* self,void*) {
             current.originalWorld=CameraMath::Load(originalWorld(self));
             // Keep native aiming/input intact. Level only the VR rendering
             // base, then add the headset's complete orientation and position.
-            auto renderBase=lockVerticalCamera?CameraMath::WithoutLookPitch(current.originalWorld):current.originalWorld;
+            auto renderBase=RenderBase(current.originalWorld);
             current.world=CameraMath::HeadWorld(renderBase,reference,t.head,worldScale);
             current.view=CameraMath::InverseRigid(current.world);
             current.manager=CameraMath::Load(manager+0x13b0);
@@ -740,6 +748,7 @@ void Install() {
     float scale=static_cast<float>(_wtof(scaleText));if(std::isfinite(scale)&&scale>=10&&scale<=1000)worldScale=scale;
     lockVerticalCamera=GetPrivateProfileIntW(L"VR",L"LockVerticalCamera",0,config)!=0;
     levelRecenter=GetPrivateProfileIntW(L"VR",L"LevelRecenter",1,config)!=0;
+    yawOnlyCamera=GetPrivateProfileIntW(L"VR",L"YawOnlyCamera",0,config)!=0;
     motionControls=DirectionConfig::MotionEnabled(config);
     experimentalMotionControls=motionControls && GetPrivateProfileIntW(L"VR",L"ExperimentalMotionControls",0,config)!=0;
     controllerHideArms=GetPrivateProfileIntW(L"VR",L"ControllerHideArms",1,config)!=0;
@@ -749,7 +758,7 @@ void Install() {
     float muzzleForward=static_cast<float>(_wtof(scaleText));
     if(std::isfinite(muzzleForward) && muzzleForward>=0 && muzzleForward<=1)controllerMuzzleForward=muzzleForward;
     FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")) {
-        fprintf(f,"Camera hooks base=%p enabled=%d unitsPerMetre=%g lockVerticalCamera=%d levelRecenter=%d F6=toggle F9=recenter\n",reinterpret_cast<void*>(base),enabled,worldScale,lockVerticalCamera,levelRecenter);fclose(f);
+        fprintf(f,"Camera hooks base=%p enabled=%d unitsPerMetre=%g lockVerticalCamera=%d levelRecenter=%d yawOnlyCamera=%d F6=toggle F9=recenter\n",reinterpret_cast<void*>(base),enabled,worldScale,lockVerticalCamera,levelRecenter,yawOnlyCamera);fclose(f);
     }
 }
 }
