@@ -2,6 +2,7 @@
 #include "SharedPair.h"
 #include <cmath>
 #include <cstring>
+#include <initializer_list>
 namespace CameraMath {
 using Transport::Pose;using Transport::Vector;using Transport::Quaternion;
 struct alignas(16) Matrix {float m[16]{};};
