@@ -73,6 +73,114 @@ Transport::Pose LevelReference(Transport::Pose p) {
     return p;
 }
 float worldScale=100.f;
+// Local patch: optional per-frame camera trace for head-bob analysis.
+// Buffered in memory (4 MB stdio buffer) so it rarely touches the disk.
+bool bobTrace=false;FILE* bobFile{};uint32_t bobLines{};
+void BobTrace(double ms,const CameraMath::Matrix& g,const float out[3],const Transport::Tracking& t) {
+    if(bobLines>=36000)return;
+    if(!bobFile) {
+        if(fopen_s(&bobFile,"DeusExHRVR-bob.csv","w") || !bobFile){bobTrace=false;bobFile=nullptr;return;}
+        setvbuf(bobFile,nullptr,_IOFBF,4<<20);
+        fprintf(bobFile,"ms,x,y,z,fx,fy,fz,outX,outY,outZ,lx,ly,headX,headY,headZ,headQx,headQy,headQz,headQw\n");
+    }
+    fprintf(bobFile,"%.3f,%.4f,%.4f,%.4f,%.5f,%.5f,%.5f,%.4f,%.4f,%.4f,%d,%d,%.4f,%.4f,%.4f,%.5f,%.5f,%.5f,%.5f\n",
+        ms,g.m[12],g.m[13],g.m[14],g.m[8],g.m[9],g.m[10],out[0],out[1],out[2],
+        int(t.gamepad.leftX),int(t.gamepad.leftY),t.head.position.x,t.head.position.y,t.head.position.z,
+        t.head.orientation.x,t.head.orientation.y,t.head.orientation.z,t.head.orientation.w);
+    if(++bobLines>=36000){fclose(bobFile);bobFile=nullptr;}
+}
+// Local patch: time-average filter, used by YawSwing below for the walk
+// animation's heading swing (heading is fed in as component 0).
+// A(t) = time-average of the input over the last W ms. For steady motion,
+// A(now) + (A(now)-A(now-W))/2 equals the current value exactly, while a
+// periodic swing whose period divides W averages out. When the difference from
+// the raw input exceeds the limit the model has broken down (start, stop, a
+// turn): the correction is dropped and averaging restarts, rather than being
+// clipped to the limit and held there by history that no longer applies.
+struct BobSample {double t;float p[3];};
+struct BobFilter {
+    int windowMs[2]{700,333};      // [horizontal, vertical]
+    float limit[2]{6.f,5.f};       // max deviation from raw camera, game units
+    bool enabled{};
+    float rate[2]{60.f,300.f};     // [horizontal, vertical] max change of the correction per second
+    float dev[3]{};double lastT{};double verticalFrom{-1e18},horizontalFrom{-1e18};
+    std::array<BobSample,1024> ring{};size_t head{},size{};
+    void Reset(){size=0;dev[0]=dev[1]=dev[2]=0;}
+    const BobSample& At(size_t back) const {return ring[(head+ring.size()-1-back)%ring.size()];}
+    // Mean of component c over [t0,t1], linearly interpolating between samples.
+    bool Average(double t0,double t1,int c,double& out) const {
+        if(size<2 || At(0).t<t1-0.5 )return false;
+        double sum=0,covered=0;
+        for(size_t i=0;i+1<size;i++) {
+            const auto& n=At(i);const auto& o=At(i+1); // newer, older
+            if(n.t<=t0)break;
+            double a=std::max(o.t,t0),b=std::min(n.t,t1);
+            if(b<=a)continue;
+            double span=n.t-o.t;
+            auto val=[&](double t){return span>0?o.p[c]+(n.p[c]-o.p[c])*(t-o.t)/span:double(n.p[c]);};
+            sum+=(val(a)+val(b))*.5*(b-a);covered+=b-a;
+        }
+        if(covered<(t1-t0)-1.)return false; // not enough history yet
+        out=sum/covered;return true;
+    }
+    void Apply(float p[3],double now) {
+        if(!enabled)return;
+        if(size) {
+            const auto& last=At(0);
+            float jump=std::abs(p[0]-last.p[0])+std::abs(p[1]-last.p[1])+std::abs(p[2]-last.p[2]);
+            if(jump>600 || now<last.t || now-last.t>500)Reset(); // load, teleport, pause
+        }
+        ring[head]={now,{p[0],p[1],p[2]}};head=(head+1)%ring.size();size=std::min(size+1,ring.size());
+        float out[3]{p[0],p[1],p[2]};
+        for(int c=0;c<3;c++) {
+            int axis=c<2?0:1;double W=windowMs[axis];
+            if(W<=0)continue;
+            double a1,a0;
+            if(c==2 && now-2*W<verticalFrom)continue;
+            if(c<2 && now-2*W<horizontalFrom)continue;
+            if(!Average(now-W,now,c,a1) || !Average(now-2*W,now-W,c,a0))continue;
+            out[c]=float(a1+(a1-a0)/2);
+        }
+        // A deviation bigger than the limit means the average no longer
+        // describes the input: drop the correction and restart averaging.
+        float dx=out[0]-p[0],dy=out[1]-p[1],h=std::hypot(dx,dy);
+        if(h>limit[0]){horizontalFrom=now;dx=dy=0;}
+        float dz=out[2]-p[2];
+        if(std::abs(dz)>limit[1]) {
+            // Bigger than any bounce: a real height change (crouch, jump, landing).
+            // Follow it now and restart vertical averaging from here.
+            verticalFrom=now;dz=0;
+        }
+        // Rate-limit the correction so start/stop/crouch never pop in one frame.
+        double dt=size>1?std::clamp((now-lastT)/1000.,0.,0.1):0.;lastT=now;
+        float target[3]{dx,dy,dz};
+        for(int c=0;c<3;c++){float step=float(rate[c<2?0:1]*dt);dev[c]+=std::clamp(target[c]-dev[c],-step,step);}
+        p[0]+=dev[0];p[1]+=dev[1];p[2]+=dev[2];
+    }
+};
+// Heading (yaw) swing filter: two cascaded stages; snap turns and other jumps
+// (> 3 deg in one frame) are tracked as an offset so they pass through instantly.
+struct YawSwing {
+    BobFilter a,b;double offset{},last{},unwrapped{};bool have{};
+    YawSwing(){a.windowMs[1]=b.windowMs[1]=0;a.limit[0]=b.limit[0]=1.5f;a.rate[0]=b.rate[0]=10.f;}
+    double Apply(double yaw,double ms) {
+        if(!a.enabled && !b.enabled)return yaw;
+        if(have){double d=std::remainder(yaw-last,360.);unwrapped+=d;if(std::abs(d)>3)offset+=d;}
+        else {unwrapped=offset=yaw;}
+        last=yaw;have=true;
+        double in=unwrapped-offset; // swing and slow turning only
+        if(std::abs(in)>720){offset=unwrapped;in=0;a.Reset();b.Reset();}
+        float p[3]{float(in),0,0};
+        a.Apply(p,ms);b.Apply(p,ms);
+        return p[0]+offset;
+    }
+} yawSwing;
+double PreciseMs() {
+    static LARGE_INTEGER frequency{};
+    if(!frequency.QuadPart)QueryPerformanceFrequency(&frequency);
+    LARGE_INTEGER now{};QueryPerformanceCounter(&now);
+    return double(now.QuadPart)*1000./double(frequency.QuadPart);
+}
 CameraMath::Matrix RenderBase(const CameraMath::Matrix& game) {
     // HorizontalDirection keeps only heading and position in PlayerCamera's
     // right/down/forward Z-up basis; the headset supplies all pitch and roll.
@@ -508,6 +616,19 @@ void __fastcall UpdateHook(void* self,void*) {
             // Keep native aiming/input intact. Level only the VR rendering
             // base, then add the headset's complete orientation and position.
             auto renderBase=RenderBase(current.originalWorld);
+            // Other camera modes skip the filter; its jump/gap checks reset it when gameplay resumes.
+            if(active==manager+0x6f0) {
+                double ms=PreciseMs();
+                if(yawOnlyCamera && (yawSwing.a.enabled||yawSwing.b.enabled)) {
+                    // renderBase is pure heading here: rebuild it from the filtered yaw.
+                    double yaw=std::atan2(renderBase.m[9],renderBase.m[8])*180/3.14159265358979;
+                    double f=yawSwing.Apply(yaw,ms)*3.14159265358979/180;
+                    float x=float(std::cos(f)),y=float(std::sin(f));
+                    renderBase.m[0]=y;renderBase.m[1]=-x;renderBase.m[2]=0;
+                    renderBase.m[8]=x;renderBase.m[9]=y;renderBase.m[10]=0;
+                }
+                if(bobTrace)BobTrace(ms,current.originalWorld,renderBase.m+12,t);
+            }
             current.world=CameraMath::HeadWorld(renderBase,reference,t.head,worldScale);
             current.view=CameraMath::InverseRigid(current.world);
             current.manager=CameraMath::Load(manager+0x13b0);
@@ -749,6 +870,17 @@ void Install() {
     lockVerticalCamera=GetPrivateProfileIntW(L"VR",L"LockVerticalCamera",0,config)!=0;
     levelRecenter=GetPrivateProfileIntW(L"VR",L"LevelRecenter",1,config)!=0;
     yawOnlyCamera=GetPrivateProfileIntW(L"VR",L"YawOnlyCamera",0,config)!=0;
+    bobTrace=GetPrivateProfileIntW(L"VR",L"BobTrace",0,config)!=0;
+    auto readInt=[&](const wchar_t* key,int fallback,int hi){return std::clamp(static_cast<int>(GetPrivateProfileIntW(L"VR",key,fallback,config)),0,hi);};
+    auto readFloat=[&](const wchar_t* key,const wchar_t* fallback,float lo,float hi,float& target) {
+        wchar_t text[32]{};GetPrivateProfileStringW(L"VR",key,fallback,text,32,config);
+        float v=static_cast<float>(_wtof(text));if(std::isfinite(v)&&v>=lo&&v<=hi)target=v;
+    };
+    yawSwing.a.windowMs[0]=readInt(L"HeadSwayYawMs",0,2000);
+    yawSwing.b.windowMs[0]=readInt(L"HeadSwayYawMs2",0,2000);
+    readFloat(L"HeadSwayYawLimit",L"1.5",0,20,yawSwing.a.limit[0]);
+    yawSwing.b.limit[0]=yawSwing.a.limit[0];
+    yawSwing.a.enabled=yawSwing.a.windowMs[0]>0;yawSwing.b.enabled=yawSwing.b.windowMs[0]>0;
     motionControls=DirectionConfig::MotionEnabled(config);
     experimentalMotionControls=motionControls && GetPrivateProfileIntW(L"VR",L"ExperimentalMotionControls",0,config)!=0;
     controllerHideArms=GetPrivateProfileIntW(L"VR",L"ControllerHideArms",1,config)!=0;
@@ -758,7 +890,7 @@ void Install() {
     float muzzleForward=static_cast<float>(_wtof(scaleText));
     if(std::isfinite(muzzleForward) && muzzleForward>=0 && muzzleForward<=1)controllerMuzzleForward=muzzleForward;
     FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")) {
-        fprintf(f,"Camera hooks base=%p enabled=%d unitsPerMetre=%g lockVerticalCamera=%d levelRecenter=%d yawOnlyCamera=%d F6=toggle F9=recenter\n",reinterpret_cast<void*>(base),enabled,worldScale,lockVerticalCamera,levelRecenter,yawOnlyCamera);fclose(f);
+        fprintf(f,"Camera hooks base=%p enabled=%d unitsPerMetre=%g lockVerticalCamera=%d levelRecenter=%d yawOnlyCamera=%d yawMs=%d/%d yawLimit=%g F6=toggle F9=recenter\n",reinterpret_cast<void*>(base),enabled,worldScale,lockVerticalCamera,levelRecenter,yawOnlyCamera,yawSwing.a.windowMs[0],yawSwing.b.windowMs[0],yawSwing.a.limit[0]);fclose(f);
     }
 }
 }

@@ -112,6 +112,17 @@ The game's stereo separation/convergence sliders do not calibrate tracked VR: th
 
 `YawOnlyCamera=1` under `[VR]` takes the VR rendering base from the game camera's heading and position only, so the headset supplies all pitch and roll. It goes further than `LockVerticalCamera`, which removes look pitch but keeps the camera's own pitch and roll, including the walk animation's tilt. Aiming, the gun and virtual-screen modes are unaffected. Defaults to `0`; restart after changing it.
 
+Optional heading-swing filtering smooths the walk animation's left-right swing of the camera heading out of the VR view, without touching the game's own camera. It needs `YawOnlyCamera=1`. Each setting is a time window in milliseconds and defaults to `0` (off):
+
+```ini
+HeadSwayYawMs=667       ; heading swing, walking
+HeadSwayYawMs2=526      ; heading swing, second rhythm (sprinting)
+```
+
+The filter reports the time-average of the heading over the last window, extrapolated by half a window so steady turning is not delayed; a periodic swing whose period divides the window averages out. The correction is limited to `HeadSwayYawLimit` (1.5 degrees); a larger difference means the average no longer describes the camera, so the correction is dropped and averaging restarts. Snap turns and other heading jumps over 3 degrees in one frame pass straight through. Loads, teleports and pauses reset the filter. Only gameplay is filtered; other camera modes pass through.
+
+`BobTrace=1` writes one line per frame to `DeusExHRVR-bob.csv` (camera position and heading, stick input, head pose; capped at 36000 lines) for measuring the walk animation on other hardware. The values above came from such a trace of walking and sprinting in the first hub. Tracing costs frame time - leave it at `0` for play.
+
 ## Restore the original game
 
 Close the game and run `uninstall.ps1` with the same game path:

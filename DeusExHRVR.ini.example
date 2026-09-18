@@ -43,3 +43,16 @@ LevelRecenter=1
 ; the headset supplies all pitch and roll, including the walk animation's tilt.
 ; Aiming, the gun and virtual-screen modes are unaffected. Restart to apply.
 YawOnlyCamera=0
+
+; Optional filtering of the walk animation's left-right heading swing, in
+; milliseconds; 0 disables each stage. Two cascaded stages (walking, then a
+; second rhythm for sprinting). Needs YawOnlyCamera=1 to take effect.
+; Suggested values: 667 / 526. Snap turns and other jumps pass through.
+HeadSwayYawMs=0
+HeadSwayYawMs2=0
+; Largest heading correction allowed, in degrees.
+HeadSwayYawLimit=1.5
+; Write DeusExHRVR-bob.csv, one line per frame (camera position and heading,
+; stick input, head pose) for measuring the walk animation. Costs frame time;
+; leave at 0 for play.
+BobTrace=0
