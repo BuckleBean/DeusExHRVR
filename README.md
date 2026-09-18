@@ -112,6 +112,8 @@ The game's stereo separation/convergence sliders do not calibrate tracked VR: th
 
 `LevelRecenter=1` under `[VR]` (default) keeps only the heading of the head pose captured when tracking starts and on F9. A head tilted slightly up or down at that moment no longer tilts the world for the rest of the session; position, including height, is still taken from the captured pose. Set it to `0` for the previous behavior. The effect is most visible with `LockVerticalCamera=1`, where the native look pitch no longer masks the tilt.
 
+`LevelMenu=1` under `[VR]` (default) levels the in-game menu (map, objectives, inventory). The game stops updating its camera while that menu is open, so the view freezes at the head pose of that moment, and the menu, drawn in front of that pose, stayed tilted by however far the head was tilted. The frozen pose now keeps only its heading, the same as `LevelRecenter`: the menu comes out level, and the 3D view behind it is kept. Set it to `0` for the previous behavior.
+
 `YawOnlyCamera=1` under `[VR]` takes the VR rendering base from the game camera's heading and position only, so the headset supplies all pitch and roll. It goes further than `LockVerticalCamera`, which removes look pitch but keeps the camera's own pitch and roll, including the walk animation's tilt. Aiming, the gun and virtual-screen modes are unaffected. Defaults to `0`; restart after changing it.
 
 `StanceHold=1` under `[VR]` takes the VR camera's height from the player's own origin plus a held eye height, rather than following the game camera's vertical motion. It removes the walk animation's bounce and the stance-height steps described below.
@@ -137,7 +139,7 @@ The filter reports the time-average of the heading over the last window, extrapo
 
 `BobTrace=1` writes one line per frame to `DeusExHRVR-bob.csv` (camera position and heading, stick input, head pose; capped at 36000 lines) for measuring the walk animation on other hardware. The values above came from such a trace of walking and sprinting in the first hub. Tracing costs frame time - leave it at `0` for play.
 
-Motion-controller buttons can be remapped in `DeusExHRVR.ini` without touching the game's own bindings. `[Buttons]` applies during gameplay and scoped aiming; `[ScreenButtons]` applies to the title and pause menus, terminals, hacking, videos and game over, where one-handed use and a different Select/Back pairing are often easier. Anything not listed keeps the stock layout above. The in-game hub (map, objectives, inventory) is not yet detected as a screen, so `[ScreenButtons]` does not apply there.
+Motion-controller buttons can be remapped in `DeusExHRVR.ini` without touching the game's own bindings. `[Buttons]` applies during gameplay and scoped aiming; `[ScreenButtons]` applies to the title and pause menus, the in-game menu (map, objectives, inventory), terminals, hacking, videos and game over, where one-handed use and a different Select/Back pairing are often easier. Anything not listed keeps the stock layout above. The in-game menu stays in tracked VR; only its buttons follow `[ScreenButtons]`.
 
 ```ini
 [Buttons]

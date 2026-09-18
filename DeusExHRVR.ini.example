@@ -38,6 +38,10 @@ ControllerMuzzleForwardMetres=0.25
 ; on F9, so a head tilted up or down at that moment does not tilt the world.
 ; Position, including height, is still captured. 0 restores the old behavior.
 LevelRecenter=1
+; The view freezes while the in-game menu (map, objectives, inventory) is open.
+; Keep only the heading of that frozen pose so the menu is level instead of
+; tilted with the head. 0 restores the old behavior.
+LevelMenu=1
 
 ; Take the VR rendering base from the game camera's heading and position only:
 ; the headset supplies all pitch and roll, including the walk animation's tilt.
@@ -84,9 +88,8 @@ SnapTurnPauseMs=60
 ; RightStickDown under [Buttons] hold a target while it is pushed up or down.
 
 ; Optional button layout. [Buttons] applies to gameplay and scoped aiming,
-; [ScreenButtons] to the title and pause menus, terminals, hacking, videos and
-; game over. It does not yet apply in the in-game hub (map, objectives,
-; inventory), which is not detected as a screen.
+; [ScreenButtons] to the title and pause menus, the in-game menu (map,
+; objectives, inventory), terminals, hacking, videos and game over.
 ; Omitted entries keep the stock layout. Inputs: RightA, RightB, LeftX, LeftY,
 ; LeftGrip, RightGrip, LeftStickClick, RightStickClick, LeftTrigger,
 ; RightTrigger. Targets: A B X Y LB RB LS RS LT RT Back Start DPadUp DPadDown

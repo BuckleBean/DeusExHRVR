@@ -122,8 +122,9 @@ void ApplyScreenButtons(XINPUT_GAMEPAD& pad) {
     Emit(pad,screenRightTrigger,in.bRightTrigger>127,in.bRightTrigger);
 }
 void ApplyButtons(XINPUT_GAMEPAD& pad) {
-    // Gameplay (and scoped aiming) use [Buttons]; menus, terminals, hacking,
-    // videos and game over use [ScreenButtons]; anything else stays stock.
+    // Gameplay (and scoped aiming) use [Buttons]; menus (including the in-game
+    // menu), terminals, hacking, videos and game over use [ScreenButtons];
+    // anything else stays stock.
     float gameplayYaw=0;
     bool gameplay=EngineCamera::SnapTurnView(gameplayYaw);
     unsigned reasons=gameplay?0:EngineCamera::CurrentScreenReasons();
