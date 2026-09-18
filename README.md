@@ -28,6 +28,8 @@ Other executable versions and the original non-Director's Cut release are not su
 
 For motion-controlled weapons, copy `DeusExHRVR.ini.example` beside `DXHRDC.exe` as `DeusExHRVR.ini`, set `ExperimentalMotionControls=1`, and restart. `MotionControls=1` enables controller buttons; `InteractionAim` and `MovementDirection` independently accept `Mouse`, `Headset`, or `Controller`. The confirmed local setup uses `WorldUnitsPerMetre=300` with both direction settings at `Headset`; adjust scale for comfort. Upgrading replaces both the game DLL and its companion together. Existing INI settings are preserved.
 
+For a ready-made comfort setup, copy `DeusExHRVR.ini.comfort` beside `DXHRDC.exe` as `DeusExHRVR.ini` instead. It turns on the options below that remove imposed head motion (yaw-only camera, stance hold, heading-swing filtering), snap turn at 30°, controller interaction aim and headset walking direction, with `WorldUnitsPerMetre=300`. It keeps the stock button layout. Nothing in it is enabled by default.
+
 Run the installer as the Windows user who plays the game. It backs up replaced files and original graphics settings to `DeusExHRVR-backup` in the game folder. It enables DX11/native stereo and disables VSync and antialiasing for the tested configuration.
 
 Keep the companion in the game's `DeusExHRVR/DeusExHRVRHost.exe` subfolder so it cannot load the game's 32-bit proxy DLLs.
@@ -107,6 +109,57 @@ WorldUnitsPerMetre=100
 The accepted range is 10–1000. Higher values make the world appear smaller and increase close-range stereo depth; lower values make it appear larger and reduce depth. Physical head translation uses the same scale. To confirm that your edit was read, check `unitsPerMetre=` in the latest `Camera hooks` line in `DeusExHRVR-camera.log`.
 
 The game's stereo separation/convergence sliders do not calibrate tracked VR: that path uses the headset eye poses and `WorldUnitsPerMetre`. The original stereo settings remain relevant to the untracked screen mode.
+
+`LevelRecenter=1` under `[VR]` (default) keeps only the heading of the head pose captured when tracking starts and on F9. A head tilted slightly up or down at that moment no longer tilts the world for the rest of the session; position, including height, is still taken from the captured pose. Set it to `0` for the previous behavior. The effect is most visible with `LockVerticalCamera=1`, where the native look pitch no longer masks the tilt.
+
+`YawOnlyCamera=1` under `[VR]` takes the VR rendering base from the game camera's heading and position only, so the headset supplies all pitch and roll. It goes further than `LockVerticalCamera`, which removes look pitch but keeps the camera's own pitch and roll, including the walk animation's tilt. Aiming, the gun and virtual-screen modes are unaffected. Defaults to `0`; restart after changing it.
+
+`StanceHold=1` under `[VR]` takes the VR camera's height from the player's own origin plus a held eye height, rather than following the game camera's vertical motion. It removes the walk animation's bounce and the stance-height steps described below.
+
+```ini
+StanceHold=1
+StanceHoldTrigger=60    ; game units; gap that counts as a real stance change
+StanceHoldRate=600      ; units/s the view follows a real stance change
+```
+
+Measured against the player entity over 9000 frames on the supported build: the camera's X and Y equal the entity's origin to 0.2 units, so there is no lateral bob in this game at all. Its height above that origin is a *stance* height, not a smooth signal - the game raises it about 15 units while crouch-walking and lowers it about 25 while sprinting, then steps back when you stop. Those steps are 3-5 cm of vertical head movement and read as a bounce; averaging can smooth such a step but can never cancel a sustained offset.
+
+Holding the height instead makes gait offsets and walking bob invisible, while a real stance change - crouched and standing differ by about 300 units - is followed at `StanceHoldRate` until the camera settles. `StanceHoldTrigger` separates the two: gait offsets are 15-25 units and walking bob is about 2. Defaults to `0`. Ladders, cover, vaulting and elevators have not been tested with it yet.
+
+Optional heading-swing filtering smooths the walk animation's left-right swing of the camera heading out of the VR view, without touching the game's own camera. It needs `YawOnlyCamera=1`. Each setting is a time window in milliseconds and defaults to `0` (off):
+
+```ini
+HeadSwayYawMs=667       ; heading swing, walking
+HeadSwayYawMs2=526      ; heading swing, second rhythm (sprinting)
+```
+
+The filter reports the time-average of the heading over the last window, extrapolated by half a window so steady turning is not delayed; a periodic swing whose period divides the window averages out. The correction is limited to `HeadSwayYawLimit` (1.5 degrees); a larger difference means the average no longer describes the camera, so the correction is dropped and averaging restarts. Snap turns and other heading jumps over 3 degrees in one frame pass straight through. Loads, teleports and pauses reset the filter. Only gameplay is filtered; other camera modes pass through.
+
+`BobTrace=1` writes one line per frame to `DeusExHRVR-bob.csv` (camera position and heading, stick input, head pose; capped at 36000 lines) for measuring the walk animation on other hardware. The values above came from such a trace of walking and sprinting in the first hub. Tracing costs frame time - leave it at `0` for play.
+
+Motion-controller buttons can be remapped in `DeusExHRVR.ini` without touching the game's own bindings. `[Buttons]` applies during gameplay and scoped aiming; `[ScreenButtons]` applies to the title and pause menus, terminals, hacking, videos and game over, where one-handed use and a different Select/Back pairing are often easier. Anything not listed keeps the stock layout above. The in-game hub (map, objectives, inventory) is not yet detected as a screen, so `[ScreenButtons]` does not apply there.
+
+```ini
+[Buttons]
+RightA=A
+RightB=Y
+LeftX=X
+LeftY=B
+LeftGrip=LB
+RightGrip=RB
+LeftStickClick=LS
+RightStickClick=RS
+LeftTrigger=LT
+RightTrigger=RT
+```
+
+Inputs are `RightA`, `RightB`, `LeftX`, `LeftY`, `LeftGrip`, `RightGrip`, `LeftStickClick`, `RightStickClick`, `LeftTrigger`, `RightTrigger`. Targets are `A`, `B`, `X`, `Y`, `LB`, `RB`, `LS`/`L3`, `RS`/`R3`, `LT`, `RT`, `Back`, `Start`, `DPadUp`, `DPadDown`, `DPadLeft`, `DPadRight`, or `None`. Triggers may be mapped to buttons and buttons to triggers. `<Input>HoldMs=250` makes that input send its target only after it has been held that long, so accidental taps send nothing; with a hold delay set, `<Input>Tap=A` sends a different target as a 120 ms pulse when the input is released early. Unrecognized names are logged and ignored. Restart after editing.
+
+`SnapTurn=1` under `[VR]` replaces the right stick's smooth camera turn during gameplay with a snap turn. A flick within 60 degrees of horizontal turns the view instantly by `SnapTurnDegrees` (default 30); the stick must return near center before the next flick. Menus, terminals and scoped aiming keep the native right stick.
+
+The turn is one injected relative mouse move, which avoids the stick's acceleration ramp. `SnapTurnMouseCounts` is the size of that move; the mod measures the resulting heading change after each snap and writes a corrected value back to the INI, so it self-calibrates within a few turns from any starting value. The game appears to ignore mouse look while the gamepad left stick is deflected, so walking is released for up to `SnapTurnPauseMs` (default 60) around the injected move and resumed as soon as the camera has visibly turned.
+
+With `SnapTurn=1`, the right stick's vertical axis is free, so `RightStickUp` and `RightStickDown` under `[Buttons]` can hold a button while the stick is pushed within 30 degrees of vertical (for example `RightStickUp=A` to jump and `RightStickDown=LS` to crouch).
 
 ## Restore the original game
 

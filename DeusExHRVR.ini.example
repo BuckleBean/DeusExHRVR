@@ -33,3 +33,66 @@ ExperimentalMotionControls=0
 ControllerHideArms=1
 ; Position the muzzle this far ahead of the controller aim pose (0-1 metre).
 ControllerMuzzleForwardMetres=0.25
+
+; Keep only heading (yaw) from the head pose captured when tracking starts and
+; on F9, so a head tilted up or down at that moment does not tilt the world.
+; Position, including height, is still captured. 0 restores the old behavior.
+LevelRecenter=1
+
+; Take the VR rendering base from the game camera's heading and position only:
+; the headset supplies all pitch and roll, including the walk animation's tilt.
+; Aiming, the gun and virtual-screen modes are unaffected. Restart to apply.
+YawOnlyCamera=0
+
+; Take the camera height from the player's own origin plus a held eye height,
+; instead of following the game camera. Removes the walk bounce and the stance
+; height steps the game applies while crouch-walking (+15 units) and sprinting
+; (-25), which show up as a bounce when you stop. Restart to apply.
+StanceHold=0
+; Gap that counts as a real stance change, in game units. Crouched and standing
+; differ by about 300; gait offsets are 15-25 and walking bob is about 2.
+StanceHoldTrigger=60
+; How fast the view follows a real stance change, in units per second.
+; The game's own crouch and stand move the camera at about 1000.
+StanceHoldRate=600
+
+; Optional filtering of the walk animation's left-right heading swing, in
+; milliseconds; 0 disables each stage. Two cascaded stages (walking, then a
+; second rhythm for sprinting). Needs YawOnlyCamera=1 to take effect.
+; Suggested values: 667 / 526. Snap turns and other jumps pass through.
+HeadSwayYawMs=0
+HeadSwayYawMs2=0
+; Largest heading correction allowed, in degrees.
+HeadSwayYawLimit=1.5
+; Write DeusExHRVR-bob.csv, one line per frame (camera position and heading,
+; stick input, head pose) for measuring the walk animation. Costs frame time;
+; leave at 0 for play.
+BobTrace=0
+
+; Snap turn: a horizontal right-stick flick turns the view instantly during
+; gameplay instead of the stick's accelerating smooth turn. Menus, terminals
+; and scoped aiming keep the native right stick.
+SnapTurn=0
+SnapTurnDegrees=30
+; Size of the injected mouse move. Measured after each snap and rewritten here,
+; so it self-calibrates from any starting value.
+SnapTurnMouseCounts=300
+; The game ignores mouse look while the left stick is deflected, so walking is
+; released for at most this long around the injected move.
+SnapTurnPauseMs=60
+; With SnapTurn=1 the right stick's vertical axis is free: RightStickUp and
+; RightStickDown under [Buttons] hold a target while it is pushed up or down.
+
+; Optional button layout. [Buttons] applies to gameplay and scoped aiming,
+; [ScreenButtons] to the title and pause menus, terminals, hacking, videos and
+; game over. It does not yet apply in the in-game hub (map, objectives,
+; inventory), which is not detected as a screen.
+; Omitted entries keep the stock layout. Inputs: RightA, RightB, LeftX, LeftY,
+; LeftGrip, RightGrip, LeftStickClick, RightStickClick, LeftTrigger,
+; RightTrigger. Targets: A B X Y LB RB LS RS LT RT Back Start DPadUp DPadDown
+; DPadLeft DPadRight None. <Input>HoldMs=250 delays the target until the input
+; has been held that long; with a delay set, <Input>Tap=A sends a short pulse
+; when the input is released early.
+[Buttons]
+
+[ScreenButtons]

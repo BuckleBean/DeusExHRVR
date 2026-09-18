@@ -1,0 +1,39 @@
+[VR]
+; Optional comfort preset. Nothing here is on by default; to use it, copy this
+; file beside DXHRDC.exe as DeusExHRVR.ini (or copy the lines you want into your
+; existing DeusExHRVR.ini) and restart the game. Anything not listed keeps its
+; default. See DeusExHRVR.ini.example for every option and what it does.
+;
+; Tested on one setup: Quest 3 over Virtual Desktop, VDXR runtime.
+
+; World scale. The README's confirmed local setup uses 300.
+WorldUnitsPerMetre=300
+
+; The headset supplies all tilt: no aiming pitch, and none of the camera's own
+; pitch or roll from the walk animation.
+LockVerticalCamera=1
+YawOnlyCamera=1
+
+; Hold the eye height: removes walking bob and the bounce when you stop after
+; crouch-walking or sprinting.
+StanceHold=1
+
+; Smooth out the walk animation's left-right heading swing.
+HeadSwayYawMs=667
+HeadSwayYawMs2=526
+
+; Snap turn instead of the stick's accelerating smooth turn.
+SnapTurn=1
+SnapTurnDegrees=30
+
+; Motion controllers: buttons, directions and the right-hand weapon pose.
+; ExperimentalMotionControls is the weapon experiment; set it to 0 if the gun
+; misbehaves.
+MotionControls=1
+ExperimentalMotionControls=1
+; Point at items with the right controller instead of leaning your head at them.
+InteractionAim=Controller
+; Walk where you're looking.
+MovementDirection=Headset
+
+; No [Buttons] or [ScreenButtons] sections: the stock button layout is kept.
