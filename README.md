@@ -28,6 +28,8 @@ Other executable versions and the original non-Director's Cut release are not su
 
 For motion-controlled weapons, copy `DeusExHRVR.ini.example` beside `DXHRDC.exe` as `DeusExHRVR.ini`, set `ExperimentalMotionControls=1`, and restart. `MotionControls=1` enables controller buttons; `InteractionAim` and `MovementDirection` independently accept `Mouse`, `Headset`, or `Controller`. The confirmed local setup uses `WorldUnitsPerMetre=300` with both direction settings at `Headset`; adjust scale for comfort. Upgrading replaces both the game DLL and its companion together. Existing INI settings are preserved.
 
+For a ready-made comfort setup, copy `DeusExHRVR.ini.comfort` beside `DXHRDC.exe` as `DeusExHRVR.ini` instead. It turns on the options below that remove imposed head motion (yaw-only camera, stance hold, heading-swing filtering), snap turn at 30°, controller interaction aim and headset walking direction, with `WorldUnitsPerMetre=300`. It keeps the stock button layout. Nothing in it is enabled by default.
+
 Run the installer as the Windows user who plays the game. It backs up replaced files and original graphics settings to `DeusExHRVR-backup` in the game folder. It enables DX11/native stereo and disables VSync and antialiasing for the tested configuration.
 
 Keep the companion in the game's `DeusExHRVR/DeusExHRVRHost.exe` subfolder so it cannot load the game's 32-bit proxy DLLs.
