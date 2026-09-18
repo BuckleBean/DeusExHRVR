@@ -44,6 +44,18 @@ LevelRecenter=1
 ; Aiming, the gun and virtual-screen modes are unaffected. Restart to apply.
 YawOnlyCamera=0
 
+; Take the camera height from the player's own origin plus a held eye height,
+; instead of following the game camera. Removes the walk bounce and the stance
+; height steps the game applies while crouch-walking (+15 units) and sprinting
+; (-25), which show up as a bounce when you stop. Restart to apply.
+StanceHold=0
+; Gap that counts as a real stance change, in game units. Crouched and standing
+; differ by about 300; gait offsets are 15-25 and walking bob is about 2.
+StanceHoldTrigger=60
+; How fast the view follows a real stance change, in units per second.
+; The game's own crouch and stand move the camera at about 1000.
+StanceHoldRate=600
+
 ; Optional filtering of the walk animation's left-right heading swing, in
 ; milliseconds; 0 disables each stage. Two cascaded stages (walking, then a
 ; second rhythm for sprinting). Needs YawOnlyCamera=1 to take effect.

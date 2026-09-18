@@ -158,6 +158,59 @@ struct BobFilter {
         p[0]+=dev[0];p[1]+=dev[1];p[2]+=dev[2];
     }
 };
+// Local patch: hold the eye height instead of following the game camera's
+// vertical motion.
+//
+// Measured against the player entity's own origin (9000 frames of walking,
+// crouch-walking and sprinting): the camera's X/Y equal the entity's to 0.2
+// units, so this game has no lateral bob. Its height above the entity is a
+// *stance* height, not a smooth signal - the game raises it ~15 units while
+// crouch-walking and lowers it ~25 while sprinting, then steps back when you
+// stop, which reads as a bounce. An averaging filter can smooth such a step but
+// can never cancel a sustained offset.
+//
+// So hold the height and follow only real stance changes. Crouched and standing
+// differ by ~300 units, while gait offsets are 15-25 and walking bob is about 2,
+// so a trigger of 60 separates them cleanly. The game's own crouch and stand
+// move the camera at about 1000 units/s (middle 80% of the transition); the
+// default catch-up of 600 follows a little more gently.
+struct StanceHold {
+    bool enabled{};
+    float trigger=60.f,rate=600.f;
+    float held{};bool have{},following{};
+    double lastT{};
+    struct Sample {double t;float v;};
+    std::array<Sample,128> ring{};size_t head{},size{};
+    void Reset(){have=false;following=false;size=0;}
+    // True once the camera has been within band for at least 100 ms.
+    bool Settled(double now,float band) const {
+        if(size<4)return false;
+        float lo=1e30f,hi=-1e30f;double oldest=now;
+        for(size_t i=0;i<size;i++) {
+            const auto& s=ring[(head+ring.size()-1-i)%ring.size()];
+            if(now-s.t>120)break;
+            lo=std::min(lo,s.v);hi=std::max(hi,s.v);oldest=s.t;
+        }
+        return now-oldest>=100 && hi-lo<band;
+    }
+    float Apply(float eye,double now) {
+        if(!std::isfinite(eye))return eye;
+        if(!have || now<lastT || now-lastT>500) { // first frame, load, teleport, pause
+            held=eye;have=true;following=false;lastT=now;
+            head=0;size=1;ring[0]={now,eye};
+            return held;
+        }
+        double dt=std::clamp((now-lastT)/1000.,0.,0.1);lastT=now;
+        ring[head]={now,eye};head=(head+1)%ring.size();size=std::min(size+1,ring.size());
+        if(!following && std::abs(eye-held)>trigger)following=true;
+        if(following) {
+            float step=float(rate*dt);
+            held+=std::clamp(eye-held,-step,step);
+            if(std::abs(eye-held)<5.f && Settled(now,5.f)){held=eye;following=false;}
+        }
+        return held;
+    }
+} stanceHold;
 // Heading (yaw) swing filter: two cascaded stages; snap turns and other jumps
 // (> 3 deg in one frame) are tracked as an offset so they pass through instantly.
 struct YawSwing {
@@ -619,6 +672,16 @@ void __fastcall UpdateHook(void* self,void*) {
             // Other camera modes skip the filter; its jump/gap checks reset it when gameplay resumes.
             if(active==manager+0x6f0) {
                 double ms=PreciseMs();
+                if(stanceHold.enabled) {
+                    // Player entity origin: three floats at +0x20 (measured on the supported
+                    // build; the camera's X/Y match it exactly, its Z sits an eye height below).
+                    auto entity=*reinterpret_cast<const unsigned char* const*>(active+0xaa0);
+                    float entZ=entity?*reinterpret_cast<const float*>(entity+0x28):0.f;
+                    float eye=entity?renderBase.m[14]-entZ:0.f;
+                    if(entity && std::isfinite(eye) && eye>1.f && eye<900.f)
+                        renderBase.m[14]=entZ+stanceHold.Apply(eye,ms);
+                    else stanceHold.Reset(); // no player (menus, cutscenes): leave the camera alone
+                }
                 if(yawOnlyCamera && (yawSwing.a.enabled||yawSwing.b.enabled)) {
                     // renderBase is pure heading here: rebuild it from the filtered yaw.
                     double yaw=std::atan2(renderBase.m[9],renderBase.m[8])*180/3.14159265358979;
@@ -881,6 +944,10 @@ void Install() {
     readFloat(L"HeadSwayYawLimit",L"1.5",0,20,yawSwing.a.limit[0]);
     yawSwing.b.limit[0]=yawSwing.a.limit[0];
     yawSwing.a.enabled=yawSwing.a.windowMs[0]>0;yawSwing.b.enabled=yawSwing.b.windowMs[0]>0;
+    stanceHold.enabled=GetPrivateProfileIntW(L"VR",L"StanceHold",0,config)!=0;
+    readFloat(L"StanceHoldTrigger",L"60",5,400,stanceHold.trigger);
+    readFloat(L"StanceHoldRate",L"600",50,5000,stanceHold.rate);
+    stanceHold.Reset();
     motionControls=DirectionConfig::MotionEnabled(config);
     experimentalMotionControls=motionControls && GetPrivateProfileIntW(L"VR",L"ExperimentalMotionControls",0,config)!=0;
     controllerHideArms=GetPrivateProfileIntW(L"VR",L"ControllerHideArms",1,config)!=0;
@@ -890,7 +957,7 @@ void Install() {
     float muzzleForward=static_cast<float>(_wtof(scaleText));
     if(std::isfinite(muzzleForward) && muzzleForward>=0 && muzzleForward<=1)controllerMuzzleForward=muzzleForward;
     FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")) {
-        fprintf(f,"Camera hooks base=%p enabled=%d unitsPerMetre=%g lockVerticalCamera=%d levelRecenter=%d yawOnlyCamera=%d yawMs=%d/%d yawLimit=%g F6=toggle F9=recenter\n",reinterpret_cast<void*>(base),enabled,worldScale,lockVerticalCamera,levelRecenter,yawOnlyCamera,yawSwing.a.windowMs[0],yawSwing.b.windowMs[0],yawSwing.a.limit[0]);fclose(f);
+        fprintf(f,"Camera hooks base=%p enabled=%d unitsPerMetre=%g lockVerticalCamera=%d levelRecenter=%d yawOnlyCamera=%d stanceHold=%d/%g/%g yawMs=%d/%d yawLimit=%g F6=toggle F9=recenter\n",reinterpret_cast<void*>(base),enabled,worldScale,lockVerticalCamera,levelRecenter,yawOnlyCamera,stanceHold.enabled,stanceHold.trigger,stanceHold.rate,yawSwing.a.windowMs[0],yawSwing.b.windowMs[0],yawSwing.a.limit[0]);fclose(f);
     }
 }
 }
