@@ -178,12 +178,13 @@ struct BobFilter {
 //
 // So hold the height and follow only real stance changes. Crouched and standing
 // differ by ~300 units, while gait offsets are 15-25 and walking bob is about 2,
-// so a trigger of 60 separates them cleanly. The game's own crouch and stand
-// move the camera at about 1000 units/s (middle 80% of the transition); the
-// default catch-up of 600 follows a little more gently.
+// so a trigger of 60 separates them cleanly. A real change is followed at the
+// game's own speed: its crouch and stand move the camera at about 1000 units/s
+// (measured over the middle 80% of the transition on the supported build).
 struct StanceHold {
     bool enabled{};
-    float trigger=60.f,rate=600.f;
+    float trigger=60.f;
+    static constexpr float rate=1000.f;
     float held{};bool have{},following{};
     double lastT{};
     struct Sample {double t;float v;};
@@ -1053,7 +1054,6 @@ void Install() {
     yawSwing.a.enabled=yawSwing.a.windowMs[0]>0;yawSwing.b.enabled=yawSwing.b.windowMs[0]>0;
     stanceHold.enabled=GetPrivateProfileIntW(L"VR",L"StanceHold",0,config)!=0;
     readFloat(L"StanceHoldTrigger",L"60",5,400,stanceHold.trigger);
-    readFloat(L"StanceHoldRate",L"600",50,5000,stanceHold.rate);
     stanceHold.Reset();
     motionControls=DirectionConfig::MotionEnabled(config);
     experimentalMotionControls=motionControls && GetPrivateProfileIntW(L"VR",L"ExperimentalMotionControls",0,config)!=0;

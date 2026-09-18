@@ -55,10 +55,8 @@ YawOnlyCamera=0
 StanceHold=0
 ; Gap that counts as a real stance change, in game units. Crouched and standing
 ; differ by about 300; gait offsets are 15-25 and walking bob is about 2.
+; A real stance change is followed at the game's own crouch speed.
 StanceHoldTrigger=60
-; How fast the view follows a real stance change, in units per second.
-; The game's own crouch and stand move the camera at about 1000.
-StanceHoldRate=600
 
 ; Optional filtering of the walk animation's left-right heading swing, in
 ; milliseconds; 0 disables each stage. Two cascaded stages (walking, then a

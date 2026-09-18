@@ -121,12 +121,11 @@ The game's stereo separation/convergence sliders do not calibrate tracked VR: th
 ```ini
 StanceHold=1
 StanceHoldTrigger=60    ; game units; gap that counts as a real stance change
-StanceHoldRate=600      ; units/s the view follows a real stance change
 ```
 
 Measured against the player entity over 9000 frames on the supported build: the camera's X and Y equal the entity's origin to 0.2 units, so there is no lateral bob in this game at all. Its height above that origin is a *stance* height, not a smooth signal - the game raises it about 15 units while crouch-walking and lowers it about 25 while sprinting, then steps back when you stop. Those steps are 3-5 cm of vertical head movement and read as a bounce; averaging can smooth such a step but can never cancel a sustained offset.
 
-Holding the height instead makes gait offsets and walking bob invisible, while a real stance change - crouched and standing differ by about 300 units - is followed at `StanceHoldRate` until the camera settles. `StanceHoldTrigger` separates the two: gait offsets are 15-25 units and walking bob is about 2. Defaults to `0`. Ladders, cover, vaulting and elevators have not been tested with it yet.
+Holding the height instead makes gait offsets and walking bob invisible, while a real stance change - crouched and standing differ by about 300 units - is followed at the game's own crouch speed (about 1000 units/s, measured) until the camera settles. `StanceHoldTrigger` separates the two: gait offsets are 15-25 units and walking bob is about 2. Defaults to `0`. Ladders, cover, vaulting and elevators have not been tested with it yet.
 
 Optional heading-swing filtering smooths the walk animation's left-right swing of the camera heading out of the VR view, without touching the game's own camera. It needs `YawOnlyCamera=1`. Each setting is a time window in milliseconds and defaults to `0` (off):
 
