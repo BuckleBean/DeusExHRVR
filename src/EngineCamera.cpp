@@ -265,6 +265,15 @@ Snapshot current;
 std::atomic<bool> gameMenuOpen{};
 CameraMath::Matrix lastRenderBase,lastManagerRaw,lastOldView;
 uint32_t menuUpdates{};
+// Frames presented since the last tracked camera update. The game also stops its
+// camera on loading/briefing screens; after frozenLevelFrames the view is leveled
+// there too. The in-game menu, whose opening is hooked, is leveled at once.
+bool updatedSincePresent{};uint32_t presentsWithoutUpdate{};
+constexpr uint32_t frozenLevelFrames=10;
+// Local patch (reader buttons): the e-reader and news reader are Scaleform screens
+// shown over live gameplay. While one is open, [ScreenButtons] applies; the camera
+// and snap turn are unchanged.
+std::atomic<bool> readerOpen{};
 struct WeaponPose {void* weapon{};void* instance{};CameraMath::Matrix muzzle;uint64_t tick{};bool active{};void* owner{};};
 WeaponPose weaponPose;
 std::atomic<uint64_t> controllerDraws{},controllerMuzzles{};
@@ -714,6 +723,7 @@ void __fastcall UpdateHook(void* self,void*) {
             current.manager=CameraMath::Load(manager+0x13b0);
             auto oldView=CameraMath::Load(originalView(self));
             lastRenderBase=renderBase;lastManagerRaw=current.manager;lastOldView=oldView;
+            updatedSincePresent=true;
             // The camera never runs while the in-game menu is open (it stops before the
             // menu's open call). If it keeps running, the close call was missed.
             if(!gameMenuOpen)menuUpdates=0;
@@ -907,18 +917,22 @@ void __cdecl StereoHook(float* projection,bool firstEye,float width,float plane)
         {std::lock_guard lock(stateMutex);++stereoCalls;}
     } else originalStereo(projection,firstEye,width,plane);
 }
-// Local patch (level in-game menu): while the in-game menu is open the game stops
-// updating its camera, so every frame reuses the last head pose, pitch and roll
-// included, and the menu (a head-relative plane) is pinned at that tilt. Once the
-// pose is frozen, turn it about the head to heading only, the same as
-// LevelReference, and rebuild the camera from the last update's inputs. The eyes
-// keep their offsets from the head, the game world stays where it is and the menu
-// comes out level. Runs under stateMutex, once per frozen pose.
+// Local patch (level in-game menu): while the in-game menu or a loading/briefing
+// screen is up the game stops updating its camera, so every frame reuses the last
+// head pose, pitch and roll included, and the screen (a head-relative plane) is
+// pinned at that tilt. Once the pose is frozen, turn it about the head to heading
+// only, the same as LevelReference, and rebuild the camera from the last update's
+// inputs. The eyes keep their offsets from the head, the game world stays where it
+// is and the screen comes out level. Runs under stateMutex, once per frozen pose.
 void LevelFrozenView(uint64_t frame) {
-    static uint64_t seenId=0;
-    uint64_t id=current.active?current.tracking.id:0;
-    bool frozen=id && id==seenId;seenId=id;
-    if(!levelMenu || !gameMenuOpen || !frozen || current.leveled)return;
+    if(updatedSincePresent || !current.active)presentsWithoutUpdate=0;else ++presentsWithoutUpdate;
+    updatedSincePresent=false;
+    if(!levelMenu || !current.active || current.leveled)return;
+    bool menu=gameMenuOpen;
+    // The in-game menu is known to be open: level at once. Anything else must stay
+    // frozen for a while first, so a brief stall in gameplay is left alone.
+    if(presentsWithoutUpdate<(menu?1u:frozenLevelFrames))return;
+    uint64_t id=current.tracking.id;
     auto& t=current.tracking;
     auto fwd=CameraMath::Rotate(t.head.orientation,{0,0,-1}),right=CameraMath::Rotate(t.head.orientation,{1,0,0});
     double pitch=std::asin(std::clamp(double(fwd.y),-1.,1.))*180/3.14159265358979;
@@ -943,25 +957,32 @@ void LevelFrozenView(uint64_t frame) {
     }
     current.leveled=true;
     FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")) {
-        fprintf(f,"levelMenu frame=%llu pose=%llu removedPitch=%.1f removedRoll=%.1f\n",frame,id,pitch,roll);fclose(f);
+        fprintf(f,"levelMenu frame=%llu pose=%llu reason=%s removedPitch=%.1f removedRoll=%.1f\n",frame,id,menu?"menu":"frozen",pitch,roll);fclose(f);
     }
 }
 #if defined(_M_IX86)
-// Local patch (level in-game menu): the in-game menu (map/objectives/inventory) is
-// the game's NsGameMenuMovieController, a Scaleform screen, not one of the IMenu
-// classes (title, pause, ending, making-of) that ScreenMode can see. Hook its activate/deactivate (vtable slots 4/5, found through the game's
-// RTTI) to know when it is open. Each hook is a pass-through: it saves every
-// register and flag, notes the event, restores them and jumps into the original
-// function, so it cannot disturb the function's arguments or calling convention.
-// Every target is verified and hooked on its own: a mismatch skips only that hook
-// and never affects the camera hooks.
+// Local patch (level in-game menu, reader buttons): the in-game menu
+// (map/objectives/inventory), the e-reader and the news reader are the game's
+// NsGameMenu, NsIReader and NsNewsReader movie controllers: Scaleform screens, not
+// IMenu classes (title, pause, ending, making-of) that ScreenMode can see. Hook
+// their activate/deactivate (vtable slots 4/5, found through the game's RTTI) to
+// know when they are open. Each hook is a pass-through: it saves every register
+// and flag, notes the event, restores them and jumps into the original function,
+// so it cannot disturb the function's arguments or calling convention. Every
+// target is verified and hooked on its own: a mismatch skips only that hook and
+// never affects the camera hooks. Verification bytes stop before any absolute
+// address, which ASLR relocates.
 struct ScreenHook {uintptr_t address;const char* name;const char* event;const char* bytes;size_t length;};
 const ScreenHook screenHooks[]={
     {0x7e8630,"GameMenu","open","\x53\x56\xbb\x01\x00\x00\x00",7},{0x7e8be0,"GameMenu","close","\x53\x56\x8b\xf1\x8b\x4e\x30",7},
+    {0x7f08c0,"IReader","open","\x83\xec\x30\x53\x56\x8b\xf1",7},{0x7f0530,"IReader","close","\x83\xec\x30\x53\x56\x8b\xf1\x57",8},
+    {0x7f7e70,"NewsReader","open","\x83\xec\x20\x53\x56\x8b\xf1",7},{0x7f76c0,"NewsReader","close","\x83\xec\x20\x53\x56\x8b\xf1\x33",8},
 };
-void* screenOriginals[2]{};
+constexpr int screenHookCount=int(sizeof(screenHooks)/sizeof(screenHooks[0]));
+void* screenOriginals[screenHookCount]{};
 void __cdecl NoteScreen(int index,void* self) {
-    gameMenuOpen=index==0;
+    bool open=index%2==0;
+    if(index<2)gameMenuOpen=open;else readerOpen=open;
     FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")) {
         fprintf(f,"screen %s %s self=%p frame=%llu\n",screenHooks[index].name,screenHooks[index].event,self,frameId.load());fclose(f);
     }
@@ -969,12 +990,14 @@ void __cdecl NoteScreen(int index,void* self) {
 #define SCREEN_STUB(n) __declspec(naked) void ScreenStub##n() { \
     __asm pushad __asm pushfd __asm push ecx __asm push n __asm call NoteScreen __asm add esp,8 \
     __asm popfd __asm popad __asm jmp dword ptr [screenOriginals+n*4] }
-SCREEN_STUB(0) SCREEN_STUB(1)
+SCREEN_STUB(0) SCREEN_STUB(1) SCREEN_STUB(2) SCREEN_STUB(3) SCREEN_STUB(4) SCREEN_STUB(5)
 #undef SCREEN_STUB
 void InstallScreenHooks() {
-    void* stubs[2]={(void*)&ScreenStub0,(void*)&ScreenStub1};
+    void* stubs[]={(void*)&ScreenStub0,(void*)&ScreenStub1,(void*)&ScreenStub2,
+                   (void*)&ScreenStub3,(void*)&ScreenStub4,(void*)&ScreenStub5};
+    static_assert(sizeof(stubs)/sizeof(stubs[0])==screenHookCount,"one stub per screen hook");
     FILE* f{};if(fopen_s(&f,"DeusExHRVR-camera.log","a"))f=nullptr;
-    for(int i=0;i<2;i++) {
+    for(int i=0;i<screenHookCount;i++) {
         auto& h=screenHooks[i];auto target=reinterpret_cast<void*>(VA(h.address));
         const char* result="hooked";
         if(memcmp(target,h.bytes,h.length))result="skipped: unexpected bytes";
@@ -1136,8 +1159,9 @@ Transport::RenderInfo OnPresent(uint64_t frame,bool capture) {
 void SetChannel(Transport::Header* header){std::lock_guard lock(stateMutex);channel=header;trackingReader={};if(!header){current.active=false;referenceValid=false;}}
 // Local patch (snap turn): the game's own camera heading while full tracked VR
 // is showing gameplay. False in menus, terminals, scope and other screen modes.
-// Bit 32 (in-game menu) selects [ScreenButtons] only; the display stays tracked.
-unsigned CurrentScreenReasons(){std::lock_guard lock(stateMutex);return screenReasons|(gameMenuOpen?32u:0u);}
+// Bits 32 (in-game menu) and 64 (e-reader, news reader) select [ScreenButtons] only;
+// the display stays tracked.
+unsigned CurrentScreenReasons(){std::lock_guard lock(stateMutex);return screenReasons|(gameMenuOpen?32u:0u)|(readerOpen?64u:0u);}
 bool SnapTurnView(float& yaw) {
     std::lock_guard lock(stateMutex);
     auto now=GetTickCount64();
