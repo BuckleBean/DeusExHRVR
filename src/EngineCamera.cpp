@@ -537,13 +537,18 @@ uintptr_t __cdecl AttachmentHook(void* source,void* instance,int bone,CameraMath
 void __fastcall BoundsHook(void* self,void*,void* volume) {
     originalBounds(self,volume);
     if(!experimentalMotionControls || !volume || *reinterpret_cast<uintptr_t*>(self)!=base+0xaaf854-0x400000)return;
-    auto pose=ReadWeaponPose();
-    if(pose.active && *reinterpret_cast<void**>(static_cast<unsigned char*>(self)+8)==pose.instance) {
-        // Cell lookup (0x5c8950) has no callback for type 10 (Everything):
-        // forcing it here caused an indirect call through zero while loading.
-        // Enlarge only finite bounds, preserving their native world centre.
-        if(NativeBounds::ExpandWeapon(volume,4.f*worldScale))++controllerBounds;
-    }
+    // Cell lookup (0x5c8950) has no callback for type 10 (Everything):
+    // forcing it here caused an indirect call through zero while loading.
+    // Enlarge only finite bounds, preserving their native centre: the volume is
+    // relative to the instance (0x60b330, vtable slot 11, returns a sphere at
+    // its origin), so a world-space centre would misplace it.
+    //
+    // Local patch (pistol culling): enlarge every gun, not only while the
+    // controller pose is active. A weapon equipped while the level loads (the
+    // pistol) has its volume taken before the pose is active; it kept the
+    // native size and vanished once the hand left the view around the game
+    // camera's own heading.
+    if(NativeBounds::ExpandWeapon(volume,4.f*worldScale))++controllerBounds;
 }
 uintptr_t __fastcall WeaponMuzzleHook(void* self,void*,CameraMath::Matrix* out,int barrel,bool firstPerson) {
     auto result=NativeWeaponMuzzle(self,out,barrel,firstPerson);
