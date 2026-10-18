@@ -11,6 +11,23 @@ WorldUnitsPerMetre=100
 ; Virtual-screen modes retain the native camera. Restart to apply.
 LockVerticalCamera=0
 
+; Motion-sickness fixes for the walk/equip animation reaching the VR view.
+; The game composes its camera from an animated skeleton. When the save's own
+; look angle is steep, the heading taken from that camera becomes very
+; sensitive to small rotations and the animation shows up as the whole scene
+; swaying. These three take the view from the aiming state instead, before the
+; animation is applied. All require MotionControls and YawOnlyCamera, apply
+; only in normal gameplay with the player's own camera, and switch themselves
+; off on a game build they do not recognise. Restart to apply.
+;
+; Zero the native aiming pitch, so the heading stays well conditioned.
+NativeLookPitchLock=0
+; Take the VR heading from the aiming yaw rather than the animated camera.
+NativeLookHeading=0
+; Take the VR camera's horizontal position from the player's own position,
+; discarding the animation's sideways offset. Needs NativeLookHeading.
+NativeCameraPosition=0
+
 ; Master switch for ALL right-controller features. 0 disables controller
 ; tracking, Xbox button emulation, weapon motion, and controller directions.
 ; Headset VR and Headset direction settings still work. Restart to apply.

@@ -39,4 +39,11 @@ InteractionAim=Controller
 ; Walk where you're looking.
 MovementDirection=Headset
 
+; Keep the game's own walk and equip animation out of the VR view. Without
+; these, a save whose look angle is steep can make the whole scene sway while
+; you walk, sprint or draw a weapon. They need the two settings above.
+NativeLookPitchLock=1
+NativeLookHeading=1
+NativeCameraPosition=1
+
 ; No [Buttons] or [ScreenButtons] sections: the stock button layout is kept.

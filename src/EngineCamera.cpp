@@ -1,5 +1,7 @@
 #include "EngineCamera.h"
 #include "CameraMath.h"
+#include "NativeHeading.h"
+#include "CameraPosition.h"
 #include "DirectionConfig.h"
 #include "NativeBounds.h"
 #include "SceneCache.h"
@@ -330,6 +332,7 @@ struct SwayHold {
 struct YawSwing {
     BobFilter a,b;double offset{},last{},unwrapped{};bool have{};
     YawSwing(){a.windowMs[1]=b.windowMs[1]=0;a.limit[0]=b.limit[0]=1.5f;a.rate[0]=b.rate[0]=10.f;}
+    void Reset(){a.Reset();b.Reset();have=false;offset=last=unwrapped=0;}
     double Apply(double yaw,double ms) {
         if(!a.enabled && !b.enabled)return yaw;
         if(have){double d=std::remainder(yaw-last,360.);unwrapped+=d;if(std::abs(d)>3)offset+=d;}
@@ -363,6 +366,8 @@ struct Snapshot {
     void* playerInstance{};
     uint32_t inputIndex=~0u;
     bool active{};
+    bool nativeHeading{};
+    CameraMath::Matrix controllerBase; // Same post-comfort-filter base used for headset and weapon targets.
     CameraMath::Matrix tiltedWorld; // world before LevelFrozenView, still accepted by CreateHook
     bool leveled{};
 };
@@ -481,6 +486,90 @@ using InputAxis=float(__thiscall*)(void*,uint32_t,bool);
 SenseUpdate originalSenseUpdate{};
 Getter originalPlayerWorld{};
 InputAxis originalInputAxis{};
+// Experimental upstream pitch correction. Unlike LockVerticalCamera this
+// changes the native aiming state, before the animated camera is composed.
+bool nativeLookPitchLock{};
+bool nativeLookHeading{};
+bool nativeCameraPosition{};
+uint64_t nativePositionUsed{},nativePositionFallback{},nativePositionLogTick{};
+float nativePositionPeak{},nativePositionSprintPeak{};
+NativeHeading::Sample nativeHeadingSample; // guarded by stateMutex
+uint64_t nativeHeadingUsed{},nativeHeadingFallback{},nativeHeadingLogTick{};
+float nativeHeadingPeakDelta{};
+bool nativeHeadingWasUsed{};
+using NativeLookInput=float*(__thiscall*)(void*,float*,void*);
+using NativeLookSet=void(__thiscall*)(void*,const float*);
+NativeLookInput originalNativeLookInput{};
+std::atomic<uint64_t> nativeLookCalls{},nativeLookApplied{};
+std::atomic<float> nativeLookBefore{},nativeLookAfter{},nativeLookYaw{};
+
+bool NativeCombatCamera(void* instance,uintptr_t manager) {
+    __try {
+        if(!instance || !manager)return false;
+        auto pc=reinterpret_cast<unsigned char*>(manager+0x6f0);
+        if(*reinterpret_cast<void**>(manager+0x30)!=pc ||
+           *reinterpret_cast<void**>(pc+0xaa0)!=instance)return false;
+        auto mode=*reinterpret_cast<uint16_t*>(pc+0x774);
+        if(mode>=19)return false;
+        auto camera=*reinterpret_cast<unsigned char**>(pc+0x778+mode*0x24+8);
+        return camera==pc+0xc0 && *reinterpret_cast<uintptr_t*>(camera)==base+0xaa7918-0x400000;
+    } __except(EXCEPTION_EXECUTE_HANDLER) {return false;}
+}
+// Validate live ownership and current camera mode, not just last frame's mode.
+// No retained engine object pointers and no engine calls while holding our lock.
+bool NativeLookOwner(void* self,void* context,void* instance,uintptr_t manager) {
+    __try {
+        auto p=static_cast<unsigned char*>(self);
+        if(!p || !context || !instance || !manager ||
+           *reinterpret_cast<uintptr_t*>(p)!=base+0xab4ca4-0x400000)return false;
+        auto index=*reinterpret_cast<uint32_t*>(p+0x20);
+        if(index>0xffffff)return false;
+        auto registry=*reinterpret_cast<uintptr_t*>(base+0x19e1870-0x400000);
+        if(!registry)return false;
+        auto entry=reinterpret_cast<unsigned char*>(registry+index*8);
+        if(entry[0]&2)return false;
+        auto owner=*reinterpret_cast<unsigned char**>(entry+4);
+        if(!owner || owner!=context || *reinterpret_cast<void**>(owner+0x20)!=instance)return false;
+        return NativeCombatCamera(instance,manager);
+    } __except(EXCEPTION_EXECUTE_HANDLER) {return false;}
+}
+float* __fastcall NativeLookInputHook(void* self,void*,float* out,void* context) {
+    ++nativeLookCalls;
+    float* result=originalNativeLookInput(self,out,context);
+    if((!nativeLookPitchLock && !nativeLookHeading) || !result || result!=out)return result;
+    void* instance{};uintptr_t manager{};
+    {
+        std::lock_guard lock(stateMutex);
+        auto now=GetTickCount64();
+        if(!motionControls || !requested || !current.active || screenReasons || gameMenuOpen ||
+           wheelOpen || conversationCamera.load() || !current.tracking.rightController.valid ||
+           now<current.tracking.tick || now-current.tracking.tick>=250)return result;
+        instance=current.playerInstance;manager=current.managerAddress;
+    }
+    if(!NativeLookOwner(self,context,instance,manager))return result;
+    for(int i=0;i<4;i++)if(!std::isfinite(result[i]))return result;
+    // Native setter uses MOVAPS: supply an explicitly aligned vector. Preserve
+    // all components except pitch, including the yaw produced by native input.
+    alignas(16) float angles[4];memcpy(angles,result,sizeof(angles));
+    if(nativeLookPitchLock) {
+        nativeLookBefore=angles[0];nativeLookYaw=angles[2];angles[0]=0;
+        reinterpret_cast<NativeLookSet>(base+0x7a90a0-0x400000)(self,angles);
+        result[0]=0;
+        nativeLookAfter=*reinterpret_cast<float*>(static_cast<unsigned char*>(self)+0x30);
+        if(nativeLookApplied.fetch_add(1)==0) {
+            FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")) {
+                fprintf(f,"nativeLookPitchLock firstApply pitchBefore=%g pitchAfter=%g yaw=%g self=%p\n",
+                    nativeLookBefore.load(),nativeLookAfter.load(),nativeLookYaw.load(),self);fclose(f);
+            }
+        }
+    }
+    if(nativeLookHeading) {
+        std::lock_guard lock(stateMutex);
+        nativeHeadingSample={manager,reinterpret_cast<uintptr_t>(instance),
+            *reinterpret_cast<const uint32_t*>(base+0x1c7bfc8-0x400000),angles[2],true};
+    }
+    return result;
+}
 bool DirectionWorld(DirectionConfig::Source source,CameraMath::Matrix& result,CameraMath::Matrix* native=nullptr,uintptr_t manager=0) {
     std::lock_guard lock(stateMutex);
     auto now=GetTickCount64();
@@ -489,7 +578,7 @@ bool DirectionWorld(DirectionConfig::Source source,CameraMath::Matrix& result,Ca
     if(native)*native=current.originalWorld;
     if(source==DirectionConfig::Source::Headset){result=current.world;return true;}
     if(!motionControls || !current.tracking.rightController.valid)return false;
-    auto baseWorld=RenderBase(current.originalWorld);
+    auto baseWorld=current.nativeHeading?current.controllerBase:RenderBase(current.originalWorld);
     result=CameraMath::HeadWorld(baseWorld,reference,current.tracking.rightController.aim,worldScale);
     return true;
 }
@@ -825,6 +914,7 @@ void __fastcall UpdateHook(void* self,void*) {
         bool calibrationUpdated=false;
         if(recenterRequested || !requested || screenReasons || gameMenuOpen)calibration.Cancel();
         current.active=false;
+        current.nativeHeading=false;
         current.leveled=false;
         current.inputIndex=~0u;
         weaponPose={};
@@ -882,6 +972,32 @@ void __fastcall UpdateHook(void* self,void*) {
             // Keep native aiming/input intact. Level only the VR rendering
             // base, then add the headset's complete orientation and position.
             auto renderBase=RenderBase(current.originalWorld);
+            if(nativeLookHeading && yawOnlyCamera && motionControls && t.rightController.valid &&
+               !gameMenuOpen && !wheelOpen && !dialogue && !immersiveScopeActive &&
+               active==manager+0x6f0) {
+                auto instance=*reinterpret_cast<void**>(active+0xaa0);
+                const auto engineFrame=*reinterpret_cast<const uint32_t*>(base+0x1c7bfc8-0x400000);
+                if(NativeCombatCamera(instance,reinterpret_cast<uintptr_t>(manager)) &&
+                   nativeHeadingSample.Matches(reinterpret_cast<uintptr_t>(manager),
+                       reinterpret_cast<uintptr_t>(instance),engineFrame)) {
+                    auto clean=NativeHeading::Base(nativeHeadingSample.yaw,renderBase);
+                    const float delta=std::abs(CameraMath::HeadingDelta(renderBase,clean))*57.2957795f;
+                    nativeHeadingPeakDelta=std::max(nativeHeadingPeakDelta,delta);
+                    renderBase=clean;current.nativeHeading=true;++nativeHeadingUsed;
+                } else ++nativeHeadingFallback;
+                if(now-nativeHeadingLogTick>=2000) {
+                    FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")) {
+                        fprintf(f,"nativeLookHeading used=%llu fallback=%llu active=%d engineFrame=%u sampleFrame=%u maxRemovedDeg=%g\n",
+                            nativeHeadingUsed,nativeHeadingFallback,int(current.nativeHeading),engineFrame,
+                            nativeHeadingSample.engineFrame,nativeHeadingPeakDelta);fclose(f);
+                    }
+                    nativeHeadingLogTick=now;nativeHeadingPeakDelta=0;
+                }
+            }
+            // Do not feed an intentional input heading through animation filters.
+            // Drop old history when changing source, including returning from cover.
+            if(current.nativeHeading!=nativeHeadingWasUsed)yawSwing.Reset();
+            nativeHeadingWasUsed=current.nativeHeading;
             // Other camera modes skip the filter; its jump/gap checks reset it when gameplay resumes.
             if(active==manager+0x6f0) {
                 double ms=PreciseMs();
@@ -895,15 +1011,34 @@ void __fastcall UpdateHook(void* self,void*) {
                         renderBase.m[14]=entZ+stanceHold.Apply(eye,ms);
                     else stanceHold.Reset(); // no player (menus, cutscenes): leave the camera alone
                 }
-                if(swayHold.windowMs>0) {
+                if(swayHold.windowMs>0 || nativeCameraPosition) {
                     auto entity=*reinterpret_cast<const unsigned char* const*>(active+0xaa0);
                     float entX=entity?*reinterpret_cast<const float*>(entity+0x20):0.f;
                     float entY=entity?*reinterpret_cast<const float*>(entity+0x24):0.f;
-                    if(entity && std::isfinite(entX) && std::isfinite(entY))
+                    bool anchored=false;
+                    if(nativeCameraPosition && current.nativeHeading && entity) {
+                        const float distance=std::hypot(renderBase.m[12]-entX,renderBase.m[13]-entY);
+                        anchored=CameraPosition::UseBodyXY(renderBase,entX,entY);
+                        if(anchored) {
+                            ++nativePositionUsed;
+                            nativePositionPeak=std::max(nativePositionPeak,distance);
+                        } else ++nativePositionFallback;
+                    }
+                    if(anchored)swayHold.Reset();
+                    else if(swayHold.windowMs>0 && entity && std::isfinite(entX) && std::isfinite(entY))
                         swayHold.Apply(renderBase.m[12],renderBase.m[13],entX,entY,ms);
                     else swayHold.Reset();
+                    if(nativeCameraPosition && now-nativePositionLogTick>=2000) {
+                        FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")) {
+                            fprintf(f,"nativeCameraPosition used=%llu rejected=%llu active=%d maxOffsetIn=%g\n",
+                                nativePositionUsed,nativePositionFallback,int(anchored),
+                                nativePositionPeak*39.37f/worldScale);
+                            fclose(f);
+                        }
+                        nativePositionLogTick=now;nativePositionPeak=0;
+                    }
                 }
-                if(yawOnlyCamera && (yawSwing.a.enabled||yawSwing.b.enabled)) {
+                if(!current.nativeHeading && yawOnlyCamera && (yawSwing.a.enabled||yawSwing.b.enabled)) {
                     // renderBase is pure heading here: rebuild it from the filtered yaw.
                     double yaw=std::atan2(renderBase.m[9],renderBase.m[8])*180/3.14159265358979;
                     double f=yawSwing.Apply(yaw,ms)*3.14159265358979/180;
@@ -962,6 +1097,7 @@ void __fastcall UpdateHook(void* self,void*) {
                     }
                 }
             }
+            current.controllerBase=renderBase;
             current.world=CameraMath::HeadWorld(renderBase,reference,t.head,worldScale);
             if(immersiveScopeActive) {
                 // Use the same calibrated firing line as the rendered rifle and shots.
@@ -1368,6 +1504,28 @@ void Install() {
     swayHold.windowMs=readInt(L"SideSwayHoldMs",0,2000);
     stanceHold.Reset();
     motionControls=DirectionConfig::MotionEnabled(config);
+    nativeLookPitchLock=GetPrivateProfileIntW(L"VR",L"NativeLookPitchLock",0,config)!=0;
+    nativeLookHeading=GetPrivateProfileIntW(L"VR",L"NativeLookHeading",0,config)!=0;
+    nativeCameraPosition=GetPrivateProfileIntW(L"VR",L"NativeCameraPosition",0,config)!=0;
+    if(enabled && (nativeLookPitchLock || nativeLookHeading)) {
+        auto target=reinterpret_cast<void*>(VA(0x7ac8c0));
+        const char inputBytes[]="\x55\x8b\xec\x83\xe4\xf0\x81\xec\x74\x01\x00\x00";
+        const char setterBytes[]="\x55\x8b\xec\x83\xe4\xf0\x83\xec\x28\x56\x8b\xf1";
+        bool ok=!memcmp(target,inputBytes,sizeof(inputBytes)-1) &&
+            !memcmp(reinterpret_cast<void*>(VA(0x7a90a0)),setterBytes,sizeof(setterBytes)-1);
+        if(ok) {
+            ok=MH_CreateHook(target,reinterpret_cast<void*>(&NativeLookInputHook),
+                reinterpret_cast<void**>(&originalNativeLookInput))==MH_OK;
+            if(ok && MH_EnableHook(target)!=MH_OK){MH_RemoveHook(target);ok=false;}
+        }
+        nativeLookPitchLock=nativeLookPitchLock && ok;
+        nativeLookHeading=nativeLookHeading && ok;
+        FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")) {
+            fprintf(f,"nativeLookPitchLock hook=%s controllerOnly=1 combatOnly=1\n",ok?"ready":"failed");
+            fprintf(f,"nativeLookHeading enabled=%d sameEngineFrame=1 combatOnly=1\n",nativeLookHeading);
+            fclose(f);
+        }
+    }
     experimentalMotionControls=motionControls && GetPrivateProfileIntW(L"VR",L"ExperimentalMotionControls",0,config)!=0;
     controllerHideArms=GetPrivateProfileIntW(L"VR",L"ControllerHideArms",1,config)!=0;
     interactionAim=DirectionConfig::Read(config,L"InteractionAim");
@@ -1553,7 +1711,8 @@ bool SnapTurnView(float& yaw) {
     std::lock_guard lock(stateMutex);
     auto now=GetTickCount64();
     if(!current.active || screenReasons || gameMenuOpen || wheelOpen || !current.playerInstance || now<current.tracking.tick || now-current.tracking.tick>=250)return false;
-    yaw=std::atan2(current.originalWorld.m[9],current.originalWorld.m[8]);
+    const auto& turnBase=current.nativeHeading?current.controllerBase:current.originalWorld;
+    yaw=std::atan2(turnBase.m[9],turnBase.m[8]);
     return std::isfinite(yaw);
 }
 // Local patch (snap turn): the game's own quickbar auto-hide, g_quickBarAutoHide,
