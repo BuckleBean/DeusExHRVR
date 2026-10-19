@@ -1,0 +1,98 @@
+name: Bug report
+description: Something is wrong in VR — report it here
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing. The four questions below are the ones that
+        decide whether a report can be acted on, so please answer them
+        even if the problem seems unrelated to them.
+
+  - type: dropdown
+    id: version
+    attributes:
+      label: Mod version
+      description: Shown in the release you downloaded. Pick "built from source" if you compiled it yourself.
+      options:
+        - 0.4.0
+        - 0.3.0
+        - 0.2.0
+        - 0.1.0
+        - Built from source
+        - Not sure
+    validations:
+      required: true
+
+  - type: input
+    id: headset
+    attributes:
+      label: Headset
+      description: Model, and how it connects to the PC.
+      placeholder: Quest 3 over Wi-Fi, Valve Index over DisplayPort, Reverb G2 …
+    validations:
+      required: true
+
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: Active OpenXR runtime
+      description: The runtime the headset is actually using, not just the software you launch from. If you do not know, say so and paste DeusExHRVR.log below — it records the runtime at startup.
+      options:
+        - Oculus / Meta (Link, Air Link or standalone Quest Link)
+        - Virtual Desktop (VDXR)
+        - SteamVR
+        - Windows Mixed Reality
+        - Other or not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: texture_pack
+    attributes:
+      label: AI texture pack
+      description: The community AI-upscaled texture pack (ai_upscale.000 through .005 in the game's mods folder). It has been reported to cause hitching, so this is asked first.
+      options:
+        - Not installed
+        - Installed and enabled
+        - Installed but disabled or moved out of the mods folder
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: what_happened
+    attributes:
+      label: What happened
+      description: What you saw, and what you expected instead. Where in the game it happened, and whether it repeats.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: game_build
+    attributes:
+      label: Game build
+      description: This build supports only the unmodified Steam Director's Cut. An exe patcher changes the executable and the mod will refuse to run.
+      options:
+        - label: Steam Director's Cut, version 2.0.66.0, executable not patched or replaced
+          required: false
+
+  - type: textarea
+    id: other_mods
+    attributes:
+      label: Other mods or overlays
+      description: Anything else touching the game or the frame — inventory mod, ReShade, FPS overlays, driver-level sharpening. Write "none" if there are none.
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        From the game folder, beside DXHRDC.exe. Attach whichever exist by dragging the files in: DeusExHRVR.log, DeusExHRVR-camera.log, DeusExHRVR-input.log, DeusExHRVR-hand-only.log.
+
+        If you lost your hands and they did not come back, the mod met a player model it cannot build against. Paste the handOnly line from DeusExHRVR-hand-only.log — the observedBones, observedLayout and observedIndices values are exactly what adding a new model needs.
+      render: text
+    validations:
+      required: false

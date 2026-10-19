@@ -4,11 +4,13 @@ Experimental VR mod for **Deus Ex: Human Revolution — Director's Cut**, using 
 
 Gameplay stereo, headset tracking, HUD alignment, motion-controlled weapon aiming, controller buttons, and selectable interaction/walking directions have been tested in-headset. Automatic widescreen menus and several lighting, shadow and sky corrections are included. This remains an experimental prerelease; weapon visibility at extreme viewing angles and untested missions/effects still need broader testing.
 
-Version 0.3.0 includes per-weapon grip calibration, the SteamVR OpenXR sRGB compatibility fix, controller menu chords, and optional immersive sniper scope. The imported Luma lighting/color work remains experimental and disabled by default; its compiled shaders are included. XeGTAO is disabled following headset flicker and performance regressions. Roomscale body movement is not implemented.
+Version 0.4.0 draws Jensen's hands at your controllers, with no calibration required, and adds three options that take the VR view from your aiming input rather than the game's animated camera — the motion that made this game hard to play in VR. Also included: Carnuntum's fix for guns vanishing when equipped during a level load, the HRDCfix stutter fix, and an optional fixed conversation camera, shipped off. Version 0.3.0 added per-weapon grip calibration, the SteamVR OpenXR sRGB compatibility fix, controller menu chords, and the immersive sniper scope, now on by default. The imported Luma lighting/color work remains experimental and disabled by default; its compiled shaders are included. XeGTAO is disabled following headset flicker and performance regressions. Roomscale body movement is not implemented.
 
 ## Download and install
 
-Download the packaged build from [Releases](https://github.com/farmerarmor/DeusExHRVR/releases). GitHub's automatic source ZIP does not contain compiled DLLs.
+Download the packaged build from [Releases](https://github.com/BuckleBean/DeusExHRVR/releases). GitHub's automatic source ZIP does not contain compiled DLLs.
+
+This is a fork of [farmerarmor/DeusExHRVR](https://github.com/farmerarmor/DeusExHRVR), continuing from upstream v0.3.0.
 
 Supported game: **Steam Director's Cut 2.0.66.0**, executable SHA256:
 
