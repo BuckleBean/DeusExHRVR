@@ -84,8 +84,10 @@ ControllerHandsSuspendModes=342
 ControllerHandsPose=0
 ControllerHandsCalibrate=0
 ControllerHandsArmGestureMs=1500
-; Learn and store a per-weapon grip offset. Leave at 0 with the hands; the
-; game's own hand-to-weapon relationship is used instead.
+; Learn and store a per-weapon grip offset, adjusted by a two-thumbstick
+; gesture in game. This has NO EFFECT while ControllerHands=1: the weapon's own
+; grip, read from the game's animation, replaces a stored offset rather than
+; adding to it. Only useful with the hands off.
 WeaponCalibration=1
 
 ; Keep only heading (yaw) from the head pose captured when tracking starts and

@@ -99,6 +99,8 @@ ControllerHandsSuspendModes=342
 ControllerHandsPose=0
 ControllerHandsCalibrate=0
 ControllerHandsArmGestureMs=0
+; Nothing to set by hand: with the hands on, the weapon's own grip from the
+; game's animation is used and a stored offset would be ignored anyway.
 WeaponCalibration=0
 
 

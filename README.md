@@ -107,7 +107,9 @@ Install the matching game DLL and host together: this build uses **transport ver
 
 ### Adjusting a weapon's grip by hand
 
-**Only relevant with `WeaponCalibration=1`.** The installed configuration sets it to `0`, because the controller hands take the gun's position from the game's own hand-to-weapon relationship and need no measured offset. This is here for setups not using the hands.
+**Only relevant with `ControllerHands=0`.** The installed configuration enables the hands, which take the gun's position from the game's own hand-to-weapon relationship and need no measured offset; `WeaponCalibration` is set to `0` to match. This section is here for setups not using the hands.
+
+**With the hands enabled, `WeaponCalibration=1` has no effect.** The weapon's own grip, read from the game's animation, replaces a stored offset rather than adding to it, so the gesture below will appear to do nothing and a saved offset will not move the gun. If you want to position weapons by hand, set `ControllerHands=0` as well.
 
 Use full VR with motion-controlled weapons enabled and keep the weapon out of scope mode. Press both thumbsticks and hold for one second, until the gun stops following your hand (a system tone also signals this). Keep holding and move/rotate your right controller into the grip position you want. Release either thumbstick to save, then release the other. Each weapon type keeps its own position and rotation offset in `DeusExHRVR-weapons.ini` beside the game executable, including across restarts. The gun, firing line, muzzle effects and immersive scope share that offset. Repeat to readjust; delete that file while the game is closed to reset all weapons.
 
