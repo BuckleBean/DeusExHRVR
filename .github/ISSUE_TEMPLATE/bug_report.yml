@@ -92,7 +92,7 @@ body:
       description: |
         From the game folder, beside DXHRDC.exe. Attach whichever exist by dragging the files in: DeusExHRVR.log, DeusExHRVR-camera.log, DeusExHRVR-input.log, DeusExHRVR-hand-only.log.
 
-        If you lost your hands and they did not come back, the mod met a player model it cannot build against. Paste the handOnly line from DeusExHRVR-hand-only.log — the observedBones, observedLayout and observedIndices values are exactly what adding a new model needs.
+        If you lost your hands and they did not come back, paste the handOnly line from DeusExHRVR-hand-only.log. A player model the mod cannot build against is one possible cause among several hand-setup failures, and that line is what tells them apart. Where a model is the cause, its observedBones, observedLayout and observedIndices values are what adding support for it needs.
       render: text
     validations:
       required: false
