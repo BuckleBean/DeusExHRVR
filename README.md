@@ -48,6 +48,32 @@ The initial live check confirmed 1344 × 1600 per eye and approximately 90 nativ
 
 ## Controls
 
+### Motion controllers
+
+These are the buttons you will use to play. They emulate Xbox controller 1 when `MotionControls=1`, with no virtual-controller driver required; the layout is the game's own default Xbox mapping with Y and B exchanged. Keyboard, mouse and a physical gamepad all keep working alongside them.
+
+| Motion controller | Xbox input / default game action |
+| --- | --- |
+| Left stick / click | Move / crouch |
+| Right stick / quick click | Camera turn / iron sight or scope |
+| Left trigger | LT / take cover |
+| Right trigger | RT / fire |
+| Left grip | LB / sprint |
+| Right grip | RB / throw grenade |
+| Left X | X / interact or reload |
+| Left Y | B / non-lethal takedown; hold for lethal takedown |
+| Right A | A / jump |
+| Right B | Y / holster or draw; hold for quick inventory |
+| Hold right-stick click + left stick | D-pad: up cloaking, down smart vision, left move silently, right Typhoon |
+| Left menu: release before 1.5 seconds | Back / in-game menu |
+| Hold right stick click + left X | Back / in-game menu |
+| Hold right stick click + left Y | Start / pause menu |
+| Left menu: hold at least 1.5 seconds | Start / pause menu, once per hold |
+
+Any of these can be remapped — see [Remapping buttons](#remapping-buttons).
+
+### Keyboard
+
 | Key | Action |
 |---|---|
 | F3 | Toggle per-eye projected light/shadow transforms (on by default) |
@@ -75,33 +101,23 @@ Set `LockVerticalCamera=1` under `[VR]` in `DeusExHRVR.ini` to keep mouse/gamepa
 
 Set `MotionControls=0` under `[VR]` to disable all motion-controller features, including controller tracking, the weapon experiment, and controller-based interaction/walking. Headset VR and `Headset` direction settings stay available; `Controller` directions fall back to native mouse/gamepad direction. `MotionControls=1` enables controller features selected by the other settings and is the default for compatibility. Restart after changing it.
 
-To adjust a weapon's grip, use full VR with motion-controlled weapons enabled and keep the weapon out of scope mode. Press both thumbsticks and hold for one second, until the gun stops following your hand (a system tone also signals this). Keep holding and move/rotate your right controller into the grip position you want. Release either thumbstick to save, then release the other. Each weapon type keeps its own position and rotation offset in `DeusExHRVR-weapons.ini` beside the game executable, including across restarts. The gun, firing line, muzzle effects and immersive scope share that offset. Repeat to readjust; delete that file while the game is closed to reset all weapons.
+`LeftStickClickDelayMs` under `[VR]` sets how long the left stick click must be held before it registers, so that a stray tap does nothing. The installed configuration sets it to `0`, which sends the click immediately; `150` is the original behaviour and is what you want if the left click is mapped to crouch, since it lets a two-click chord arrive together.
 
-The calibration gesture consumes controller movement, turning, firing and button actions until both sticks are released. Left-stick crouch has a 150 ms grace period to allow the two clicks to arrive together; a quick tap still crouches. `LeftStickClickDelayMs` under `[VR]` sets that period; `0` sends the left click at once, for layouts that map it to something other than crouch. Tracking loss, menus, recentering or weapon changes cancel an unfinished calibration. Install the matching game DLL and host together: this build uses transport version 5.
+Install the matching game DLL and host together: this build uses **transport version 6**, which is the version that carries the left controller's pose.
+
+### Adjusting a weapon's grip by hand
+
+**Only relevant with `WeaponCalibration=1`.** The installed configuration sets it to `0`, because the controller hands take the gun's position from the game's own hand-to-weapon relationship and need no measured offset. This is here for setups not using the hands.
+
+Use full VR with motion-controlled weapons enabled and keep the weapon out of scope mode. Press both thumbsticks and hold for one second, until the gun stops following your hand (a system tone also signals this). Keep holding and move/rotate your right controller into the grip position you want. Release either thumbstick to save, then release the other. Each weapon type keeps its own position and rotation offset in `DeusExHRVR-weapons.ini` beside the game executable, including across restarts. The gun, firing line, muzzle effects and immersive scope share that offset. Repeat to readjust; delete that file while the game is closed to reset all weapons.
+
+The gesture consumes controller movement, turning, firing and button actions until both sticks are released. Tracking loss, menus, recentering or weapon changes cancel an unfinished calibration.
 
 `ImmersiveScope=1` optionally keeps native scoped weapons in full VR. With motion-controlled weapons enabled, raise the right controller near your eye and point forward to enter the scope; lower it to exit. The magnified view follows controller aim, using the rifle's firing line as a shared optical viewpoint for both eyes. `ScopeMagnification=4` controls zoom (1-12). This alignment has been tested in-headset with the sniper rifle. The default remains the automatic virtual screen (`ImmersiveScope=0`). Restart after changing these settings.
 
 `ExperimentalMotionControls=1` enables a right-controller weapon experiment when `MotionControls=1`. It moves the equipped gun's render pose and supplies the controller muzzle to the player's firing-direction calculation. Motion-controller buttons use the Xbox bindings below; keyboard/mouse and physical gamepad input also remain available. `ControllerHideArms=1` (default) hides the player's actor/arms mesh during controller aiming. It falls back to normal weapon handling in virtual-screen modes or when controller tracking is unavailable. `ControllerMuzzleForwardMetres` sets the muzzle distance ahead of the controller (default `0.25`). Restart after changing these options. This remains experimental; alignment, shot impacts and different weapon models need in-game verification.
 
-Motion-controller buttons emulate Xbox controller 1 when `MotionControls=1`; no virtual-controller driver is required. `ExperimentalMotionControls` controls the weapon pose separately. The mapping uses the game's default Xbox layout with Y and B exchanged:
-
-| Motion controller | Xbox input / default game action |
-| --- | --- |
-| Left stick / click | Move / crouch |
-| Right stick / quick click | Camera turn / iron sight or scope |
-| Left trigger | LT / take cover |
-| Right trigger | RT / fire |
-| Left grip | LB / sprint |
-| Right grip | RB / throw grenade |
-| Left X | X / interact or reload |
-| Left Y | B / non-lethal takedown; hold for lethal takedown |
-| Right A | A / jump |
-| Right B | Y / holster or draw; hold for quick inventory |
-| Hold right-stick click + left stick | D-pad: up cloaking, down smart vision, left move silently, right Typhoon |
-| Left menu: release before 1.5 seconds | Back / in-game menu |
-| Hold right stick click + left X | Back / in-game menu |
-| Hold right stick click + left Y | Start / pause menu |
-| Left menu: hold at least 1.5 seconds | Start / pause menu, once per hold |
+The motion-controller button layout is in [Controls](#motion-controllers) above. `MotionControls` provides the buttons; `ExperimentalMotionControls` controls the weapon pose separately.
 
 While right-stick click is held, the left stick sends only D-pad input. Diagonals choose the dominant direction. A quick right-stick click under 350ms still toggles scope on release if no D-pad direction was used; a longer hold sends no scope click. Menu short presses are delayed until release so a long press opens only pause. Tracking/focus loss releases the emulated inputs. `MotionControls=0` disables button emulation together with all other controller features; restart to apply. Native rumble is not yet mapped to VR haptics. F8 includes a private input diagnostic log.
 
