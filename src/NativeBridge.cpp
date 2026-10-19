@@ -180,7 +180,7 @@ struct Bridge {
         controller.SetLeftClickDelayMs(static_cast<uint64_t>(leftClickDelay));
         Log("Left stick click delay: %d ms (LeftStickClickDelayMs)",leftClickDelay);
         if(trackingChannel && DirectionConfig::MotionEnabled(config)) {
-            bool ok=controller.Init(instance,session);Log("Motion controller aim and Xbox buttons: %s",ok?"ready":"unavailable; native input retained");
+            bool ok=controller.Init(instance,session);Log("Motion controller aim, left/right grip poses and Xbox buttons (transport v%u): %s",Transport::Version,ok?"ready":"unavailable; native input retained");
             if(!ok)controller.Reset();
         }
         device=dev; dev->GetImmediateContext(&context);
@@ -326,6 +326,14 @@ struct Bridge {
         }
         controller.Sample(session,space,fs.predictedDisplayTime,state==XR_SESSION_STATE_FOCUSED,tracking);
         Transport::WriteTracking(trackingChannel,tracking);
+        // Low-rate status for an ordinary later session; no calibration gesture needed.
+        static uint64_t gripLogTick{};
+        if(!gripLogTick || tracking.tick-gripLogTick>=5000) {
+            gripLogTick=tracking.tick;
+            Log("Controller poses v%u: head=%u aim=%u leftGrip=%u rightGrip=%u focused=%d sample=%llu",
+                Transport::Version,tracking.valid,tracking.rightController.valid,
+                tracking.leftGrip.valid,tracking.rightGrip.valid,int(state==XR_SESSION_STATE_FOCUSED),tracking.id);
+        }
         if(frameReadyEvent)SetEvent(frameReadyEvent);
         XrFrameBeginInfo bi{XR_TYPE_FRAME_BEGIN_INFO};
         if(!Good(xrBeginFrame(session,&bi),"xrBeginFrame")){failed=true;return;}

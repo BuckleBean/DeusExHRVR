@@ -1,4 +1,6 @@
 #include "CameraMath.h"
+#include "NativeHeading.h"
+#include "CameraPosition.h"
 #include "DirectionConfig.h"
 #include "NativeBounds.h"
 #include "SceneCache.h"
@@ -13,6 +15,58 @@ bool Near(float a,float b){return std::abs(a-b)<0.0001f;}
 #include "ImmersiveScope.h"
 #include "WeaponCalibrationChecks.h"
 int main(int argc,char** argv) {
+    {
+        auto body=NativeHeading::Base(.3f,{});body.m[14]=565;
+        for(float x:{0.f,1000.f,-20000.f})for(float y:{0.f,2000.f,-30000.f}) {
+            for(float sway:{-12.f,-3.f,0.f,3.f,12.f}) {
+                auto camera=body;camera.m[12]=x+sway;camera.m[13]=y-sway;
+                Check(CameraPosition::UseBodyXY(camera,x,y),"near-body animation offset accepted");
+                Check(camera.m[12]==x && camera.m[13]==y,"horizontal camera animation removed without lagging movement or teleport");
+                for(int i=0;i<16;i++)if(i!=12 && i!=13)Check(camera.m[i]==body.m[i],"body anchor preserves heading and stance height");
+                Transport::Pose ref{};ref.orientation.w=1;
+                auto head=ref;head.position.x=.1f;
+                auto tracked=CameraMath::HeadWorld(camera,ref,head,300);
+                Check(std::abs(std::hypot(tracked.m[12]-x,tracked.m[13]-y)-30.f)<.003f,"body anchor preserves physical headset movement");
+            }
+        }
+        auto distant=body;distant.m[12]=46;
+        Check(!CameraPosition::UseBodyXY(distant,0,0)&&distant.m[12]==46,"pull-back camera remains untouched");
+        auto invalid=body;
+        Check(!CameraPosition::UseBodyXY(invalid,std::nanf(""),0),"invalid player coordinate rejected");
+        Check(invalid.m[14]==565,"rejected anchor retains eye height");
+        puts("PASS camera body anchor, animation rejection, stance, pull-back guard and headset movement");
+    }
+    {
+        using namespace CameraMath;
+        Matrix captured{{.913851619f,.406048357f,0,0,
+            -.401192635f,.902923405f,-.154187694f,0,
+            -.0626077354f,.140904635f,.988041580f,0,
+            6753.62207f,-28916.1758f,-26243.2266f,1}};
+        auto clean=NativeHeading::Base(.418125629f,captured);
+        Check(std::abs(HeadingDelta(captured,clean))<.00001f,"native aiming yaw matches captured camera heading convention");
+        Matrix position{};position.m[12]=12;position.m[13]=-7;position.m[14]=50;
+        for(float yaw:{-3.14f,-1.57f,0.f,1.57f,3.14f}) {
+            auto base=NativeHeading::Base(yaw,position);
+            for(float animation:{-.08f,-.02f,0.f,.02f,.08f}) {
+                auto animated=Multiply(Rotation({0,0,std::sin(animation/2),std::cos(animation/2)}),base);
+                auto result=NativeHeading::Base(yaw,animated);
+                for(int i=0;i<16;i++)Check(Near(result.m[i],base.m[i]),"animation rotation cannot enter native heading base");
+            }
+            for(float turn:{-.785398163f,.785398163f,1.570796327f}) {
+                auto turned=NativeHeading::Base(yaw+turn,position);
+                Check(Near(HeadingDelta(base,turned),turn),"intentional snap turns pass without filtering including angle wrap");
+            }
+            Pose reference{};reference.orientation.w=1;
+            Pose head=reference;head.position.x=.1f;
+            auto tracked=HeadWorld(base,reference,head,300);
+            Check(Near(std::hypot(tracked.m[12]-base.m[12],tracked.m[13]-base.m[13]),30),"native heading preserves headset translation");
+        }
+        NativeHeading::Sample sample{1,2,42,.5f,true};
+        Check(sample.Matches(1,2,42),"same player and engine frame accepts input heading");
+        Check(!sample.Matches(1,2,43)&&!sample.Matches(1,2,41),"stale and future engine frames rejected");
+        Check(!sample.Matches(3,2,42)&&!sample.Matches(1,3,42)&&!sample.Matches(0,2,42),"different manager or player rejected");
+        sample.valid=false;Check(!sample.Matches(1,2,42),"uninitialized native heading rejected");
+    }
     CheckGamepadMapping();
     CheckWeaponCalibration();
     {

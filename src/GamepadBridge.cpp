@@ -35,6 +35,7 @@ constexpr uint32_t TargetLT=1u<<16, TargetRT=1u<<17;
 // QuickSave presses the game's fixed quicksave key, F5, which has no gamepad
 // binding. The key is held while the target is, and only while the game is in front.
 constexpr uint32_t TargetQuickSave=1u<<18;
+constexpr uint32_t TargetHandCalibrate=1u<<19;
 bool quickSaveWanted{},quickSaveDown{};uint64_t quickSaveSyncAt{};
 struct ButtonSource {const wchar_t* key;uint16_t bit;};
 // "bit" is what the stock mapper emits for that physical control.
@@ -73,7 +74,7 @@ uint32_t ParseTarget(const wchar_t* key,uint32_t fallback,const wchar_t* section
         {L"Back",XINPUT_GAMEPAD_BACK},{L"Start",XINPUT_GAMEPAD_START},
         {L"DPadUp",XINPUT_GAMEPAD_DPAD_UP},{L"DPadDown",XINPUT_GAMEPAD_DPAD_DOWN},
         {L"DPadLeft",XINPUT_GAMEPAD_DPAD_LEFT},{L"DPadRight",XINPUT_GAMEPAD_DPAD_RIGHT},
-        {L"QuickSave",TargetQuickSave},{L"None",0},
+        {L"QuickSave",TargetQuickSave},{L"HandCalibrate",TargetHandCalibrate},{L"None",0},
     };
     for(const auto& n:names)if(!_wcsicmp(value,n.name))return n.target;
     InputLog("[%ls] %ls=%ls not recognized; keeping default",section,key,value);
@@ -112,6 +113,8 @@ void LoadButtons() {
 void Emit(XINPUT_GAMEPAD& out,uint32_t target,bool pressed,BYTE analog) {
     if(pressed && (target&0xffff))out.wButtons|=static_cast<WORD>(target&0xffff);
     if(pressed && (target&TargetQuickSave))quickSaveWanted=true;
+    // Idempotent while already armed, so a held button cannot starve the hold.
+    if(pressed && (target&TargetHandCalibrate))EngineCamera::ArmHandCalibration();
     if(target&TargetLT)out.bLeftTrigger=std::max(out.bLeftTrigger,analog);
     if(target&TargetRT)out.bRightTrigger=std::max(out.bRightTrigger,analog);
 }

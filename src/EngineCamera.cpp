@@ -16,6 +16,9 @@
 #include <MinHook.h>
 #include <atomic>
 #include <mutex>
+#include <string>
+#include <thread>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <algorithm>
@@ -25,6 +28,13 @@
 #include <intrin.h>
 #include "ImmersiveScope.h"
 #include "WeaponCalibration.h"
+#include "HandMeshDiagnostic.h"
+#include "HandDrawDiagnostic.h"
+#include "HandOnlyGeometry.h"
+#include "ModelHandAlignment.h"
+#include "NativeHandWeapon.h"
+#include "MuzzleQueryDiagnostic.h"
+#include "HandWeaponMotionDiagnostic.h"
 
 // Supported executable only. All preferred addresses are rebased for ASLR.
 // F6 toggles tracking. Camera poses are attached to the scene and then to the
@@ -49,20 +59,20 @@ bool autoScopeOwned{};
 WeaponCalibration::Session calibration;
 WeaponCalibration::Store calibrationStore;
 bool lockVerticalCamera{};
-// Local patch (fixed dialogue camera): a conversation cuts the gameplay camera
-// between shots of the NPC and Jensen. With FixedDialogueCamera=1 the VR base
-// stays at the last gameplay pose (Jensen's eyes) while a conversation controls
-// the camera, until the game camera has come back afterwards; the headset still
-// turns and moves the view, and Jensen's own model is hidden.
+// From upstream PR #8 by Carnuntum (fixed dialogue camera): a conversation cuts
+// the gameplay camera between shots of the NPC and Jensen. With
+// FixedDialogueCamera=1 the VR base stays at the last gameplay pose (Jensen's
+// eyes) while a conversation controls the camera, until the game camera has come
+// back afterwards; the headset still turns and moves the view, and Jensen's own
+// model is hidden.
 //
 // The shots run in PlayerCamera's CameraBone sub-mode, which other scripted
 // shots share, so the conversation itself is hooked instead of the camera.
-// Supported build: every conversation type (ConversationGraph, Tier2, Briefing)
-// picks its camera shots through ConversationGraphNode_CameraTrack's execute
-// (0x6c7d70), which calls 0x6bddb0 (thiscall track, flag; track 0xffff clears
-// it) on a conversation participant. A participant's +8 is its conversation;
-// participants leave through 0x6bed40 and 0x6bf3e0, which both skip unless +0x50
-// (entered) is set. Overheard conversations never pick camera tracks.
+// Every conversation type (ConversationGraph, Tier2, Briefing) picks its camera
+// shots through ConversationGraphNode_CameraTrack's execute (0x6c7d70), which
+// calls 0x6bddb0 (thiscall track, flag; track 0xffff clears it) on a
+// participant. A participant's +8 is its conversation; participants leave
+// through 0x6bed40 and 0x6bf3e0, which both skip unless +0x50 (entered) is set.
 bool fixedDialogueCamera{};
 std::atomic<void*> conversationCamera{}; // conversation that last picked a camera track
 CameraMath::Matrix lastPlayerBase;uint64_t lastPlayerBaseTick{},dialogueEndTick{};
@@ -93,8 +103,1082 @@ void ConversationLeave(void* self) {
 void __fastcall ConversationExitHook0(void* self,void*){ConversationLeave(self);originalConversationExit[0](self);}
 void __fastcall ConversationExitHook1(void* self,void*){ConversationLeave(self);originalConversationExit[1](self);}
 bool experimentalMotionControls{};
+// fubar's per-weapon grip calibration (both thumbstick clicks, hold, release to
+// save). Default on. At 0 the saved offset is still applied; only the capture
+// is skipped, so play can no longer overwrite DeusExHRVR-weapons.ini.
+bool weaponCalibrationEnabled=true;
 bool motionControls=true;
 bool controllerHideArms=true;
+// ControllerHands: show the player's hands at the motion controller instead of
+// hiding the whole actor mesh. The bone numbers were measured, not guessed - a
+// logging build sampled the render palette head-relative over eight snapshots,
+// and bones 157/158 sit +-30 cm apart and 61 cm below the eyes with the weapon
+// away, then 4.3 cm apart and 23 cm ahead with it drawn. Default 0, so with this
+// off not one line of behaviour changes.
+bool controllerHands{};
+int controllerHandBone=158;   // the hand moved onto the controller
+int controllerHandBone2=999;  // optional second hand, left where the animation put it
+// Which half of the effect runs. The first build did both at once and showed
+// nothing, which three different faults would all produce, so they are separable
+// now: 0 = move the hand and collapse the rest (the feature), 1 = collapse only,
+// leaving the hand where the animation put it (does keeping this bone leave any
+// geometry on screen?), 2 = move only, collapsing nothing (does this bone drag
+// any vertices with it?), 3 = translate EVERY bone by the same delta, collapsing
+// nothing, which asks the blunt question the first three modes could not: does
+// this palette drive the arms on screen at all?
+int controllerHandsMode{};
+std::atomic<bool> controllerHandsModelAlignment{};
+std::atomic<bool> controllerHandsLeft{true};
+// Reinstated 2026-10-17. 0 in the INI restores the animated wrist, no rebuild.
+std::atomic<bool> controllerHandsNeutralWrist{true};
+std::atomic<uint64_t> neutralWristFailed{};
+std::atomic<bool> controllerHandsForceFallback{}; // live test override, expires after 90 seconds
+std::atomic<uint64_t> modelHandApplied{},modelHandNoGrip{},modelHandBadModel{},modelHandBadTransform{};
+std::atomic<uint64_t> nativePairUsed{},nativePairFailed{},nativePairCompared{},nativePairMismatch{};
+std::atomic<bool> nativePairFault{};
+std::atomic<uint64_t> nativePairOwnerFailed{},nativePairModelFailed{},nativePairBoneFailed{},nativePairMuzzleFailed{};
+std::atomic<float> nativePairMaxDifference{};
+
+// Modes 4 and 5 keep bones by PROXIMITY to the hand instead of by index, because
+// index 158 sits exactly at the hand yet skins nothing, so the real hand bone's
+// number is unknown while its POSITION is not. Radius in centimetres.
+float controllerHandsRadius=15.f;
+// Mode 6 bisection bounds. The game is Z-up, so band 1 rises and band 2 falls by
+// ControllerHandsRadiusCm; band 3 is untouched. Three outcomes per launch.
+int controllerHandsSplitA=74,controllerHandsSplitB=148;
+// Mode 7 keeps [KeepFrom, KeepTo) and collapses the rest. Bisection found the
+// band; this asks whether that band is worth anything without isolating one bone.
+int controllerHandsKeepFrom=74,controllerHandsKeepTo=82;
+// Meters below the grip that discarded vertices are sent. 0 keeps them on the
+// grip, which is also where the kept hand is - suspected cause of the ghosting.
+float controllerHandsCollapseDrop{};
+// Hand probe. Runs inside AttachmentHook using the pointers the GAME just
+// passed, so nothing is stored and nothing can dangle across a level load -
+// which is what crashed the first attempt on the loading screen.
+std::atomic<uint32_t> handProbeSamples{};
+std::atomic<uint64_t> handProbeNextTick{};
+int controllerHandsProbeFrom=100,controllerHandsProbeTo=160;
+// Default OFF, and it used to fire on controllerHands alone. It crashed the
+// game twice on 2026-10-07, and the output it did produce settles that the
+// route is dead as written: all 60 indices returned ONE identical point,
+// equal to bone 0's palette translation from the previous day's capture -
+// the actor's root. The getter searches a counted list, so palette numbers
+// simply are not names it knows. Kept for reference, not armed.
+bool controllerHandsProbe{};
+// ---- Modes 12-14: placement from a calibrated bind pose ----
+// The blocker this removes: handDelta is inverse(nativeMuzzle) x pose.muzzle,
+// which pins the WEAPON's muzzle onto the controller's. Armed, the gun is in
+// the hand, so the hand lands at the hand. HOLSTERED THE GUN IS ON THE BODY,
+// so the same transform drags the holster to the controller and the shoulder
+// arrives there - which is exactly what Mark saw on 2026-10-07.
+//
+// Driving the hand needs the HAND's own world transform, and the palette does
+// not hold it: an entry is inverse(bindPose) x boneWorld, so its translation
+// is where the model ORIGIN maps to, not where the bone is. That is what made
+// bones 157/158 track the hands beautifully while skinning nothing.
+//
+// But boneWorld = bindPose x paletteEntry, and bindPose is a CONSTANT of the
+// model. So one instant where the hand's true world transform is known solves
+// for it, and Mark supplies that instant by holding his controller on the
+// visible hand. Afterwards the hand's world transform follows from the palette
+// alone, every frame, with nothing asked of the game - no attachment getter,
+// so none of the crash risk that route carried.
+//
+// Everything unknown folds into that constant: the bind pose, the bone's axis
+// convention, and ControllerMuzzle's forward push. None has to be solved.
+//
+// VERIFIED BEFORE BUILDING, from the eight snapshots still in
+// DeusExHRVR-camera.log: bone 0's palette translation sits 565-568 units below
+// the camera in seven of them, against a standing eye height of 565-567
+// measured independently in September. That is the signature of the root's
+// bind pose sitting at the model origin, i.e. of the palette holding
+// inverse(bindPose) x boneWorld.
+bool handCalibrated{};
+uint32_t handBindCount{};
+CameraMath::Matrix handBind[512]{};
+// The gun's place in the hand, taken from the game's own animation rather than
+// from anyone aiming at anything: offset = nativeMuzzle x inverse(wristWorld).
+// Constant while the gun is gripped, which is ALSO how we know it is gripped -
+// a holstered gun rides the body, so this value moves when the hand moves.
+bool controllerHandsWeapon{};
+// Horizontal distance from the player entity origin, in inches, beyond which
+// the whole hands feature goes dormant: cover, ladders and the Icarus landing
+// move the camera off the body, and a hand driven to the controller while the
+// body stays behind stretches everything between them.
+float controllerHandsMaxOffsetIn=12.f;
+// The game's own player camera modes, read from its RTTI. Each is a subobject
+// at a fixed offset inside PlayerCamera (constructor 0x6AB000); the enum order
+// is PlayerCamera::GetModeByIndex's jump table at 0x6AA110. The mod already
+// depends on two of these numbers - Hacking's +0x430 and its vtable 0xAA774C -
+// which is the cross-check that this layout is right.
+struct CameraModeInfo {const char* name;uint32_t offset;uint32_t vtable;};
+const CameraModeInfo cameraModes[9]={
+    {"Combat",    0x0c0,0xaa7918},   // 0  first person
+    {"Cover",     0x144,0xaa79ac},   // 1  THIRD PERSON
+    {"Ladder",    0x3a8,0xaa7ac8},   // 2  THIRD PERSON
+    {"Dialog",    0x230,0xaa7a20},   // 3  conversation framing
+    {"CameraBone",0x330,0xaa78c4},   // 4  camera on an animation bone
+    {"Hacking",   0x430,0xaa774c},   // 5  the hacking screen
+    {"LyingDown", 0x580,0xaa7844},   // 6  on the ground
+    {"IronSight", 0x640,0xaa7a74},   // 7  first person, aiming
+    {"Orbit",     0x67c,0xaa7b3c},   // 8  orbiting the body
+};
+// Which modes the hands step aside for. Bit N = mode N above. Default = Cover,
+// Ladder, CameraBone, LyingDown, Orbit = 2+4+16+64+256 = 342. Combat and
+// IronSight are first person; Dialog and Hacking already have their own
+// handling and are deliberately left alone.
+uint32_t controllerHandsSuspendModes=342;
+// The cameras CameraManager owns, from its constructor at 0x6A0E89; the class
+// names come from the vtable each subobject's constructor writes, through the
+// game's RTTI. The player's camera is +0x6F0, which the mod has always used.
+struct CameraSlotInfo {const char* name;uint32_t offset;};
+const CameraSlotInfo cameraSlots[9]={
+    {"ObjectDebug",   0x060},
+    {"ICamera_150",   0x150},
+    {"ICamera_220",   0x220},
+    {"Cinematic",     0x340},
+    {"ICamera_490",   0x490},
+    {"Free",          0x550},
+    {"ICamera_630",   0x630},
+    {"Player",        0x6f0},
+    {"OrbitDebug",   0x11a0},
+};
+std::atomic<bool> activeCameraIsPlayer{true};
+const void* activeCameraLast=nullptr;
+// -1 = not identified. Written on the update thread, read on the render thread.
+std::atomic<int> cameraModeIndex{-1};
+int cameraModeLast=-2;
+uint32_t cameraModeUnknownLogged{};
+std::atomic<bool> handsSuspendedByMode{false};
+// Set ONLY on positive evidence that the camera is away from the body. Every
+// failure path leaves it false, so the hands keep working.
+std::atomic<bool> handsFarFromBody{false};
+bool handsFarLast=false;
+std::atomic<bool> handDriveAllowed{true};
+bool handDriveAllowedLast=true;
+// Bone whose own world position the collapse apex sits on, so the hidden
+// sleeve caps the cut instead of spiking away from it. -1 = measure from the
+// grip, the old behaviour.
+int controllerHandsCollapseBone=-1;
+// One solved grip per weapon, keyed by the asset ID at weapon+0x58 - the same
+// key fubar's calibration store uses. Each weapon's animation holds its own
+// grip, so a single shared value is wrong: that was the first version's bug.
+// `anchor` is what this weapon measured when it was FIRST stored or loaded.
+// Refinement is bounded against it rather than against `offset`, so corrections
+// cannot accumulate: every step is measured from the same fixed point.
+struct HandGrip {uint32_t key;CameraMath::Matrix offset;CameraMath::Matrix anchor;};
+HandGrip handGrips[64]{};
+uint32_t handGripCount{};
+uint32_t handWeaponKey=0xffffffffu;
+uint32_t handGripSolvingKey=0xffffffffu;
+// Set when the equipped weapon changes: a switch is the moment to re-measure,
+// because the gun has just been drawn and the hand is moving as it comes up.
+// The existing value stays in use until the new one validates.
+uint32_t handGripSeenKey=0xffffffffu;
+bool handGripRemeasure{};
+// The observer. Records what the inputs were doing across the window of
+// agreeing samples that produced a solve, so a bad one can be explained instead
+// of guessed at.
+bool handGripWindowOpen{};
+uint64_t handGripWindowStart{};
+float handGripWristStart[3]{};
+float handGripMuzzleStart[3]{};
+uint32_t handGripWindowFlags{};   // 1 mode-suspend, 2 distance, 4 non-player camera
+int handGripWindowMode=-1;
+uint32_t handGripAgreed{};        // observations that matched the stored grip
+uint32_t handGripLogged{};        // disagreements written, capped
+// The player's own origin, published for the render thread. Walking moves the
+// wrist in world space without moving it in the body's frame, and that
+// difference is what separates a gun in the hand from one on the body.
+std::atomic<float> handBodyOrigin[3]{};
+std::atomic<bool> handBodyOriginValid{false};
+float handGripBodyStart[3]{};
+// Draws where no weapon was in hand. The existing noWeapon counter only moves in
+// the identify path, which mode 15 never takes.
+std::atomic<uint64_t> handUnarmedDraws{};
+// Times the drive was refused because the transform would have torn geometry.
+std::atomic<uint64_t> handDriveRejected{};
+// The hand pose: the most curled unarmed hand the game has shown, kept so it can
+// be put back on when interact is pressed. Band-sized, never more than 32 bones.
+// OFF by default from 2026-10-14. Both of its tests - "are the hands empty" and
+// "which pose is most curled" - were built on quantities that turned out not to
+// mean what I assumed, and it replaced the hand band on most frames. It stays
+// off until it has tests that do not depend on them.
+bool controllerHandsPose=false;
+uint32_t controllerHandsPoseMask=0x4000;     // XINPUT_GAMEPAD_X    = interact
+uint32_t controllerHandsSprintMask=0x0100;   // XINPUT_GAMEPAD_LB   = sprint
+CameraMath::Matrix handPoseBase[32]{},handPoseBest[32]{};
+uint32_t handPoseCount{};
+float handPoseBestScore{};
+bool handPoseHaveBase{},handPoseHaveBest{};
+std::atomic<bool> handPoseInteract{false};
+// Sprinting, from the measured eye height rather than from a guess about which
+// button it is. Standing 565-567 units, sprinting 541 (2026-09-17 trace).
+std::atomic<bool> handPoseSprinting{false};
+CameraMath::Matrix handPoseSprint[32]{};
+bool handPoseHaveSprint{};
+uint32_t handPoseLogged{},handPoseSprintLogged{};
+CameraMath::Matrix handGripPrev{};
+bool handGripHavePrev{};
+CameraMath::Matrix handGripAccum{};
+uint32_t handGripSamples{};
+float handGripRef[3]{};
+HandGrip* FindHandGripRecord(uint32_t key) {
+    for(uint32_t i=0;i<handGripCount;i++)
+        if(handGrips[i].key==key)return &handGrips[i];
+    return nullptr;
+}
+const CameraMath::Matrix* FindHandGrip(uint32_t key) {
+    for(uint32_t i=0;i<handGripCount;i++)
+        if(handGrips[i].key==key)return &handGrips[i].offset;
+    return nullptr;
+}
+// Solved for EVERY bone at one instant, not just the chosen one, so stepping
+// the drive bone later costs no re-alignment - otherwise each step of the
+// search would cost Mark another calibration.
+int controllerHandsDriveBone=152;
+// Calibration fires on a STEADY HOLD, never on a clock. A countdown coupled
+// the capture to the moment a message of mine arrived, which left Mark standing
+// in the headset waiting on my typing - his words: "I can't work like this."
+// A hold has no such coupling: arm it, he gets into position whenever he likes,
+// and it captures itself. It also measures exactly what makes a calibration
+// good, so the quality check and the trigger are the same thing.
+std::atomic<int> handCalibrateArmed{};
+// Arming gesture state. armTick lets the capture path require that the steady
+// window STARTED after arming, so a hand that happened to be still beforehand
+// cannot fire the capture instantly - and it avoids writing handSteadyValid
+// from the camera thread, which the render thread owns.
+std::atomic<uint64_t> handCalibrateArmTick{};
+uint64_t handArmGestureSince{};
+// Why the target was or was not usable. A silent fallback would hide the very
+// weapon dependence this change removed, so it is counted and reported.
+std::atomic<uint64_t> handRawUsed{},handRawRejected{},handFallbackUsed{},handArmGestures{};
+std::atomic<uint32_t> handRawFault{};   // 1 not finite, 2 bad w, 3 not orthonormal
+float handRawW15{},handRawRow0{};
+int controllerHandsArmGestureMs=1500;
+float controllerHandsArmGestureCm=20.f;
+float controllerHandsSteadyCm=2.f;
+int controllerHandsSteadyMs=1500;
+float handSteadyRef[3]{};
+uint64_t handSteadySince{};
+bool handSteadyValid{};
+float handSteadyWorst{};
+float handCalibrateQuality=-1.f;
+int controllerHandsCalibrateDelayMs{};  // retired; kept so the INI key is harmless
+// Mode 14 gate counters. Writing nothing when it fails is the one outcome that
+// cannot be acted on, which is what the first attempt did.
+std::atomic<uint64_t> handIdEnters{},handIdNoWeapon{},handIdBelowGate{};
+std::atomic<uint32_t> handIdSampleCount{};
+std::atomic<uint64_t> handIdProgressTick{};
+float handIdMaxDeg{};
+// Declared here so the watcher below can call it; defined once the draw
+// counters it reports exist.
+void WriteHandsStatus();
+// Centimetres in the controller's own axes, applied after calibration.
+// By-eye alignment is only so good; this is Dishonored VR's TrimX/Y/Z.
+float handTrim[3]{};
+// Rotation trim, degrees about the controller's own axes. Position was the only
+// thing ever checked or correctable, and an angle error throws the hand much
+// further off than an inch of position does.
+float handTrimRot[3]{};
+// Running sum of the solved bind pose across the hold, so jitter averages out
+// instead of being rejected by a tight tolerance.
+CameraMath::Matrix handBindAccum[512]{};
+uint32_t handBindSamples{};
+// Mode 14 identifies the hand bone with no calibration and no guessing. While
+// armed the hand grips the gun, so the hand bone's world transform is rigidly
+// related to the weapon's. Between two frames that makes the bone's palette
+// change CONJUGATE to the weapon's, and conjugate rigid transforms share a
+// rotation angle - a scalar that needs neither the bind pose nor the unknown
+// constant offset. The hand bone is the one whose angle matches the gun's.
+CameraMath::Matrix handIdPrevSkin[512]{};
+CameraMath::Matrix handIdPrevMuzzle{};
+bool handIdHavePrev{};
+double handIdSum[512]{};
+double handIdWorst[512]{};
+// Each bone's OWN mean rotation per accepted sample. A slot that never moves
+// matches the gun trivially whenever the gun's angle is small, so without this
+// the ranking can be topped by dead slots - the same trap that made bones
+// 157/158 look like hands.
+double handIdOwn[512]{};
+float controllerHandsIdGateDeg=.5f;
+// Mesh-piece hiding. Bit N set drops piece N of the actor's own draw. This is
+// the one hiding mechanism that moves nothing: a piece that is never submitted
+// cannot drag a shared vertex, which is the failure every collapse variant has.
+uint32_t controllerHandsSkipPrimMask{};
+// Fraction to shrink a discarded bone to, instead of zeroing it. 0 = zero it,
+// i.e. exactly today's behaviour. Zeroing destroys the surface normal of every
+// vertex that shares weight across the wrist; scaling keeps the normal's
+// direction and only shortens it, which is the one thing no collapse variant
+// has tried.
+float controllerHandsCollapseScale{};
+// Mode 15's weld range: these bones are given the kept wrist bone's final
+// matrix, so the forearm rides the hand rigidly and no vertex is dragged.
+// Where the collapsed geometry's apex goes, as an offset from the grip in the
+// controller's own axes, in INCHES. Back is along the muzzle's second row,
+// which points from the muzzle back toward the hand and on toward the elbow -
+// the direction from the palm to the wrist.
+float controllerHandsCollapseBackIn{};
+float controllerHandsCollapseSideIn{};
+float controllerHandsCollapseUpIn{};
+// The left arm, hidden outright. 0/0 = off. Bones in this range, plus any slot
+// holding a transform identical to one of them, are all sent to a single point,
+// so every triangle they carry has zero area.
+int controllerHandsHideFrom{};
+int controllerHandsHideTo{};
+std::atomic<uint32_t> handHiddenSlots{};
+int controllerHandsWeldFrom=112;
+int controllerHandsWeldTo=130;
+std::atomic<uint32_t> handPrimPieces{};
+// Which pixel shader draws the arm, and whether anything else uses it. The
+// answer decides whether a per-draw shader swap - already shipping machinery
+// here, for the Luma port - can hide the forearm without touching any other
+// character in the game.
+std::atomic<uint32_t> handShaderCalls{};
+uintptr_t handShaders[16]{};
+uint32_t handShaderCount{};
+uintptr_t otherShaders[512]{};
+uint32_t otherShaderCount{};
+int handShaderLogged{};
+int handPrimLogged{};
+struct HandPrim {uint32_t index;uintptr_t primitive,material;uint32_t flags;};
+HandPrim handPrimTrace[64]{};
+uint32_t handPrimTraceCount{};
+uint32_t handIdSamples{};
+bool handIdReported{};
+// Live re-read of the ControllerHands keys. Exiting the game stalls and costs a
+// Virtual Desktop audio round trip, so a relaunch per bisection round is far more
+// expensive than it looks; this makes a round a glance instead.
+// It runs on a DETACHED WORKER, never the render thread: GetPrivateProfileInt
+// opens the file, and the comment in OnPresent forbids scheduled file IO there -
+// that is what made BobTrace hitch. Only these diagnostic keys are refreshed,
+// so nothing with side effects (hooks, stance hold, the sleep patch) is touched.
+std::wstring handsConfigPath;
+__declspec(noinline) void RefreshForcedHandFallback(const wchar_t* path) {
+    static bool previousFallbackRequest=false;
+    static uint64_t fallbackTestUntil=0;
+    const bool forceRequested=GetPrivateProfileIntW(L"VR",L"ControllerHandsForceFallback",0,path)!=0;
+    const auto testNow=GetTickCount64();
+    if(forceRequested && !previousFallbackRequest)fallbackTestUntil=testNow+90000;
+    if(!forceRequested)fallbackTestUntil=0;
+    previousFallbackRequest=forceRequested;
+    const bool forceActive=forceRequested && testNow<fallbackTestUntil;
+    if(controllerHandsForceFallback.exchange(forceActive)!=forceActive) {
+        FILE* testLog{};
+        if(!fopen_s(&testLog,"DeusExHRVR-hand-only.log","a") && testLog) {
+            fprintf(testLog,"fallbackTest active=%d requested=%d tick=%llu expiry=%llu\n",
+                int(forceActive),int(forceRequested),testNow,fallbackTestUntil);
+            fclose(testLog);
+        }
+    }
+}
+void StartHandsConfigWatcher() {
+    static std::once_flag once;
+    std::call_once(once,[]{
+        std::thread([]{
+            for(;;) {
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+                if(handsConfigPath.empty())continue;
+                HandMeshDiagnostic::Flush();
+                HandDrawDiagnostic::Flush();
+                HandOnlyGeometry::Flush();
+                MuzzleQueryDiagnostic::Flush();
+                HandWeaponMotionDiagnostic::Flush();
+                {
+                    static unsigned tick{};
+                    if(++tick==1 || tick%5==0){
+                        FILE* nf{};
+                        if(!fopen_s(&nf,"DeusExHRVR-native-pair.log","a") && nf){
+                            fprintf(nf,"nativePair version=1 used=%llu failed=%llu compared=%llu mismatch=%llu disabled=%d ownerFail=%llu modelFail=%llu boneFail=%llu muzzleFail=%llu maxPaletteDifference=%.6f savedOffsets=0 refinement=0\n",
+                                nativePairUsed.load(),nativePairFailed.load(),nativePairCompared.load(),nativePairMismatch.load(),int(nativePairFault.load()),
+                                nativePairOwnerFailed.load(),nativePairModelFailed.load(),nativePairBoneFailed.load(),nativePairMuzzleFailed.load(),double(nativePairMaxDifference.load()));
+                            fclose(nf);
+                        }
+                        FILE* f{};
+                        if(!fopen_s(&f,"DeusExHRVR-model-hand.log","a") && f){
+                            fprintf(f,"modelHand version=1 enabled=%d applied=%llu noGrip=%llu badModel=%llu badTransform=%llu neutralWrist=%d neutralWristFailed=%llu fallback=native\n",
+                                int(controllerHandsModelAlignment.load()),modelHandApplied.load(),modelHandNoGrip.load(),modelHandBadModel.load(),modelHandBadTransform.load(),
+                                int(controllerHandsNeutralWrist.load()),neutralWristFailed.load());
+                            fclose(f);
+                        }
+                    }
+                }
+                auto path=handsConfigPath.c_str();
+                RefreshForcedHandFallback(path);
+                controllerHandsModelAlignment=GetPrivateProfileIntW(L"VR",L"ControllerHandsModelAlignment",0,path)!=0;
+                controllerHandsMode=int(GetPrivateProfileIntW(L"VR",L"ControllerHandsMode",0,path));
+                controllerHandsSplitA=int(GetPrivateProfileIntW(L"VR",L"ControllerHandsSplitA",74,path));
+                controllerHandsSplitB=int(GetPrivateProfileIntW(L"VR",L"ControllerHandsSplitB",148,path));
+                controllerHandsKeepFrom=int(GetPrivateProfileIntW(L"VR",L"ControllerHandsKeepFrom",74,path));
+                controllerHandsKeepTo=int(GetPrivateProfileIntW(L"VR",L"ControllerHandsKeepTo",82,path));
+                {
+                    int drop=int(GetPrivateProfileIntW(L"VR",L"ControllerHandsCollapseDropM",0,path));
+                    if(drop>=0&&drop<=10000)controllerHandsCollapseDrop=float(drop);
+                }
+                {
+                    bool want=GetPrivateProfileIntW(L"VR",L"ControllerHandsWeapon",0,path)!=0;
+                    // Turning it off and on again re-measures, so a bad solve
+                    // costs an INI edit rather than a relaunch.
+                    if(!want&&controllerHandsWeapon) {
+                        // Off then on re-measures every weapon from scratch.
+                        handGripCount=0;handGripHavePrev=false;
+                        handGripSolvingKey=0xffffffffu;
+                        handGripSamples=0;handGripAccum=CameraMath::Matrix{};
+                    }
+                    controllerHandsWeapon=want;
+                }
+                controllerHandsCollapseBone=int(GetPrivateProfileIntW(L"VR",L"ControllerHandsCollapseBone",-1,path));
+                {
+                    int mo=int(GetPrivateProfileIntW(L"VR",L"ControllerHandsMaxOffsetIn",12,path));
+                    if(mo>0&&mo<=400)controllerHandsMaxOffsetIn=float(mo);
+                    int sm=int(GetPrivateProfileIntW(L"VR",L"ControllerHandsSuspendModes",342,path));
+                    if(sm>=0&&sm<512)controllerHandsSuspendModes=uint32_t(sm);
+                    controllerHandsPose=GetPrivateProfileIntW(L"VR",L"ControllerHandsPose",0,path)!=0;
+                    int pm=int(GetPrivateProfileIntW(L"VR",L"ControllerHandsPoseButton",0x4000,path));
+                    if(pm>0&&pm<=0xffff)controllerHandsPoseMask=uint32_t(pm);
+                    int sb=int(GetPrivateProfileIntW(L"VR",L"ControllerHandsSprintButton",0x0100,path));
+                    if(sb>0&&sb<=0xffff)controllerHandsSprintMask=uint32_t(sb);
+                }
+                controllerHandsProbe=GetPrivateProfileIntW(L"VR",L"ControllerHandsProbe",0,path)!=0;
+                controllerHandsProbeFrom=int(GetPrivateProfileIntW(L"VR",L"ControllerHandsProbeFrom",100,path));
+                controllerHandsProbeTo=int(GetPrivateProfileIntW(L"VR",L"ControllerHandsProbeTo",160,path));
+                controllerHandBone=int(GetPrivateProfileIntW(L"VR",L"ControllerHandBone",158,path));
+                controllerHandBone2=int(GetPrivateProfileIntW(L"VR",L"ControllerHandBone2",999,path));
+                float r=float(GetPrivateProfileIntW(L"VR",L"ControllerHandsRadiusCm",15,path));
+                if(r>0&&r<=500)controllerHandsRadius=r;
+                // No keypress anywhere: the state Mark would have had to press
+                // F8 for writes itself, from this thread, on change only.
+                WriteHandsStatus();
+                controllerHandsDriveBone=int(GetPrivateProfileIntW(L"VR",L"ControllerHandsDriveBone",152,path));
+                {
+                    // Edge-triggered, so the mod never writes the INI back the
+                    // way snap turn's calibration does - and so a value left
+                    // over from a previous session cannot fire a calibration
+                    // against whatever pose happens to be live at launch.
+                    controllerHandsSteadyMs=int(GetPrivateProfileIntW(L"VR",L"ControllerHandsSteadyMs",800,path));
+                    controllerHandsSkipPrimMask=uint32_t(GetPrivateProfileIntW(L"VR",L"ControllerHandsSkipPrimMask",0,path));
+                    {
+                        wchar_t text[32]{};
+                        struct {const wchar_t* key;float* out;} trims[]{
+                            {L"ControllerHandsCollapseBackIn",&controllerHandsCollapseBackIn},
+                            {L"ControllerHandsCollapseSideIn",&controllerHandsCollapseSideIn},
+                            {L"ControllerHandsCollapseUpIn",&controllerHandsCollapseUpIn}};
+                        for(auto& t:trims) {
+                            GetPrivateProfileStringW(L"VR",t.key,L"0",text,32,path);
+                            float v=float(_wtof(text));
+                            if(std::isfinite(v)&&v>=-24.f&&v<=24.f)*t.out=v;
+                        }
+                    }
+                    controllerHandsHideFrom=int(GetPrivateProfileIntW(L"VR",L"ControllerHandsHideFrom",0,path));
+                    controllerHandsHideTo=int(GetPrivateProfileIntW(L"VR",L"ControllerHandsHideTo",0,path));
+                    controllerHandsWeldFrom=int(GetPrivateProfileIntW(L"VR",L"ControllerHandsWeldFrom",112,path));
+                    controllerHandsWeldTo=int(GetPrivateProfileIntW(L"VR",L"ControllerHandsWeldTo",130,path));
+                    {
+                        wchar_t text[32]{};
+                        GetPrivateProfileStringW(L"VR",L"ControllerHandsCollapseScale",L"0",text,32,path);
+                        float v=float(_wtof(text));
+                        if(std::isfinite(v)&&v>=0.f&&v<=1.f)controllerHandsCollapseScale=v;
+                    }
+                    controllerHandsArmGestureMs=int(GetPrivateProfileIntW(L"VR",L"ControllerHandsArmGestureMs",1500,path));
+                    {
+                        wchar_t text[32]{};
+                        GetPrivateProfileStringW(L"VR",L"ControllerHandsIdGateDeg",L"0.5",text,32,path);
+                        float v=float(_wtof(text));
+                        if(std::isfinite(v)&&v>0.f&&v<90.f)controllerHandsIdGateDeg=v;
+                    }
+                    {
+                        wchar_t text[32]{};
+                        GetPrivateProfileStringW(L"VR",L"ControllerHandsArmGestureCm",L"20",text,32,path);
+                        float v=float(_wtof(text));
+                        if(std::isfinite(v)&&v>0.f&&v<200.f)controllerHandsArmGestureCm=v;
+                    }
+                    {
+                        wchar_t text[32]{};
+                        GetPrivateProfileStringW(L"VR",L"ControllerHandsSteadyCm",L"5",text,32,path);
+                        float v=float(_wtof(text));
+                        if(std::isfinite(v)&&v>0.f&&v<100.f)controllerHandsSteadyCm=v;
+                    }
+                    int req=int(GetPrivateProfileIntW(L"VR",L"ControllerHandsCalibrate",0,path));
+                    static int lastReq=-1;
+                    if(lastReq<0)lastReq=req;
+                    else if(req!=lastReq) {
+                        // Changing the value re-arms. Arming is free and
+                        // disarms itself on capture, so an early capture costs
+                        // a repeat rather than a relaunch.
+                        lastReq=req;
+                        if(req){handCalibrateArmed.store(1);handSteadyValid=false;}
+                    }
+                }
+                {
+                    // Read as text, because GetPrivateProfileInt cannot return
+                    // a negative, and trim has to go both ways.
+                    const wchar_t* trimKeys[3]={L"ControllerHandsTrimXCm",L"ControllerHandsTrimYCm",L"ControllerHandsTrimZCm"};
+                    for(int j=0;j<3;j++) {
+                        wchar_t text[32]{};
+                        GetPrivateProfileStringW(L"VR",trimKeys[j],L"0",text,32,path);
+                        float t=float(_wtof(text));
+                        if(std::isfinite(t)&&t>-200.f&&t<200.f)handTrim[j]=t;
+                    }
+                    const wchar_t* rotKeys[3]={L"ControllerHandsTrimPitchDeg",L"ControllerHandsTrimYawDeg",L"ControllerHandsTrimRollDeg"};
+                    for(int j=0;j<3;j++) {
+                        wchar_t text[32]{};
+                        GetPrivateProfileStringW(L"VR",rotKeys[j],L"0",text,32,path);
+                        float t=float(_wtof(text));
+                        if(std::isfinite(t)&&t>-180.f&&t<=180.f)handTrimRot[j]=t;
+                    }
+                }
+            }
+        }).detach();
+    });
+}
+// Out-of-range values mean "no bone", which is what the 999 default relies on.
+thread_local bool handDrawing{};
+thread_local uint32_t handPrimIndex{};
+// Controller grip position in world units. Written by ActorDrawHook and read by
+// SkeletonHook on the same thread inside a single draw, so no lock is needed.
+thread_local float handTarget[3]{};
+// The weapon transform, recomputed per actor draw. Same quantity WeaponDrawHook
+// feeds the gun, so anything it is applied to lands on the controller the way
+// the gun already does.
+thread_local CameraMath::Matrix handDelta{};
+thread_local bool handDeltaValid{};
+// The CONTROLLER pose, which is valid with the weapon holstered, kept separate
+// from the WEAPON pose, which is not. That separation is the whole fix.
+thread_local CameraMath::Matrix handMuzzle{};
+thread_local bool handMuzzleValid{};
+thread_local CameraMath::Matrix handNativeMuzzle{};
+thread_local bool handNativeMuzzleValid{};
+CameraMath::Matrix SkinAffine(const CameraMath::Matrix& skin) {
+    // Same treatment MoveSkinMatrix applies: the engine stores skinning
+    // translation with w=0 while the shader uses it as a position, so the
+    // fourth column is not part of the transform.
+    auto a=skin;a.m[3]=a.m[7]=a.m[11]=0;a.m[15]=1;return a;
+}
+CameraMath::Matrix AffineInverse(const CameraMath::Matrix& a,bool* ok) {
+    // InverseRigid assumes an orthonormal 3x3. A palette entry carries
+    // inverse(bindPose), which is only rigid if the model has no bind scaling -
+    // unverified here, and a silent error if wrong. A general inverse costs a
+    // few flops and removes the assumption.
+    const float* m=a.m;
+    float c00=m[5]*m[10]-m[6]*m[9];
+    float c01=m[6]*m[8]-m[4]*m[10];
+    float c02=m[4]*m[9]-m[5]*m[8];
+    float det=m[0]*c00+m[1]*c01+m[2]*c02;
+    CameraMath::Matrix r{};
+    if(!(std::fabs(det)>1e-20f)) {
+        if(ok)*ok=false;
+        r.m[0]=r.m[5]=r.m[10]=r.m[15]=1;return r;
+    }
+    if(ok)*ok=true;
+    float iv=1.f/det;
+    r.m[0]=c00*iv;                  r.m[1]=(m[2]*m[9]-m[1]*m[10])*iv; r.m[2]=(m[1]*m[6]-m[2]*m[5])*iv;
+    r.m[4]=c01*iv;                  r.m[5]=(m[0]*m[10]-m[2]*m[8])*iv; r.m[6]=(m[2]*m[4]-m[0]*m[6])*iv;
+    r.m[8]=c02*iv;                  r.m[9]=(m[1]*m[8]-m[0]*m[9])*iv;  r.m[10]=(m[0]*m[5]-m[1]*m[4])*iv;
+    for(int j=0;j<3;j++)r.m[12+j]=-(m[12]*r.m[j]+m[13]*r.m[4+j]+m[14]*r.m[8+j]);
+    r.m[15]=1;
+    return r;
+}
+void Orthonormalize(CameraMath::Matrix& m) {
+    // Averaging rotation matrices element-wise leaves something slightly
+    // non-rigid. Gram-Schmidt puts it back, which matters because AffineInverse
+    // and the skinning both assume a proper transform.
+    auto norm=[&](int r) {
+        float l=std::sqrt(m.m[r*4]*m.m[r*4]+m.m[r*4+1]*m.m[r*4+1]+m.m[r*4+2]*m.m[r*4+2]);
+        if(l>1e-6f)for(int j=0;j<3;j++)m.m[r*4+j]/=l;
+    };
+    auto dot=[&](int a,int b){float d=0;for(int j=0;j<3;j++)d+=m.m[a*4+j]*m.m[b*4+j];return d;};
+    norm(0);
+    float d01=dot(0,1);
+    for(int j=0;j<3;j++)m.m[4+j]-=d01*m.m[j];
+    norm(1);
+    // Third row is the cross product of the first two, so handedness is kept.
+    m.m[8]=m.m[1]*m.m[6]-m.m[2]*m.m[5];
+    m.m[9]=m.m[2]*m.m[4]-m.m[0]*m.m[6];
+    m.m[10]=m.m[0]*m.m[5]-m.m[1]*m.m[4];
+    norm(2);
+    m.m[3]=m.m[7]=m.m[11]=0;m.m[15]=1;
+}
+float RotationAngle(const CameraMath::Matrix& a) {
+    float c=(a.m[0]+a.m[5]+a.m[10]-1.f)*.5f;
+    if(c>1.f)c=1.f;
+    if(c<-1.f)c=-1.f;
+    return std::acos(c);
+}
+void SaveHandCalibration() {
+    if(!handBindCount)return;
+    // KEEP THE OLD ONE FIRST. Calibrating is a single button tap away, it
+    // overwrites the file that everything else is built on, and on 2026-10-14
+    // Mark triggered it twice by accident - losing a calibration that had stood
+    // since 10/11, with no backup anywhere. Timestamped rather than a single
+    // "previous", because the accident fired twice: one slot would have been
+    // overwritten by the second one and lost the good file just the same.
+    {
+        SYSTEMTIME st{};
+        GetLocalTime(&st);
+        char backup[128];
+        sprintf_s(backup,"DeusExHRVR-hands-%04u%02u%02u-%02u%02u%02u.cal",
+            st.wYear,st.wMonth,st.wDay,st.wHour,st.wMinute,st.wSecond);
+        // Fails harmlessly when there is nothing to back up yet.
+        CopyFileA("DeusExHRVR-hands.cal",backup,TRUE);
+    }
+    // A ONE-SHOT write, which is not what made BobTrace hitch: that was a
+    // write every frame. Checked rather than inherited, per the F8 lesson.
+    FILE* f{};
+    if(fopen_s(&f,"DeusExHRVR-hands.cal","w") || !f)return;
+    fprintf(f,"# DeusExHRVR hand calibration - do not hand-edit.\n");
+    fprintf(f,"# bindPose per bone, solved from one instant when the controller\n");
+    fprintf(f,"# was held on the visible hand. Delete this file to recalibrate.\n");
+    fprintf(f,"bones %u\n",handBindCount);
+    for(uint32_t i=0;i<handBindCount;i++) {
+        fprintf(f,"b %u",i);
+        for(int k=0;k<16;k++)fprintf(f," %.9g",handBind[i].m[k]);
+        fprintf(f,"\n");
+    }
+    fclose(f);
+}
+// The solved grips, persisted. Same shape as the hand calibration above and for
+// the same reason: it is a measurement, not a setting, and re-deriving a
+// measurement every launch is how a rare bad sample gets to win. 128 pistol
+// solves across six sessions produced 2.85 in 122 times and 31.74 in 3 times;
+// the right answer was never in doubt, it was just not written down.
+void SaveHandGrips() {
+    if(!handGripCount)return;
+    FILE* f{};
+    if(fopen_s(&f,"DeusExHRVR-grips.cal","w") || !f)return;
+    fprintf(f,"# DeusExHRVR per-weapon grips - do not hand-edit.\n");
+    fprintf(f,"# offset = nativeMuzzle x inverse(wristWorld), solved from the\n");
+    fprintf(f,"# game's own animation. One line per weapon asset id.\n");
+    fprintf(f,"# DELETE THIS FILE to re-measure every weapon.\n");
+    for(uint32_t i=0;i<handGripCount;i++) {
+        fprintf(f,"g %08x",handGrips[i].key);
+        for(int k=0;k<16;k++)fprintf(f," %.9g",handGrips[i].offset.m[k]);
+        fprintf(f,"\n");
+    }
+    fclose(f);
+}
+void LoadHandGrips() {
+    FILE* f{};
+    if(fopen_s(&f,"DeusExHRVR-grips.cal","r") || !f)return;
+    char line[1024];
+    while(fgets(line,sizeof(line),f)) {
+        if(line[0]!='g' || line[1]!=' ')continue;
+        unsigned key=0;CameraMath::Matrix v{};
+        int got=sscanf_s(line,"g %x %f %f %f %f %f %f %f %f %f %f %f %f %f %f %f %f",&key,
+            &v.m[0],&v.m[1],&v.m[2],&v.m[3],&v.m[4],&v.m[5],&v.m[6],&v.m[7],
+            &v.m[8],&v.m[9],&v.m[10],&v.m[11],&v.m[12],&v.m[13],&v.m[14],&v.m[15]);
+        if(got!=17 || key>=0x18000 || handGripCount>=64)continue;
+        if(FindHandGrip(key))continue;
+        handGrips[handGripCount].key=key;
+        handGrips[handGripCount].offset=v;
+        handGrips[handGripCount].anchor=v;
+        ++handGripCount;
+    }
+    fclose(f);
+    FILE* log{};
+    if(!fopen_s(&log,"DeusExHRVR-camera.log","a") && log) {
+        fprintf(log,"handGrips loaded weapons=%u\n",handGripCount);
+        // WORLD UNITS, not inches. Printing these as inches without dividing by
+        // worldScale made ten healthy grips read as 1859 and 9555 inches and sent
+        // me hunting a corruption that did not exist - the sixth time in this
+        // project that a quantity was printed in the wrong units and believed.
+        for(uint32_t i=0;i<handGripCount;i++)
+            fprintf(log,"handGrips stored key=%08x units=%.2f\n",handGrips[i].key,
+                double(sqrt(handGrips[i].offset.m[12]*handGrips[i].offset.m[12]+
+                            handGrips[i].offset.m[13]*handGrips[i].offset.m[13]+
+                            handGrips[i].offset.m[14]*handGrips[i].offset.m[14])));
+        fclose(log);
+    }
+}
+void LogPoseShape(FILE* f,const char* tag,const CameraMath::Matrix* pose,uint32_t count,int lo);
+void SaveHandPose() {
+    if(!handPoseHaveBest || !handPoseCount)return;
+    FILE* f{};
+    if(fopen_s(&f,"DeusExHRVR-handpose.cal","w") || !f)return;
+    fprintf(f,"# DeusExHRVR captured hand pose - do not hand-edit.\n");
+    fprintf(f,"# The most curled unarmed hand the GAME animated, kept so it can\n");
+    fprintf(f,"# be shown again when interact is pressed. Delete to re-capture.\n");
+    fprintf(f,"count %u\nscore %.9g\nsprint %d\n",
+        handPoseCount,double(handPoseBestScore),int(handPoseHaveSprint));
+    for(uint32_t i=0;i<handPoseCount;i++) {
+        fprintf(f,"base %u",i);
+        for(int k=0;k<16;k++)fprintf(f," %.9g",handPoseBase[i].m[k]);
+        fprintf(f,"\nbest %u",i);
+        for(int k=0;k<16;k++)fprintf(f," %.9g",handPoseBest[i].m[k]);
+        if(handPoseHaveSprint) {
+            fprintf(f,"\nsprn %u",i);
+            for(int k=0;k<16;k++)fprintf(f," %.9g",handPoseSprint[i].m[k]);
+        }
+        fprintf(f,"\n");
+    }
+    fclose(f);
+}
+void LoadHandPose() {
+    FILE* f{};
+    if(fopen_s(&f,"DeusExHRVR-handpose.cal","r") || !f)return;
+    char line[1024];
+    uint32_t count=0;
+    while(fgets(line,sizeof(line),f)) {
+        unsigned i=0;CameraMath::Matrix v{};float sc=0.f;
+        if(sscanf_s(line,"count %u",&i)==1 && i<=32){count=i;continue;}
+        if(sscanf_s(line,"score %f",&sc)==1){handPoseBestScore=sc;continue;}
+        int sp=0;
+        if(sscanf_s(line,"sprint %d",&sp)==1){handPoseHaveSprint=sp!=0;continue;}
+        bool isBase=line[0]=='b'&&line[1]=='a';
+        bool isBest=line[0]=='b'&&line[1]=='e';
+        bool isSprn=line[0]=='s'&&line[1]=='p'&&line[2]=='r'&&line[3]=='n';
+        if(!isBase && !isBest && !isSprn)continue;
+        int got=sscanf_s(line+5,"%u %f %f %f %f %f %f %f %f %f %f %f %f %f %f %f %f",&i,
+            &v.m[0],&v.m[1],&v.m[2],&v.m[3],&v.m[4],&v.m[5],&v.m[6],&v.m[7],
+            &v.m[8],&v.m[9],&v.m[10],&v.m[11],&v.m[12],&v.m[13],&v.m[14],&v.m[15]);
+        if(got!=17 || i>=32)continue;
+        if(isBase)handPoseBase[i]=v;
+        else if(isSprn)handPoseSprint[i]=v;
+        else handPoseBest[i]=v;
+    }
+    fclose(f);
+    if(count){handPoseCount=count;handPoseHaveBase=true;handPoseHaveBest=true;}
+    FILE* log{};
+    if(!fopen_s(&log,"DeusExHRVR-camera.log","a") && log) {
+        fprintf(log,"handPose loaded bones=%u score=%.4f\n",handPoseCount,double(handPoseBestScore));
+        // Re-describe what is already on disk with the CORRECTED measure, so the
+        // poses captured on 2026-10-14 answer "is there any finger movement in
+        // this" without Mark playing again. The old numbers were whole-hand
+        // orientation; these are articulation relative to the wrist.
+        if(handPoseCount) {
+            int lo=controllerHandsKeepFrom;
+            if(lo<0)lo=0;
+            if(handPoseHaveSprint)LogPoseShape(log,"loaded-sprint",handPoseSprint,handPoseCount,lo);
+            if(handPoseHaveBest)LogPoseShape(log,"loaded-best",handPoseBest,handPoseCount,lo);
+        }
+        fclose(log);
+    }
+}
+// A bone's rotation RELATIVE TO THE WRIST: R(bone) * transpose(R(wrist)).
+//
+// Comparing palette entries directly was wrong, and the 2026-10-14 log shows it
+// plainly - all 23 bones reported the identical angle (70.3, 51.1, 175.9...),
+// which is the whole hand turning as one lump, not fingers moving. A palette
+// entry carries the bone's world orientation, so comparing entries across time
+// measures mainly where the hand is POINTING.
+//
+// This cancels that. Writing P=inv(bind)*world, the product P_i * inv(P_wrist)
+// equals inv(bind_i) * [W_i * inv(W_wrist)] * bind_wrist: the finger's pose
+// relative to the wrist, wrapped in constants. Comparing it against the same
+// quantity at rest conjugates the difference by a constant rotation, and
+// conjugation preserves the ANGLE - so the number below is exactly how far that
+// joint has moved relative to the wrist, with no bind poses needed.
+void RelativeRotation(const CameraMath::Matrix& bone,const CameraMath::Matrix& wrist,float out[9]) {
+    for(int r=0;r<3;r++)for(int c=0;c<3;c++) {
+        float v=0.f;
+        for(int k=0;k<3;k++)v+=bone.m[r*4+k]*wrist.m[c*4+k];  // R_bone * R_wrist^T
+        out[r*3+c]=v;
+    }
+}
+float RelativeAngleDeg(const CameraMath::Matrix* pose,const CameraMath::Matrix* base,
+                       uint32_t i,uint32_t wristIdx) {
+    float a[9],b[9];
+    RelativeRotation(pose[i],pose[wristIdx],a);
+    RelativeRotation(base[i],base[wristIdx],b);
+    float tr=0.f;
+    for(int k=0;k<9;k++)tr+=a[k]*b[k];     // trace(A*B^T)=1+2cos(theta)
+    float c=(tr-1.f)*.5f;
+    if(c>1.f)c=1.f;
+    if(c<-1.f)c=-1.f;
+    return float(std::acos(c)*180.0/3.14159265358979);
+}
+// Per-bone articulation of a captured pose against the resting hand, in degrees.
+// Written for EVERY candidate, so poses can be compared from the log instead of
+// Mark looking at his hand and reporting back. 133-152 is five fingers at four
+// joints: a curl turns a finger's later joints more than its base.
+void LogPoseShape(FILE* f,const char* tag,const CameraMath::Matrix* pose,uint32_t count,int lo) {
+    int drive=controllerHandsDriveBone;
+    uint32_t wristIdx=(drive>=lo && drive<lo+int(count))?uint32_t(drive-lo):0u;
+    fprintf(f,"handPose shape %s wrist=%d",tag,lo+int(wristIdx));
+    for(uint32_t i=0;i<count;i++)
+        fprintf(f," %d:%.1f",lo+int(i),
+            double(RelativeAngleDeg(pose,handPoseBase,i,wristIdx)));
+    fprintf(f,"\n");
+}
+// Runs on the palette the GAME filled, before the mod changes anything.
+void HandPoseStep(CameraMath::Matrix* m,uint32_t n) {
+    if(!controllerHandsPose)return;
+    int lo=controllerHandsKeepFrom,hi=controllerHandsKeepTo;
+    if(lo<0)lo=0;
+    if(hi>int(n))hi=int(n);
+    if(hi<=lo || hi-lo>32)return;
+    uint32_t count=uint32_t(hi-lo);
+    // HANDS EMPTY. The obvious test - "is there a valid weapon muzzle" - is
+    // WRONG: Mark played a whole session unarmed on 2026-10-14 and the game
+    // handed the mod a valid muzzle for all 3838 frames, which is why this
+    // never ran once. The muzzle exists whether or not the gun is in his hand.
+    //
+    // What distinguishes them is DISTANCE. That same session measured the
+    // weapon 31.7 inches from the wrist while his hands were empty; held, the
+    // stored grip for it is 2.85. So: solve the live muzzle-to-wrist distance
+    // and compare it with the one stored for this weapon. Far from it means the
+    // gun is not in the hand. With no stored grip there is nothing to compare
+    // against, so assume armed and do nothing - this can only ever fail to run,
+    // never run when it should not.
+    bool unarmed=!handNativeMuzzleValid;
+    if(!unarmed) {
+        int drive=controllerHandsDriveBone;
+        if(drive>=0 && uint32_t(drive)<n && uint32_t(drive)<handBindCount) {
+            auto world=CameraMath::Multiply(handBind[drive],SkinAffine(m[drive]));
+            bool ok=false;
+            auto inv=AffineInverse(world,&ok);
+            if(ok) {
+                auto cand=CameraMath::Multiply(handNativeMuzzle,inv);
+                if(auto g=FindHandGrip(handWeaponKey)) {
+                    float live=0.f,held=0.f;
+                    for(int j=0;j<3;j++) {
+                        live+=cand.m[12+j]*cand.m[12+j];
+                        held+=g->m[12+j]*g->m[12+j];
+                    }
+                    // A RATIO, so no unit conversion is needed here - worldScale
+                    // is not in scope this early in the file, and a ratio is the
+                    // better test anyway: it scales with the weapon. Observed
+                    // 2026-10-14: 2.85 inches held, 31.7 not held, a factor of
+                    // eleven. Twice the stored distance is the threshold, which
+                    // no animation jitter reaches and every observed miss clears.
+                    unarmed=live>held*4.f;   // squared lengths, so 4 = 2x
+                }
+            }
+        }
+    }
+    // REPLAY. Only unarmed, only while interact is held, only with something
+    // captured - any of those false and the live hand is untouched.
+    if(unarmed && handPoseCount==count && handPoseInteract.load() &&
+       (handPoseHaveSprint || handPoseHaveBest)) {
+        // THE SPRINT POSE WINS. It is the one Mark has actually seen curl the
+        // fingers; the most-different pose is only a fallback for the case
+        // where sprinting never happened, and "most different" can be a splay
+        // rather than a curl.
+        const CameraMath::Matrix* src=handPoseHaveSprint?handPoseSprint:handPoseBest;
+        for(uint32_t i=0;i<count;i++)m[lo+i]=src[i];
+        return;   // never capture a frame we just overwrote
+    }
+    if(!unarmed)return;
+    // Sprinting: keep this hand regardless of how different it is, because it is
+    // the pose that was asked for.
+    if(handPoseSprinting.load() && handPoseHaveBase && handPoseCount==count) {
+        for(uint32_t i=0;i<count;i++)handPoseSprint[i]=m[lo+i];
+        if(!handPoseHaveSprint) {
+            handPoseHaveSprint=true;
+            SaveHandPose();
+            FILE* f{};
+            if(!fopen_s(&f,"DeusExHRVR-camera.log","a")) {
+                fprintf(f,"handPose sprint captured bones=%u frame=%llu\n",count,frameId.load());
+                // PER-BONE ROTATION against the resting hand, in degrees, so the
+                // SHAPE of the pose can be read out of the log instead of Mark
+                // having to look at his hand and report back. 133-152 is five
+                // fingers at four joints, so the bone index is printed with each
+                // angle: a curl turns the later joint of a finger more than its
+                // base, a splay turns them all at the base.
+                LogPoseShape(f,"sprint",handPoseSprint,count,lo);
+                fclose(f);
+            }
+        }
+        else if(handPoseSprintLogged<4) {
+            ++handPoseSprintLogged;
+            SaveHandPose();
+        }
+    }
+    if(!handPoseHaveBase || handPoseCount!=count) {
+        for(uint32_t i=0;i<count;i++)handPoseBase[i]=m[lo+i];
+        handPoseCount=count;handPoseHaveBase=true;
+        handPoseHaveBest=false;handPoseBestScore=0.f;
+        return;
+    }
+    // ARTICULATION, not orientation. Scoring palette entries directly made every
+    // bone report the identical angle, because that measures the whole hand
+    // turning. Each bone is now taken relative to the wrist, which cancels the
+    // hand's own orientation and leaves only the joints moving. The wrist
+    // contributes nothing by construction, which is right - it is the reference.
+    int scoreDrive=controllerHandsDriveBone;
+    uint32_t wristIdx=(scoreDrive>=lo && scoreDrive<lo+int(count))
+                      ?uint32_t(scoreDrive-lo):0u;
+    float score=0.f;
+    for(uint32_t i=0;i<count;i++) {
+        if(i==wristIdx)continue;
+        float d=RelativeAngleDeg(m+lo,handPoseBase,i,wristIdx);
+        score+=d*d;
+    }
+    if(score>handPoseBestScore*1.15f+1e-4f) {
+        for(uint32_t i=0;i<count;i++)handPoseBest[i]=m[lo+i];
+        handPoseBestScore=score;handPoseHaveBest=true;
+        SaveHandPose();
+        if(handPoseLogged<16) {
+            ++handPoseLogged;
+            FILE* f{};
+            if(!fopen_s(&f,"DeusExHRVR-camera.log","a")) {
+                fprintf(f,"handPose captured score=%.4f bones=%u frame=%llu\n",
+                    double(score),count,frameId.load());
+                // Every candidate described, not only sprint: the question is
+                // whether anything the game does closes the hand better, and
+                // this answers it from ordinary play instead of by guessing.
+                LogPoseShape(f,"candidate",handPoseBest,count,lo);
+                fclose(f);
+            }
+        }
+    }
+}
+void LoadHandCalibration() {
+    FILE* f{};
+    if(fopen_s(&f,"DeusExHRVR-hands.cal","r") || !f)return;
+    char line[1024];
+    uint32_t loaded=0;
+    while(fgets(line,sizeof(line),f)) {
+        if(line[0]!='b' || line[1]!=' ')continue;
+        unsigned i=0;CameraMath::Matrix v{};
+        int got=sscanf_s(line,"b %u %f %f %f %f %f %f %f %f %f %f %f %f %f %f %f %f",&i,
+            &v.m[0],&v.m[1],&v.m[2],&v.m[3],&v.m[4],&v.m[5],&v.m[6],&v.m[7],
+            &v.m[8],&v.m[9],&v.m[10],&v.m[11],&v.m[12],&v.m[13],&v.m[14],&v.m[15]);
+        if(got==17 && i<512) {
+            handBind[i]=v;
+            if(i+1>loaded)loaded=i+1;
+        }
+    }
+    fclose(f);
+    if(loaded){handBindCount=loaded;handCalibrated=true;}
+    FILE* log{};
+    if(!fopen_s(&log,"DeusExHRVR-camera.log","a") && log) {
+        fprintf(log,"handCalibration loaded bones=%u calibrated=%d\n",loaded,int(handCalibrated));
+        fclose(log);
+    }
+}
+void LogHandCalibration(const CameraMath::Matrix* m,uint32_t n) {
+    FILE* f{};
+    if(fopen_s(&f,"DeusExHRVR-camera.log","a") || !f)return;
+    fprintf(f,"handCalibrate bones=%u drive=%d muzzle=(%.1f,%.1f,%.1f)\n",
+        n,controllerHandsDriveBone,handMuzzle.m[12],handMuzzle.m[13],handMuzzle.m[14]);
+    // How far the controller wandered during the accepted hold, in world units
+    // (3 units is 1 cm at 300 per metre). A big number means redo the hold, NOT
+    // that the drive bone is wrong - telling those two apart afterwards is the
+    // whole reason this is recorded.
+    fprintf(f,"handCalibrate holdUnits=%.1f tolCm=%g holdMs=%d averagedFrames=%u\n",
+        handCalibrateQuality,controllerHandsSteadyCm,controllerHandsSteadyMs,handBindSamples);
+    // Row norms say whether a palette entry is rigid. AffineInverse copes
+    // either way, but anything that reasons about these as rotations - mode
+    // 14's angle test above all - needs them at 1.
+    const int probe[4]={0,112,132,152};
+    for(int k=0;k<4;k++) {
+        int i=probe[k];
+        if(uint32_t(i)>=n)continue;
+        auto a=SkinAffine(m[i]);
+        fprintf(f,"handCalibrate rowNorms b=%d %.4f %.4f %.4f\n",i,
+            std::sqrt(a.m[0]*a.m[0]+a.m[1]*a.m[1]+a.m[2]*a.m[2]),
+            std::sqrt(a.m[4]*a.m[4]+a.m[5]*a.m[5]+a.m[6]*a.m[6]),
+            std::sqrt(a.m[8]*a.m[8]+a.m[9]*a.m[9]+a.m[10]*a.m[10]));
+    }
+    fclose(f);
+}
+void ReportHandIdentification(uint32_t n) {
+    FILE* f{};
+    if(fopen_s(&f,"DeusExHRVR-camera.log","a") || !f)return;
+    fprintf(f,"handIdentify samples=%u bones=%u gateDeg=%g maxGunDeg=%.2f\n",
+        handIdSamples,n,controllerHandsIdGateDeg,handIdMaxDeg);
+    fprintf(f,"handIdentify READ: smallest meanDeg = tracks the gun most rigidly,"
+              " but IGNORE any row whose ownDeg is near zero - a bone that never"
+              " moves matches trivially.\n");
+    for(uint32_t i=0;i<n;i++) {
+        if(!handIdSamples)break;
+        fprintf(f,"handIdentify b=%u meanDeg=%.4f worstDeg=%.4f ownDeg=%.4f\n",
+            i,handIdSum[i]/handIdSamples,handIdWorst[i],handIdOwn[i]/handIdSamples);
+    }
+    fclose(f);
+}
+void IdentifyHandBone(const CameraMath::Matrix* m,uint32_t n) {
+    handIdEnters.fetch_add(1);
+    if(handIdReported)return;
+    // Write whatever has accumulated once progress stalls. A run that stops
+    // short of the target used to write nothing, and nothing is the one result
+    // that cannot be acted on.
+    if(handIdSamples) {
+        auto last=handIdProgressTick.load();
+        if(last && GetTickCount64()-last>8000) {
+            handIdReported=true;ReportHandIdentification(n);return;
+        }
+    }
+    if(!handNativeMuzzleValid){handIdNoWeapon.fetch_add(1);return;}
+    if(!handIdHavePrev) {
+        for(uint32_t i=0;i<n;i++)handIdPrevSkin[i]=SkinAffine(m[i]);
+        handIdPrevMuzzle=handNativeMuzzle;handIdHavePrev=true;return;
+    }
+    bool ok=false;
+    auto muzzleStep=CameraMath::Multiply(AffineInverse(handIdPrevMuzzle,&ok),handNativeMuzzle);
+    if(!ok)return;
+    float am=RotationAngle(muzzleStep);
+    if(am*57.2957795f>handIdMaxDeg)handIdMaxDeg=am*57.2957795f;
+    float gate=controllerHandsIdGateDeg>0?controllerHandsIdGateDeg*.01745329252f:.00872664626f;
+    // Wait for the gun to have actually turned. With no motion every bone
+    // matches trivially at zero, which would rank them all equal. The anchor is
+    // deliberately NOT advanced on a reject, so the angle accumulates until the
+    // gun really has moved, however slowly.
+    if(!(am>gate)){handIdBelowGate.fetch_add(1);return;}
+    for(uint32_t i=0;i<n;i++) {
+        bool bok=false;
+        auto step=CameraMath::Multiply(AffineInverse(handIdPrevSkin[i],&bok),SkinAffine(m[i]));
+        // The bind pose cancels in S(1)^-1 S(2), so this IS the bone's own
+        // world-space relative motion, with nothing assumed about the model.
+        double own=bok?RotationAngle(step)*57.2957795:0.0;
+        double d=bok?std::fabs(own-am*57.2957795):180.0;
+        handIdSum[i]+=d;
+        handIdOwn[i]+=own;
+        if(d>handIdWorst[i])handIdWorst[i]=d;
+        handIdPrevSkin[i]=SkinAffine(m[i]);
+    }
+    handIdPrevMuzzle=handNativeMuzzle;
+    ++handIdSamples;
+    handIdSampleCount.store(handIdSamples);
+    handIdProgressTick.store(GetTickCount64());
+    if(handIdSamples>=40){handIdReported=true;ReportHandIdentification(n);}
+}
+std::atomic<uint64_t> handDraws{},handSkeletons{},handSkeletonMiss{};
+std::atomic<uint32_t> handBoneCount{};
+void WriteHandsStatus() {
+    if(!controllerHands)return;
+    // Change-only, so a quiet session does not bury the log.
+    static int lastMode=-1,lastDrive=-1,lastCal=-1,lastArmed=-1;
+    static uint32_t lastSamples=0xffffffffu;
+    static uint64_t lastNoWeapon=0xffffffffull,lastDraws=0xffffffffull;
+    static float lastTrim[3]={1e9f,1e9f,1e9f};
+    uint32_t samples=handIdSampleCount.load();
+    uint64_t noWeapon=handIdNoWeapon.load(),draws=handDraws.load();
+    static uint64_t lastRaw=0xffffffffull,lastGest=0xffffffffull;
+    bool changed=lastRaw!=handRawUsed.load() || lastGest!=handArmGestures.load()
+        || lastMode!=controllerHandsMode || lastDrive!=controllerHandsDriveBone
+        || lastCal!=int(handCalibrated) || lastArmed!=handCalibrateArmed.load()
+        || lastSamples!=samples || lastNoWeapon!=noWeapon || lastDraws!=draws
+        || lastTrim[0]!=handTrim[0] || lastTrim[1]!=handTrim[1] || lastTrim[2]!=handTrim[2];
+    if(!changed)return;
+    lastRaw=handRawUsed.load();lastGest=handArmGestures.load();
+    lastMode=controllerHandsMode;lastDrive=controllerHandsDriveBone;
+    lastCal=int(handCalibrated);lastArmed=handCalibrateArmed.load();
+    lastSamples=samples;lastNoWeapon=noWeapon;lastDraws=draws;
+    for(int j=0;j<3;j++)lastTrim[j]=handTrim[j];
+    FILE* f{};
+    if(fopen_s(&f,"DeusExHRVR-camera.log","a") || !f)return;
+    fprintf(f,"handsStatus mode=%d drive=%d calibrated=%d armed=%d bindBones=%u hold=%.1f trim=%g/%g/%g"
+              " draws=%llu skeletons=%llu miss=%llu bones=%u"
+              " idSamples=%u enters=%llu noWeapon=%llu unarmedDraws=%llu driveRejected=%llu belowGate=%llu maxDeg=%.2f"
+              " rawUsed=%llu rawRejected=%llu rawFault=%u rawW15=%.4f rawRow0Len2=%.4f"
+              " fallback=%llu gestures=%llu rot=%g/%g/%g avgFrames=%u pieces=%u skipMask=%u scale=%g shaderCalls=%u distinctShaders=%u weld=%d/%d apex=%g/%g/%gin hide=%d-%d/%u\n",
+        controllerHandsMode,controllerHandsDriveBone,int(handCalibrated),handCalibrateArmed.load(),
+        handBindCount,handCalibrateQuality,handTrim[0],handTrim[1],handTrim[2],
+        draws,handSkeletons.load(),handSkeletonMiss.load(),handBoneCount.load(),
+        samples,handIdEnters.load(),noWeapon,handUnarmedDraws.load(),
+        handDriveRejected.load(),handIdBelowGate.load(),handIdMaxDeg,
+        handRawUsed.load(),handRawRejected.load(),handRawFault.load(),handRawW15,handRawRow0,
+        handFallbackUsed.load(),handArmGestures.load(),
+        handTrimRot[0],handTrimRot[1],handTrimRot[2],handBindSamples,
+        handPrimPieces.load(),controllerHandsSkipPrimMask,controllerHandsCollapseScale,
+        handShaderCalls.load(),handShaderCount,
+        controllerHandsWeldFrom,controllerHandsWeldTo,
+        controllerHandsCollapseBackIn,controllerHandsCollapseSideIn,
+        controllerHandsCollapseUpIn,
+        controllerHandsHideFrom,controllerHandsHideTo,handHiddenSlots.load());
+    fclose(f);
+}
 DirectionConfig::Source interactionAim{},movementDirection{};
 thread_local bool senseQueries{};
 std::atomic<uint64_t> interactionQueries{},movementAxes{};
@@ -359,6 +1443,7 @@ CameraMath::Matrix RenderBase(const CameraMath::Matrix& game) {
 }
 struct Snapshot {
     CameraMath::Matrix originalWorld,world,view,manager;
+    CameraMath::Matrix controllerBase; // Same post-comfort-filter base used for headset and weapon targets.
     Transport::Tracking tracking{};
     Transport::Tracking presentationTracking{};
     bool immersiveScoped{};
@@ -367,7 +1452,6 @@ struct Snapshot {
     uint32_t inputIndex=~0u;
     bool active{};
     bool nativeHeading{};
-    CameraMath::Matrix controllerBase; // Same post-comfort-filter base used for headset and weapon targets.
     CameraMath::Matrix tiltedWorld; // world before LevelFrozenView, still accepted by CreateHook
     bool leveled{};
 };
@@ -391,8 +1475,12 @@ std::atomic<bool> readerOpen{};
 // While it is open the frozen view is left alone and the gameplay button layout is
 // kept, so the button being held to show the wheel keeps working.
 std::atomic<bool> wheelOpen{};
-struct WeaponPose {void* weapon{};void* instance{};CameraMath::Matrix muzzle;uint64_t tick{};bool active{};void* owner{};};
+// controllerRaw is the muzzle BEFORE fubar's per-weapon grip offset is applied.
+// muzzle carries that offset, which is right for the gun and wrong for the
+// hand: the offset is a property of the weapon, not of where Mark's hand is.
+struct WeaponPose {void* weapon{};void* instance{};CameraMath::Matrix muzzle;uint64_t tick{};bool active{};void* owner{};CameraMath::Matrix controllerRaw;bool nativeRequested{},nativeValid{};CameraMath::Matrix gripTarget{},nativeSkin{},delta{};uint64_t equippedTick{};uint32_t buttons{};Transport::Gamepad diagnosticPad{};};
 WeaponPose weaponPose;
+void* diagnosticWeapon{};void* diagnosticInstance{};uint64_t diagnosticEquippedTick{};
 std::atomic<uint64_t> controllerDraws{},controllerMuzzles{};
 std::atomic<uint64_t> controllerAimQueries{},controllerHiddenArms{};
 std::atomic<uint64_t> controllerAttachments{},controllerBounds{};
@@ -402,6 +1490,7 @@ std::array<AttachmentTrace,96> attachmentTrace{};
 std::mutex attachmentTraceMutex;
 thread_local bool controllerDrawing{};
 thread_local CameraMath::Matrix controllerDelta;
+thread_local WeaponPose motionDrawPose;
 SceneCache<Snapshot> scenes;
 Transport::RenderInfo pairInfo{};
 uint64_t taggedScenes{},stereoCalls{};
@@ -620,11 +1709,34 @@ float __fastcall InputAxisHook(void* self,void*,uint32_t index,bool requireActiv
     }
     return self==strafe?axes.strafe:axes.walk;
 }
-WeaponPose ReadWeaponPose() {
-    std::lock_guard lock(stateMutex);auto pose=weaponPose;
-    auto now=GetTickCount64();
-    pose.active=pose.active && current.active && requested && !screenReasons && now>=pose.tick && now-pose.tick<250;
+bool ResolveNativePair(WeaponPose& pose,MuzzleQueryDiagnostic::Site site=MuzzleQueryDiagnostic::Camera,void* subject=nullptr);
+WeaponPose ReadWeaponPose(bool resolve=true,MuzzleQueryDiagnostic::Site site=MuzzleQueryDiagnostic::Camera,void* subject=nullptr) {
+    WeaponPose pose;
+    {
+        std::lock_guard lock(stateMutex);pose=weaponPose;
+        auto now=GetTickCount64();
+        pose.active=pose.active && current.active && requested && !screenReasons && now>=pose.tick && now-pose.tick<250;
+    }
+    // Native animation is read at consumption time, not retained as a learned
+    // grip or a previous-frame offset. No state mutex held during engine calls.
+    if(resolve && pose.active && pose.nativeRequested &&
+       (controllerHandsForceFallback.load() || !ResolveNativePair(pose,site,subject))) {
+        // A rejected hand model must not disable the original floating weapon
+        // or its firing ray. Use the uncalibrated controller muzzle consistently.
+        pose.nativeValid=false;pose.nativeRequested=false;pose.muzzle=pose.controllerRaw;
+        pose.active=NativeHandWeapon::Rigid(pose.muzzle);
+    }
     return pose;
+}
+
+uint32_t RigidFault(const CameraMath::Matrix& m) {
+    for(float v:m.m)if(!std::isfinite(v))return 1;
+    if(std::abs(m.m[15]-1.f)>.01f)return 2;
+    for(int r=0;r<3;r++)for(int c=r;c<3;c++) {
+        float dot=0;for(int j=0;j<3;j++)dot+=m.m[r*4+j]*m.m[c*4+j];
+        if(std::abs(dot-(r==c?1.f:0.f))>.02f)return 3;
+    }
+    return 0;
 }
 bool RigidWeaponMatrix(const CameraMath::Matrix& m) {
     for(float v:m.m)if(!std::isfinite(v))return false;
@@ -635,16 +1747,184 @@ bool RigidWeaponMatrix(const CameraMath::Matrix& m) {
     }
     return true;
 }
+// CRASHED THE GAME 2026-10-14, 1:32 PM, while Mark was calibrating. The dump
+// (dxhrdc_66_crash_2026_10_14T17_32_6C0.mdmp) is an access violation reading
+// 0x4B1 at DXHRDC.exe+0x34F3E7 = 0x74F3E7 - the fourth instruction of this very
+// function:
+//     0074F3E4  mov eax,[esi+78h]           ; weapon->+0x78
+//     0074F3E7  cmp byte ptr [eax+4B1h],0   ; <- eax was NULL
+// The game assumes +0x78 is live and does not check it. The mod calls here with
+// `pose.weapon`, which ReadWeaponPose allows to be up to 250 ms STALE - so a
+// weapon torn down inside that window (a switch, a holster, a calibration tap)
+// leaves a dead pointer that the game then walks off.
+//
+// Checked here rather than at the call site because every caller has the same
+// exposure. The vtable test is the one the weapon path already uses elsewhere.
+bool WeaponMuzzleSafe(void* weapon) {
+    if(!weapon)return false;
+    auto w=static_cast<unsigned char*>(weapon);
+    // Still a weapon object, not freed memory that happens to be mapped.
+    if(*reinterpret_cast<uintptr_t*>(w)!=base+0xab1944-0x400000)return false;
+    // The exact field the faulting instruction dereferences.
+    if(!*reinterpret_cast<void**>(w+0x78))return false;
+    return true;
+}
 uintptr_t NativeWeaponMuzzle(void* weapon,CameraMath::Matrix* out,int barrel,bool firstPerson) {
+    if(!WeaponMuzzleSafe(weapon))return 0;
     auto previous=nativeWeaponQuery;nativeWeaponQuery=true;
     auto result=originalWeaponMuzzle(weapon,out,barrel,firstPerson);
     nativeWeaponQuery=previous;return result;
 }
+// Frame and pivot are immutable model data. The live bone/muzzle are never cached.
+bool NativeModelFrame(void* model,const std::shared_ptr<const HandOnlyGeometry::Plan>& plan,
+                      CameraMath::Matrix& frame,ModelHandAlignment::V& pivot) {
+    static std::mutex guard;
+    static std::shared_ptr<const HandOnlyGeometry::Plan> previous;
+    static CameraMath::Matrix cachedFrame{};static ModelHandAlignment::V cachedPivot{};
+    static bool ready{};static uint64_t retryAfter{};
+    std::lock_guard lock(guard);
+    if(previous!=plan){previous=plan;ready=false;retryAfter=0;}
+    if(!ready && GetTickCount64()>=retryAfter){
+        retryAfter=GetTickCount64()+1000;
+        uint32_t list{},header[2]{};std::array<unsigned char,223*64> raw{};
+        if(HandMeshDiagnostic::Read(uintptr_t(model)+0x68,&list,4) && list &&
+           HandMeshDiagnostic::Read(list,header,sizeof(header)) && header[0]==plan->boneCount && header[1] &&
+           HandOnlyGeometry::ReadBlock(header[1],raw.data(),plan->boneCount*64)) {
+            std::array<ModelHandAlignment::Segment,223> segments{};
+            for(unsigned i=0;i<plan->boneCount;i++){
+                float xyz[3]{};memcpy(xyz,raw.data()+i*64+0x20,sizeof(xyz));
+                for(int j=0;j<3;j++)segments[i].pivot[j]=xyz[j];
+                memcpy(&segments[i].parent,raw.data()+i*64+0x38,4);
+            }
+            ready=NativeHandWeapon::Frame(segments,cachedFrame,cachedPivot,plan->boneCount);
+        }
+    }
+    if(!ready)return false;frame=cachedFrame;pivot=cachedPivot;return true;
+}
+bool LeftModelFrame(void* model,const std::shared_ptr<const HandOnlyGeometry::Plan>& plan,
+                      CameraMath::Matrix& frame,ModelHandAlignment::V& pivot) {
+    static std::mutex guard;
+    static std::shared_ptr<const HandOnlyGeometry::Plan> previous;
+    static CameraMath::Matrix cachedFrame{};static ModelHandAlignment::V cachedPivot{};
+    static bool ready{};static uint64_t retryAfter{};
+    std::lock_guard lock(guard);
+    if(previous!=plan){previous=plan;ready=false;retryAfter=0;}
+    if(!ready && GetTickCount64()>=retryAfter){
+        retryAfter=GetTickCount64()+1000;
+        uint32_t list{},header[2]{};std::array<unsigned char,223*64> raw{};
+        if(HandMeshDiagnostic::Read(uintptr_t(model)+0x68,&list,4) && list &&
+           HandMeshDiagnostic::Read(list,header,sizeof(header)) && header[0]==plan->boneCount && header[1] &&
+           HandOnlyGeometry::ReadBlock(header[1],raw.data(),plan->boneCount*64)) {
+            std::array<ModelHandAlignment::Segment,223> segments{};
+            for(unsigned i=0;i<plan->boneCount;i++){
+                float xyz[3]{};memcpy(xyz,raw.data()+i*64+0x20,sizeof(xyz));
+                for(int j=0;j<3;j++)segments[i].pivot[j]=xyz[j];
+                memcpy(&segments[i].parent,raw.data()+i*64+0x38,4);
+            }
+            ready=ModelHandAlignment::BuildLeftFrame(segments,cachedFrame,plan->boneCount);
+        }
+    }
+    if(!ready)return false;frame=cachedFrame;pivot=cachedPivot;return true;
+}
+bool ReadNativePalm(WeaponPose& pose,CameraMath::Matrix& skin,CameraMath::Matrix& delta) {
+    if(!pose.owner || !pose.weapon)return false;
+    uint32_t model{},bones{},owner{};
+    if(!HandMeshDiagnostic::Read(uintptr_t(pose.weapon)+0x64,&owner,4) || owner!=uintptr_t(pose.owner) ||
+       !NativeHandWeapon::OwnerModel(uintptr_t(pose.owner),HandMeshDiagnostic::Read,model,bones)){++nativePairOwnerFailed;return false;}
+    auto plan=HandOnlyGeometry::Prepare(reinterpret_cast<void*>(uintptr_t(model)));
+    if(!plan){++nativePairModelFailed;return false;}
+    CameraMath::Matrix frame{},bone{};ModelHandAlignment::V pivot{};
+    if(!NativeModelFrame(reinterpret_cast<void*>(uintptr_t(model)),plan,frame,pivot)){++nativePairModelFailed;return false;}
+    if(!HandMeshDiagnostic::Read(uintptr_t(bones)+130*sizeof(bone),&bone,sizeof(bone)) ||
+       !NativeHandWeapon::Skin(bone,pivot,skin) || !NativeHandWeapon::Delta(skin,frame,pose.gripTarget,delta)){++nativePairBoneFailed;return false;}
+    return true;
+}
+bool ResolveNativePair(WeaponPose& pose,MuzzleQueryDiagnostic::Site site,void* subject) {
+    pose.nativeValid=false;
+    auto fail=[](){++nativePairFailed;return false;};
+    if(nativePairFault.load() || handsSuspendedByMode.load() || handsFarFromBody.load() ||
+       !activeCameraIsPlayer.load())return fail();
+    CameraMath::Matrix skin{},delta{},native{};
+    if(!ReadNativePalm(pose,skin,delta))return fail();
+    auto nativeResult=NativeWeaponMuzzle(pose.weapon,&native,0,true);
+    bool relevant=site==MuzzleQueryDiagnostic::Camera ||
+        ((site==MuzzleQueryDiagnostic::Attachment || site==MuzzleQueryDiagnostic::Draw)?subject==pose.instance:subject==pose.weapon);
+    if(!NativeHandWeapon::Rigid(native)){
+        ++nativePairMuzzleFailed;
+        MuzzleQueryDiagnostic::Sample sample{};sample.tick=GetTickCount64();sample.frame=frameId.load();
+        sample.weapon=uintptr_t(pose.weapon);sample.instance=uintptr_t(pose.instance);sample.owner=uintptr_t(pose.owner);
+        sample.nativeReturn=nativeResult;sample.matrix=native;sample.relevant=relevant;sample.safe=WeaponMuzzleSafe(pose.weapon);
+        sample.poseAge=sample.tick>=pose.tick?sample.tick-pose.tick:UINT64_MAX;
+        sample.weaponAge=sample.tick>=pose.equippedTick?sample.tick-pose.equippedTick:UINT64_MAX;
+        sample.mode=cameraModeIndex.load();sample.buttons=pose.buttons;sample.pad=pose.diagnosticPad;
+        auto read=HandMeshDiagnostic::Read;uint32_t info{},definition{},firstPerson{};uint8_t byte{};
+        read(sample.weapon+0x58,&sample.key,4);
+        if(read(sample.weapon+0x78,&info,4) && info){
+            if(read(info+0x4b0,&byte,1))sample.sourceOnOwner=byte;
+            if(read(info+0x4b1,&byte,1))sample.dualBarrel=byte;
+        }
+        if(read(sample.weapon+0x70,&firstPerson,4) && firstPerson && read(firstPerson+0x1b,&byte,1))sample.firstPersonFlag=byte;
+        if(read(sample.weapon+0x7c,&definition,4) && definition && read(definition+0x520,&byte,1))sample.attachment=int(int8_t(byte));
+        MuzzleQueryDiagnostic::Failure(site,sample);return fail();
+    }
+    MuzzleQueryDiagnostic::Success(site,relevant,uintptr_t(pose.weapon),GetTickCount64());
+    pose.muzzle=CameraMath::Multiply(native,delta);pose.nativeSkin=skin;pose.delta=delta;
+    pose.nativeValid=true;++nativePairUsed;return true;
+}
+// SEH, so an out-of-range index cannot take the process down. Deliberately no
+// locals that need unwinding, which MSVC forbids in a __try.
+static bool ProbeAttachment(void* src,void* inst,int bone,CameraMath::Matrix* out) {
+    __try {
+        originalAttachment(src,inst,bone,out,false);
+        return true;
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+// One shot per F8. The file IO is the same explicit-request convention the rest
+// of the capture block uses; it is never scheduled.
+void ProbeHandBones(void* src,void* inst,const CameraMath::Matrix& muzzle) {
+    auto sample=handProbeSamples.fetch_add(1)+1;
+    FILE* f{};if(fopen_s(&f,"DeusExHRVR-camera.log","a") || !f)return;
+    int lo=controllerHandsProbeFrom,hi=controllerHandsProbeTo;
+    if(lo<0)lo=0;
+    if(hi>lo+256)hi=lo+256;
+    fprintf(f,"handProbe sample=%u muzzle=(%.1f,%.1f,%.1f) range=%d-%d source=%p instance=%p\n",
+        sample,muzzle.m[12],muzzle.m[13],muzzle.m[14],lo,hi,src,inst);
+    for(int b=lo;b<hi;b++) {
+        CameraMath::Matrix a{};
+        if(!ProbeAttachment(src,inst,b,&a)) {
+            fprintf(f,"handProbe sample=%u bone=%d faulted\n",sample,b);continue;
+        }
+        if(!RigidWeaponMatrix(a)) {
+            fprintf(f,"handProbe sample=%u bone=%d notRigid\n",sample,b);continue;
+        }
+        float d=0;for(int j=0;j<3;j++){float e=a.m[12+j]-muzzle.m[12+j];d+=e*e;}
+        fprintf(f,"handProbe sample=%u bone=%d pos=(%.1f,%.1f,%.1f) muzzleDist=%.1f\n",
+            sample,b,a.m[12],a.m[13],a.m[14],std::sqrt(d));
+    }
+    fclose(f);
+}
 uintptr_t __cdecl AttachmentHook(void* source,void* instance,int bone,CameraMath::Matrix* out,bool previousFrame) {
     auto result=originalAttachment(source,instance,bone,out,previousFrame);
     if(experimentalMotionControls && !nativeWeaponQuery && instance && out) {
-        auto pose=ReadWeaponPose();
+        auto pose=ReadWeaponPose(true,MuzzleQueryDiagnostic::Attachment,instance);
         bool corrected=false;
+        // Probe here and nowhere else: these pointers are the game's, live on
+        // this call. Requiring its own result to be a valid rigid matrix also
+        // keeps us out of a half-built actor during a load.
+        if(controllerHandsProbe && pose.active && pose.weapon && instance==pose.owner
+           && RigidWeaponMatrix(*out) && handProbeSamples.load()<8) {
+            auto now=GetTickCount64();
+            if(now>=handProbeNextTick.load()) {
+                CameraMath::Matrix probeMuzzle;
+                NativeWeaponMuzzle(pose.weapon,&probeMuzzle,0,true);
+                if(RigidWeaponMatrix(probeMuzzle)) {
+                    handProbeNextTick.store(now+2000);
+                    ProbeHandBones(source,instance,probeMuzzle);
+                }
+            }
+        }
         if(pose.active && instance==pose.instance && RigidWeaponMatrix(*out)) {
             CameraMath::Matrix nativeMuzzle;
             NativeWeaponMuzzle(pose.weapon,&nativeMuzzle,0,true);
@@ -652,7 +1932,7 @@ uintptr_t __cdecl AttachmentHook(void* source,void* instance,int bone,CameraMath
                 // Effects ask the Instance attachment getter directly, rather
                 // than PrimaryWeapon's firing matrix. Preserve each attachment's
                 // offset (flash, shell ejection, etc.) relative to the barrel.
-                auto delta=CameraMath::Multiply(CameraMath::InverseRigid(nativeMuzzle),pose.muzzle);
+                auto delta=pose.nativeValid?pose.delta:CameraMath::Multiply(CameraMath::InverseRigid(nativeMuzzle),pose.muzzle);
                 *out=CameraMath::Multiply(*out,delta);++controllerAttachments;corrected=true;
             }
         }
@@ -660,7 +1940,8 @@ uintptr_t __cdecl AttachmentHook(void* source,void* instance,int bone,CameraMath
             auto caller=reinterpret_cast<uintptr_t>(_ReturnAddress())-base+0x400000;
             std::lock_guard lock(attachmentTraceMutex);
             for(auto& t:attachmentTrace)if(!t.queries || (t.caller==caller && t.bone==bone && t.owner==(instance==pose.owner))) {
-                t.caller=caller;t.bone=bone;t.owner=instance==pose.owner;++t.queries;t.corrected+=corrected;break;
+                t.caller=caller;t.bone=bone;t.owner=instance==pose.owner;++t.queries;t.corrected+=corrected;
+                break;
             }
         }
     }
@@ -671,23 +1952,23 @@ void __fastcall BoundsHook(void* self,void*,void* volume) {
     if(!experimentalMotionControls || !volume || *reinterpret_cast<uintptr_t*>(self)!=base+0xaaf854-0x400000)return;
     // Cell lookup (0x5c8950) has no callback for type 10 (Everything):
     // forcing it here caused an indirect call through zero while loading.
-    // Enlarge only finite bounds, preserving their native centre: the volume is
-    // relative to the instance (0x60b330, vtable slot 11, returns a sphere at
-    // its origin), so a world-space centre would misplace it.
+    // Enlarge only finite bounds, preserving their native centre.
     //
-    // Local patch (pistol culling): enlarge every gun, not only while the
+    // From upstream PR #8 by Carnuntum: enlarge every gun, not only while the
     // controller pose is active. A weapon equipped while the level loads (the
-    // pistol) has its volume taken before the pose is active; it kept the
+    // pistol) has its volume taken before the pose is active, so it kept the
     // native size and vanished once the hand left the view around the game
-    // camera's own heading.
+    // camera's own heading - the weapon-switch-plus-roomscale-turn report.
     if(NativeBounds::ExpandWeapon(volume,4.f*worldScale))++controllerBounds;
 }
 uintptr_t __fastcall WeaponMuzzleHook(void* self,void*,CameraMath::Matrix* out,int barrel,bool firstPerson) {
     auto result=NativeWeaponMuzzle(self,out,barrel,firstPerson);
     if(senseQueries)return result;
     if(experimentalMotionControls && out) {
-        auto pose=ReadWeaponPose();
-        if(pose.active && pose.weapon==self){*out=pose.muzzle;++controllerMuzzles;}
+        auto pose=ReadWeaponPose(true,MuzzleQueryDiagnostic::Muzzle,self);
+        if(pose.active && pose.weapon==self){
+            *out=pose.nativeValid?CameraMath::Multiply(*out,pose.delta):pose.muzzle;++controllerMuzzles;
+        }
     }
     return result;
 }
@@ -701,7 +1982,7 @@ CameraMath::Matrix* __fastcall WeaponAimHook(void* self,void*,CameraMath::Matrix
         return result;
     }
     if(experimentalMotionControls && out) {
-        auto pose=ReadWeaponPose();
+        auto pose=ReadWeaponPose(true,MuzzleQueryDiagnostic::Aim,self);
         // Player hit calculation 0x763370 and aim-ray getter 0x750ef0 both
         // use this matrix, bypassing WeaponMuzzle for ordinary player shots.
         // Keep the game's spread, collision and damage calculation intact.
@@ -717,18 +1998,1041 @@ void __fastcall ActorDrawHook(void* self,void*,void* matrix,void* args) {
         if(holdingPlayerBase && current.active && current.playerInstance &&
            *reinterpret_cast<void**>(static_cast<unsigned char*>(self)+8)==current.playerInstance)return;
     }
-    if(experimentalMotionControls && controllerHideArms) {
-        auto pose=ReadWeaponPose();
+    if(experimentalMotionControls && (controllerHideArms || controllerHands)) {
+        auto pose=ReadWeaponPose(false); // A holstered/missing muzzle must not hide the unarmed hand.
         // Suppress only the equipped weapon owner's actor mesh in tracked
         // player view. Animation, physics and other actors still run normally.
         if(pose.active && pose.owner && *reinterpret_cast<void**>(static_cast<unsigned char*>(self)+8)==pose.owner) {
-            ++controllerHiddenArms;return;
+            // THE CAMERA IS NOT AT HIS EYES (the game's own camera mode says so:
+            // cover, a ladder, an animation-driven shot). Everything this feature
+            // does assumes a first-person view, so it steps aside completely:
+            // the actor draws natively and handDrawing stays false, so
+            // SkeletonHook never touches the skin palette. Jensen renders as the
+            // game intended - no stretch to the controller, no collapsed bones,
+            // and nothing hidden. Only the hands feature yields; a user with
+            // ControllerHands=0 sees no change at all.
+            // Not at his eyes, by either test: the player camera is in a
+            // third-person MODE, or the game is rendering from a different
+            // CAMERA entirely (a cinematic, the Icarus landing). The exception is
+            // a conversation, where FixedDialogueCamera holds the render base at
+            // Jensen's own eyes - the view is at his eyes even though the active
+            // camera is not his, so the hands belong there and stay.
+            if(controllerHands &&
+               (handsSuspendedByMode.load() ||
+                (!activeCameraIsPlayer.load() && !holdingPlayerBase) ||
+                (handsFarFromBody.load() && !holdingPlayerBase))) {
+
+                originalActorDraw(self,matrix,args);
+                return;
+            }
+            // ControllerHands REPLACES the suppression rather than depending on
+            // it: the mesh is drawn, and SkeletonHook keeps the hand bones while
+            // collapsing every other bone, so only the hands reach the screen.
+            if(!controllerHands || (controllerHandsModelAlignment.load() && controllerHandsMode==15 &&
+               HandDrawDiagnostic::hookStatus.load()!=1)){++controllerHiddenArms;return;}
+            // ControllerMuzzle() builds the muzzle from the controller's own hand
+            // pose and pushes it forward along that pose's third row, which it
+            // stores negated in the muzzle's second row. Undoing that push gives
+            // the grip position back with no new transport data.
+            float forward=controllerMuzzleForward*worldScale;
+            for(int j=0;j<3;j++)handTarget[j]=pose.controllerRaw.m[12+j]+pose.controllerRaw.m[4+j]*forward;
+            // The gun is held in the hand, so the transform that carries the gun
+            // to the controller carries the hand with it.
+            handDeltaValid=false;
+            // pose.muzzle is built from the CONTROLLER, so it is valid with the
+            // weapon holstered. Only the weapon's own muzzle is not. Modes
+            // 12-13 use this one and never the weapon's, which is why they
+            // behave the same armed and holstered.
+            // The RAW controller muzzle, not pose.muzzle: the latter carries the
+            // equipped weapon's saved grip offset, and one of Mark's weapons has
+            // 0.91 m stored, which aimed the hand a metre off whenever it was
+            // drawn. Preferred, with the calibrated muzzle as a fallback so the
+            // feature still works if raw turns out to be unusable - but the
+            // fallback is COUNTED, never silent, because it reintroduces exactly
+            // the weapon dependence this change removed.
+            auto rawFault=RigidFault(pose.controllerRaw);
+            handRawFault.store(rawFault);
+            handRawW15=pose.controllerRaw.m[15];
+            handRawRow0=pose.controllerRaw.m[0]*pose.controllerRaw.m[0]
+                       +pose.controllerRaw.m[1]*pose.controllerRaw.m[1]
+                       +pose.controllerRaw.m[2]*pose.controllerRaw.m[2];
+            handMuzzleValid=rawFault==0;
+            if(handMuzzleValid){handMuzzle=pose.controllerRaw;handRawUsed.fetch_add(1);}
+            else {
+                handRawRejected.fetch_add(1);
+                if(RigidWeaponMatrix(pose.muzzle)) {
+                    handMuzzle=pose.muzzle;handMuzzleValid=true;handFallbackUsed.fetch_add(1);
+                }
+            }
+            handNativeMuzzleValid=false;
+            if(pose.weapon) {
+                CameraMath::Matrix nativeMuzzle;
+                NativeWeaponMuzzle(pose.weapon,&nativeMuzzle,0,true);
+                if(RigidWeaponMatrix(nativeMuzzle)) {
+                    handNativeMuzzle=nativeMuzzle;handNativeMuzzleValid=true;
+                    handWeaponKey=pose.weapon
+                        ?*reinterpret_cast<uint32_t*>(
+                             reinterpret_cast<unsigned char*>(pose.weapon)+0x58)
+                        :0xffffffffu;
+                    if(handWeaponKey!=handGripSeenKey) {
+                        handGripSeenKey=handWeaponKey;
+                        handGripRemeasure=true;
+                    }
+                    handDelta=CameraMath::Multiply(CameraMath::InverseRigid(nativeMuzzle),pose.muzzle);
+                    handDeltaValid=true;
+                }
+            }
+            if(!handNativeMuzzleValid)handUnarmedDraws.fetch_add(1);
+            ++handDraws;handDrawing=true;handPrimIndex=0;
+            originalActorDraw(self,matrix,args);
+            handDrawing=false;
+            handPrimPieces.store(handPrimIndex);
+            // One write per draw for the first three draws, then never again:
+            // the structure is what is wanted, not a per-frame stream.
+            if(handPrimLogged<3) {
+                ++handPrimLogged;
+                FILE* f{};
+                if(!fopen_s(&f,"DeusExHRVR-camera.log","a") && f) {
+                    fprintf(f,"handPrims draw=%d pieces=%u shaderCalls=%u distinctShaders=%u\n",
+                        handPrimLogged,handPrimIndex,handShaderCalls.load(),handShaderCount);
+                    for(uint32_t i=0;i<handShaderCount;i++) {
+                        bool shared=false;
+                        for(uint32_t j=0;j<otherShaderCount;j++)
+                            if(otherShaders[j]==handShaders[i]){shared=true;break;}
+                        fprintf(f,"handPrims armShader=%08x sharedWithOtherDraws=%d\n",
+                            unsigned(handShaders[i]),int(shared));
+                    }
+                    fprintf(f,"handPrims otherShadersSeen=%u\n",otherShaderCount);
+                    for(uint32_t i=0;i<handPrimTraceCount;i++) {
+                        const auto& t=handPrimTrace[i];
+                        fprintf(f,"handPrims piece=%u primitive=%08x material=%08x flags=%08x\n",
+                            t.index,unsigned(t.primitive),unsigned(t.material),t.flags);
+                    }
+                    fclose(f);
+                }
+                handPrimTraceCount=0;
+            }
+            return;
         }
     }
     originalActorDraw(self,matrix,args);
 }
+void MotionContext(HandWeaponMotionDiagnostic::Sample& sample,const WeaponPose& pose,unsigned site){
+    sample.site=site;sample.frame=frameId.load();sample.tick=GetTickCount64();
+    sample.weapon=uintptr_t(pose.weapon);sample.instance=uintptr_t(pose.instance);
+    sample.sprint=handPoseSprinting.load();sample.nativeValid=pose.nativeValid;
+    sample.skin=pose.nativeSkin;sample.delta=pose.delta;sample.target=pose.gripTarget;sample.muzzle=pose.muzzle;
+    if(pose.weapon)HandMeshDiagnostic::Read(uintptr_t(pose.weapon)+0x58,&sample.key,4);
+    std::lock_guard lock(stateMutex);sample.tracking=current.tracking.id;
+    sample.base=current.controllerBase;sample.viewWorld=current.world;
+}
+bool TryModelHand(void* model,unsigned char* data,CameraMath::Matrix* palette,uint32_t n) {
+    CameraMath::Matrix target{},leftTarget{};bool leftValid=false;
+    {
+        std::lock_guard lock(stateMutex);
+        if(!requested || !current.active || !referenceValid || screenReasons ||
+           !ModelHandAlignment::GripTarget(current.tracking,GetTickCount64(),current.controllerBase,reference,worldScale,target)) {
+            ++modelHandNoGrip;return false;
+        }
+        if(controllerHandsLeft.load())leftValid=
+            ModelHandAlignment::GripTarget(current.tracking,GetTickCount64(),current.controllerBase,reference,worldScale,leftTarget,true);
+    }
+    auto plan=(HandDrawDiagnostic::hookStatus.load()==1)?HandOnlyGeometry::Prepare(model):nullptr;
+    if(!plan || plan->boneCount!=n){++modelHandBadModel;return false;}
+    CameraMath::Matrix frame{};ModelHandAlignment::V pivot{};
+    if(!NativeModelFrame(model,plan,frame,pivot)){++modelHandBadModel;return false;}
+    auto pose=ReadWeaponPose(false);
+    bool capture=HandWeaponMotionDiagnostic::Wanted(0,frameId.load());
+    HandWeaponMotionDiagnostic::Sample motion{};
+    if(capture){MotionContext(motion,pose,0);motion.count=2;motion.before[0]=palette[129];motion.before[1]=palette[130];}
+    if(pose.nativeRequested){
+        CameraMath::Matrix skin{},delta{};
+        bool paired=pose.active && ReadNativePalm(pose,skin,delta);
+        if(capture){motion.nativeValid=paired;motion.skin=skin;motion.delta=delta;}
+        // Independent live check: simulation reconstruction must match the
+        // original renderer output BEFORE either is modified. Fail closed.
+        if(paired){
+            ++nativePairCompared;
+            float difference=NativeHandWeapon::Difference(ModelHandAlignment::Affine(palette[130]),skin);
+            auto maximum=nativePairMaxDifference.load();
+            while(maximum<difference && !nativePairMaxDifference.compare_exchange_weak(maximum,difference)){}
+            if(difference>.05f){
+                ++nativePairMismatch;nativePairFault=true;paired=false;
+            }
+        }
+        // Preserve the approved unarmed hand even if a weapon query is unavailable.
+        bool moved=paired?ModelHandAlignment::MoveWithDelta(palette,n,plan->bones,delta):
+            ModelHandAlignment::Move(palette,n,plan->bones,frame,pose.gripTarget);
+        if(!moved){++modelHandBadTransform;return false;}
+    }else if(!ModelHandAlignment::Move(palette,n,plan->bones,frame,target)){
+        ++modelHandBadTransform;return false;
+    }
+    // Before the capture below, which records palette[129] as its "after".
+    if(controllerHandsNeutralWrist.load() &&
+       !ModelHandAlignment::NeutralWrist(palette,n,plan->bones))++neutralWristFailed;
+    if(capture){motion.after[0]=palette[129];motion.after[1]=palette[130];HandWeaponMotionDiagnostic::Push(motion);}
+    CameraMath::Matrix leftFrame{};ModelHandAlignment::V unused{};
+    bool leftMoved=leftValid && LeftModelFrame(model,plan,leftFrame,unused) &&
+        ModelHandAlignment::RestLeft(palette,n,plan->leftBones,leftFrame,leftTarget);
+    HandOnlyGeometry::Activate(uintptr_t(data),frameId.load(),plan,palette[130].m,leftMoved);
+
+    ++modelHandApplied;return true;
+}
 void __cdecl SkeletonHook(void* model,void* bones,uint32_t flags,uint32_t count,void* state) {
     originalSkeleton(model,bones,flags,count,state);
+    // Every freshly generated palette invalidates any previous VR-only tag,
+    // including native third-person draws that bypass handDrawing entirely.
+    if(state && *static_cast<uintptr_t*>(state)==base+0xa97524-0x400000)
+        HandOnlyGeometry::Invalidate(*reinterpret_cast<uintptr_t*>(static_cast<unsigned char*>(state)+0x10));
+    // ControllerHands: keep the hand bones, collapse the rest. Same validated
+    // palette as the weapon path below, reached through the actor's own draw.
+    if(handDrawing) {
+        HandMeshDiagnostic::Capture(model,count);
+        bool ok=false;
+        if(state) {
+            auto s=static_cast<unsigned char*>(state);
+            if(*reinterpret_cast<uintptr_t*>(s)==base+0xa97524-0x400000) {
+                if(auto data=*reinterpret_cast<unsigned char**>(s+0x10)) {
+                    auto n=*reinterpret_cast<uint32_t*>(data);
+                    if(n && n<=512 && n==count) {
+                        HandDrawDiagnostic::MarkPose(uintptr_t(data),frameId.load());
+                        handBoneCount=n;++handSkeletons;ok=true;
+                        auto m=reinterpret_cast<CameraMath::Matrix*>(data+0x10);
+                        // Separate experimental path: no handBind, no capture, no
+                        // weapon grip learning, and no forearm collapse/weld.
+                        if(controllerHandsModelAlignment.load() && controllerHandsMode==15){
+                            if(controllerHandsForceFallback.load() || !TryModelHand(model,data,m,n)) {
+                                uint32_t render{};
+                                if(HandMeshDiagnostic::Read(uintptr_t(model)+0x64,&render,4) && render)
+                                    HandOnlyGeometry::Hide(uintptr_t(data),frameId.load(),render,m[0].m);
+                            }
+                            return;
+                        }
+                        int first=controllerHandBone,second=controllerHandBone2;
+                        if(first<0 || uint32_t(first)>=n)first=-1;
+                        if(second<0 || uint32_t(second)>=n || second==first)second=-1;
+                        if(controllerHandsMode>=12 && controllerHandsMode<=15 && handMuzzleValid) {
+                            // Calibration: with the controller held on the
+                            // visible hand, controllerPose = bindPose x
+                            // paletteEntry, so bindPose follows directly - for
+                            // every bone at once.
+                            if(handCalibrateArmed.load() && !controllerHandsModelAlignment.load()) {
+                                // Capture once the controller has stayed inside
+                                // a small ball for long enough. Drifting out of
+                                // it restarts the window, so a reach past the
+                                // target cannot be mistaken for a hold.
+                                auto now=GetTickCount64();
+                                float tol=controllerHandsSteadyCm*worldScale/100.f;
+                                float dist=0;
+                                if(handSteadyValid) {
+                                    float d2=0;
+                                    for(int j=0;j<3;j++){float e=handMuzzle.m[12+j]-handSteadyRef[j];d2+=e*e;}
+                                    dist=std::sqrt(d2);
+                                }
+                                if(!handSteadyValid || dist>tol || handSteadySince<handCalibrateArmTick.load()) {
+                                    for(int j=0;j<3;j++)handSteadyRef[j]=handMuzzle.m[12+j];
+                                    handSteadySince=now;handSteadyValid=true;handSteadyWorst=0;
+                                    // Restart the average with the window.
+                                    for(uint32_t i=0;i<n && i<512;i++)handBindAccum[i]=CameraMath::Matrix{};
+                                    handBindSamples=0;
+                                }
+                                else {
+                                    if(dist>handSteadyWorst)handSteadyWorst=dist;
+                                    // Every frame of the hold contributes, so hand
+                                    // tremor and tracking jitter cancel instead of
+                                    // being rejected.
+                                    for(uint32_t i=0;i<n && i<512;i++) {
+                                        bool ok=false;
+                                        auto inv=AffineInverse(SkinAffine(m[i]),&ok);
+                                        if(ok) {
+                                            auto b=CameraMath::Multiply(handMuzzle,inv);
+                                            for(int k=0;k<16;k++)handBindAccum[i].m[k]+=b.m[k];
+                                        }
+                                    }
+                                    ++handBindSamples;
+                                    if(now-handSteadySince>=uint64_t(controllerHandsSteadyMs>0?controllerHandsSteadyMs:800)) {
+                                        handBindCount=n;
+                                        float inv=handBindSamples?1.f/float(handBindSamples):1.f;
+                                        for(uint32_t i=0;i<n;i++) {
+                                            auto b=handBindAccum[i];
+                                            for(int k=0;k<16;k++)b.m[k]*=inv;
+                                            Orthonormalize(b);
+                                            handBind[i]=b;
+                                        }
+                                        handCalibrated=true;
+                                        handCalibrateQuality=handSteadyWorst;
+                                        handCalibrateArmed.store(0);
+                                        handSteadyValid=false;
+                                        LogHandCalibration(m,n);
+                                        SaveHandCalibration();
+                                        // A different tone from the arming beep, so
+                                        // the two are distinguishable by ear alone.
+                                        MessageBeep(MB_OK);
+                                    }
+                                }
+                            }
+                            if(controllerHandsMode==14) {
+                                // Pure observation: nothing is moved, so the
+                                // arms stay exactly as the game animates them.
+                                IdentifyHandBone(m,n);
+                            }
+                            else {
+                                int drive=controllerHandsDriveBone;
+                                // Not while armed: the alignment needs a hand that
+                                // STAYS PUT to aim at, and a driven hand follows the
+                                // controller, so there would be no fixed reference.
+                                // The arm snapping back to its animated pose is also
+                                // the visual confirmation that the tap armed it.
+                                if(!handCalibrateArmed.load() && handCalibrated
+                                   && drive>=0 && uint32_t(drive)<n && uint32_t(drive)<handBindCount) {
+                                    // Capture or replay BEFORE anything reads the
+                                    // palette, so a replayed hand flows through the
+                                    // existing drive math untouched: `world` below
+                                    // is rebuilt from the substituted wrist entry
+                                    // and the whole band moves as one piece.
+                                    HandPoseStep(m,n);
+                                    auto world=CameraMath::Multiply(handBind[drive],SkinAffine(m[drive]));
+                                    auto target=handMuzzle;
+                                    if(handTrim[0]||handTrim[1]||handTrim[2]||handTrimRot[0]||handTrimRot[1]||handTrimRot[2]) {
+                                        // Offset and rotation in the controller's
+                                        // own axes, so both ride with the hand.
+                                        CameraMath::Matrix off{};
+                                        off.m[0]=off.m[5]=off.m[10]=off.m[15]=1;
+                                        const float d2r=.01745329252f;
+                                        for(int axis=0;axis<3;axis++) {
+                                            if(!handTrimRot[axis])continue;
+                                            float c=std::cos(handTrimRot[axis]*d2r),sn=std::sin(handTrimRot[axis]*d2r);
+                                            CameraMath::Matrix r{};
+                                            r.m[0]=r.m[5]=r.m[10]=r.m[15]=1;
+                                            int a=(axis+1)%3,b=(axis+2)%3;
+                                            r.m[a*4+a]=c;r.m[a*4+b]=sn;r.m[b*4+a]=-sn;r.m[b*4+b]=c;
+                                            off=CameraMath::Multiply(off,r);
+                                        }
+                                        for(int j=0;j<3;j++)off.m[12+j]=handTrim[j]*worldScale/100.f;
+                                        target=CameraMath::Multiply(off,target);
+                                    }
+                                    bool ok=false;
+                                    auto inv=AffineInverse(world,&ok);
+                                    if(ok) {
+                                        auto d=CameraMath::Multiply(inv,target);
+                                        // THE PALETTE IS NEVER TOUCHED WITH A
+                                        // TRANSFORM THAT COULD TEAR GEOMETRY.
+                                        //
+                                        // Mark, 2026-10-14: "the spike cannot be
+                                        // there... if it can occur after a
+                                        // calibration, then that's the wrong fix
+                                        // for that problem. It should never
+                                        // happen." He is right, and this is the
+                                        // guard that makes it a property of the
+                                        // code rather than of getting the
+                                        // calibration right.
+                                        //
+                                        // The weld is supposed to make distance
+                                        // irrelevant - a discarded bone gets the
+                                        // kept wrist's FINAL matrix, so a vertex
+                                        // weighted across the seam transforms
+                                        // identically from both sides. A spike
+                                        // means that guarantee broke somewhere.
+                                        // Rather than guess where, this checks
+                                        // the only thing that matters at the
+                                        // output: is `d` a sane rigid move?
+                                        //
+                                        // THE FAILURE IS CORRECT BY DESIGN: when
+                                        // it fires, nothing is written and the
+                                        // game's own arm renders untouched. The
+                                        // worst case becomes "no VR hand", never
+                                        // "torn hand".
+                                        bool sane=true;
+                                        for(float v:d.m)if(!std::isfinite(v))sane=false;
+                                        if(sane) {
+                                            // Rigid: the 3x3 must still be a
+                                            // rotation. Anything else scales or
+                                            // shears the hand, which is exactly
+                                            // what stretches a mesh.
+                                            for(int r=0;r<3&&sane;r++)for(int c=r;c<3;c++) {
+                                                float dot=0.f;
+                                                for(int j=0;j<3;j++)dot+=d.m[r*4+j]*d.m[c*4+j];
+                                                if(std::abs(dot-(r==c?1.f:0.f))>.02f){sane=false;break;}
+                                            }
+                                        }
+                                        if(sane) {
+                                            // HOW FAR THE HAND ACTUALLY MOVES:
+                                            // the distance between the two world
+                                            // positions, NOT the translation of
+                                            // d.
+                                            //
+                                            // d = inverse(world) x target, and
+                                            // for transforms sitting 48,000 units
+                                            // from the world origin that
+                                            // composition's translation is
+                                            // dominated by the origin offsets. It
+                                            // is not a displacement. Reading it
+                                            // as inches reported 10,000 for a
+                                            // hand that had moved 49 - and
+                                            // refused every frame of a session,
+                                            // which is how this guard came to
+                                            // break the feature it was meant to
+                                            // protect. The project's signature
+                                            // mistake, committed inside the guard
+                                            // against it.
+                                            //
+                                            // The limit is generous on purpose:
+                                            // the job is catching a hand thrown
+                                            // across the level, not policing a
+                                            // long reach. 49 inches is normal -
+                                            // Jensen's arm down, Mark's hand up.
+                                            float moveSq=0.f;
+                                            for(int j=0;j<3;j++) {
+                                                float e=target.m[12+j]-world.m[12+j];
+                                                moveSq+=e*e;
+                                            }
+                                            float lim=worldScale*120.f/39.3701f;   // 10 feet
+                                            if(moveSq>lim*lim)sane=false;
+                                        }
+                                        if(!sane) {
+                                            // WHICH SIDE IS WRONG. The move came out
+                                            // at 6000 inches on 2026-10-14, which is
+                                            // the distance from the world ORIGIN to
+                                            // the player - so one of these two is at
+                                            // the origin when it should be on Mark's
+                                            // hand, and printing only the distance
+                                            // cannot tell them apart. The palette
+                                            // entry and the bind are printed too: a
+                                            // near-zero palette would mean the model
+                                            // is being drawn at the origin, which is
+                                            // a different fault from a bad bind.
+                                            if(handDriveRejected.fetch_add(1)<16) {
+                                                FILE* sf{};
+                                                if(!fopen_s(&sf,"DeusExHRVR-camera.log","a")) {
+                                                    float mv=0.f;
+                                                    for(int j=0;j<3;j++) {
+                                                        float e=target.m[12+j]-world.m[12+j];
+                                                        mv+=e*e;
+                                                    }
+                                                    fprintf(sf,"handDriveRejected moveIn=%.1f "
+                                                        "world=%.0f,%.0f,%.0f target=%.0f,%.0f,%.0f "
+                                                        "palette=%.0f,%.0f,%.0f bind=%.0f,%.0f,%.0f frame=%llu\n",
+                                                        double(std::sqrt(mv)*39.3701f/worldScale),
+                                                        double(world.m[12]),double(world.m[13]),double(world.m[14]),
+                                                        double(target.m[12]),double(target.m[13]),double(target.m[14]),
+                                                        double(m[drive].m[12]),double(m[drive].m[13]),double(m[drive].m[14]),
+                                                        double(handBind[drive].m[12]),double(handBind[drive].m[13]),
+                                                        double(handBind[drive].m[14]),frameId.load());
+                                                    fclose(sf);
+                                                }
+                                            }
+                                            ok=false;   // leave the palette exactly as the game built it
+                                        }
+                                    }
+                                    if(ok) {
+                                        auto d=CameraMath::Multiply(inv,target);
+                                        // The gun's place in the hand, straight
+                                        // from the animation. Accepted only when
+                                        // it holds still across a real hand
+                                        // movement, which a holstered gun cannot.
+                                        // Keep measuring rather than latching: a
+                                        // bad solve then self-corrects within a
+                                        // second of ordinary play instead of
+                                        // lasting the whole session.
+                                        // A STORED GRIP IS FINAL. Measuring a
+                                        // weapon whose answer is already known
+                                        // can only replace a good value with a
+                                        // worse one - which is exactly what the
+                                        // pistol's 31.74 in did at the start of
+                                        // three sessions. Unknown weapons still
+                                        // solve themselves from the animation.
+                                        // Delete DeusExHRVR-grips.cal to
+                                        // re-measure everything.
+                                        // OBSERVE ALWAYS, STORE ONLY WHEN UNKNOWN.
+                                        // Measuring a weapon that already has a
+                                        // grip cannot change anything now - the
+                                        // result is logged and thrown away - so
+                                        // this costs Mark nothing and nothing he
+                                        // sees can move. It exists because the
+                                        // seeded file means no weapon would ever
+                                        // measure again, and the bad solve cannot
+                                        // be explained without catching one.
+                                        if(!controllerHandsModelAlignment.load() && handNativeMuzzleValid && handWeaponKey<0x18000
+                                           && (FindHandGrip(handWeaponKey) || handGripCount<64)) {
+                                            // A different weapon means a different
+                                            // grip: start its measurement clean.
+                                            if(handGripSolvingKey!=handWeaponKey) {
+                                                handGripSolvingKey=handWeaponKey;
+                                                handGripHavePrev=false;
+                                                handGripSamples=0;
+                                                handGripAccum=CameraMath::Matrix{};
+                                                handGripWindowOpen=false;
+                                            }
+                                            auto cand=CameraMath::Multiply(handNativeMuzzle,inv);
+                                            // THE HAND'S POSITION IN THE BODY'S
+                                            // FRAME. Measuring it in world space
+                                            // counts walking as hand movement,
+                                            // and walking moves a body-mounted
+                                            // weapon exactly as far as the wrist
+                                            // - which is how 52 of 64 windows on
+                                            // 2026-10-14 passed the test with the
+                                            // gun nowhere near the hand.
+                                            float body[3]{};
+                                            const bool haveBody=handBodyOriginValid.load();
+                                            if(haveBody)for(int j=0;j<3;j++)body[j]=handBodyOrigin[j].load();
+                                            float rel[3];
+                                            for(int j=0;j<3;j++)rel[j]=world.m[12+j]-body[j];
+                                            float moved=0.f;
+                                            for(int j=0;j<3;j++) {
+                                                float e=rel[j]-handGripRef[j];
+                                                moved+=e*e;
+                                            }
+                                            // THE REQUIREMENT THAT MAKES AGREEMENT
+                                            // MEAN ANYTHING. Two stationary things
+                                            // always agree, so consecutive frames
+                                            // matching proves nothing on its own; it
+                                            // is agreement ACROSS MOVEMENT that
+                                            // separates "rigidly in the hand" from
+                                            // "on the hip and neither moved".
+                                            // Removing this on 2026-10-13 produced
+                                            // 121 solves of one weapon with values
+                                            // 31 inches apart; with it, four earlier
+                                            // sessions solved every weapon once.
+                                            float need=worldScale*.02f;   // ~0.8 inch
+                                            if(moved>need*need) {
+                                                bool agree=false;
+                                                if(handGripHavePrev) {
+                                                    float rot=0.f,pos=0.f;
+                                                    for(int r=0;r<3;r++)for(int c=0;c<3;c++) {
+                                                        float e=cand.m[r*4+c]-handGripPrev.m[r*4+c];
+                                                        rot+=e*e;
+                                                    }
+                                                    for(int j=0;j<3;j++) {
+                                                        float e=cand.m[12+j]-handGripPrev.m[12+j];
+                                                        pos+=e*e;
+                                                    }
+                                                    float ptol=worldScale*.015f;
+                                                    agree=rot<.02f && pos<ptol*ptol;
+                                                }
+                                                if(agree) {
+                                                    // The window opens on the first
+                                                    // accepted sample and records
+                                                    // where both things started.
+                                                    if(!handGripWindowOpen) {
+                                                        handGripWindowOpen=true;
+                                                        handGripWindowStart=frameId.load();
+                                                        handGripWindowFlags=0;
+                                                        handGripWindowMode=cameraModeIndex.load();
+                                                        for(int j=0;j<3;j++) {
+                                                            handGripWristStart[j]=world.m[12+j];
+                                                            handGripMuzzleStart[j]=handNativeMuzzle.m[12+j];
+                                                            handGripBodyStart[j]=body[j];
+                                                        }
+                                                    }
+                                                    // Sticky: any suspension that was
+                                                    // active at ANY point in the window.
+                                                    if(handsSuspendedByMode.load())handGripWindowFlags|=1u;
+                                                    if(handsFarFromBody.load())handGripWindowFlags|=2u;
+                                                    if(!activeCameraIsPlayer.load())handGripWindowFlags|=4u;
+                                                    for(int k=0;k<16;k++)handGripAccum.m[k]+=cand.m[k];
+                                                    if(++handGripSamples>=8) {
+                                                        auto avg=handGripAccum;
+                                                        float f=1.f/float(handGripSamples);
+                                                        for(int k=0;k<16;k++)avg.m[k]*=f;
+                                                        Orthonormalize(avg);
+                                                        auto* slot=FindHandGrip(handWeaponKey);
+                                                        bool changed=true;
+                                                        if(slot) {
+                                                            float d=0.f;
+                                                            for(int k=0;k<16;k++) {
+                                                                float e=avg.m[k]-slot->m[k];
+                                                                d+=e*e;
+                                                            }
+                                                            float tol=worldScale*.004f; // ~1/8 inch
+                                                            changed=d>tol*tol;
+                                                            // REFINEMENT, BOUNDED AGAINST THE
+                                                            // ANCHOR. Mark recalibrated 39 times
+                                                            // on 2026-10-14, and every
+                                                            // recalibration changes what the
+                                                            // correct grip is - so without this
+                                                            // his guns stay wrong until the file
+                                                            // is deleted. The first version of
+                                                            // this bounded each step against the
+                                                            // CURRENT value and a hundred small
+                                                            // steps walked the launcher from
+                                                            // 28.654 to 31.852. Measuring every
+                                                            // step from the value this weapon had
+                                                            // at load makes that impossible: the
+                                                            // grip can move up to four inches
+                                                            // from where it started and no
+                                                            // further, ever.
+                                                            {
+                                                                auto* rec=FindHandGripRecord(handWeaponKey);
+                                                                float live=0.f,anchor=0.f;
+                                                                for(int j=0;j<3;j++) {
+                                                                    live+=avg.m[12+j]*avg.m[12+j];
+                                                                    if(rec)anchor+=rec->anchor.m[12+j]*rec->anchor.m[12+j];
+                                                                }
+                                                                float slack=worldScale*4.f/39.3701f;
+                                                                bool plausible=
+                                                                    std::abs(std::sqrt(live)-std::sqrt(anchor))<slack;
+                                                                if(changed && plausible && rec) {
+                                                                    rec->offset=avg;
+                                                                    SaveHandGrips();
+                                                                    FILE* rf{};
+                                                                    if(!fopen_s(&rf,"DeusExHRVR-camera.log","a")) {
+                                                                        fprintf(rf,"handGrip refined key=%08x anchor=%.3f now=%.3f inches\n",
+                                                                            handWeaponKey,
+                                                                            double(std::sqrt(anchor)*39.3701f/worldScale),
+                                                                            double(std::sqrt(live)*39.3701f/worldScale));
+                                                                        fclose(rf);
+                                                                    }
+                                                                }
+                                                            }
+                                                            // Earlier note kept for the record.
+                                                            // Allowing a stored grip to be
+                                                            // corrected let it RATCHET: each
+                                                            // solve could move it up to four
+                                                            // inches and a hundred small steps
+                                                            // walked every weapon away from the
+                                                            // truth - the launcher went
+                                                            // 28.654 -> 31.852, which is the
+                                                            // not-in-hand value. The bound
+                                                            // guarded one bad jump and nothing
+                                                            // guarded the walk. A stored grip
+                                                            // is FINAL again; it is only
+                                                            // observed and logged.
+                                                        }
+                                                        else {
+                                                            handGrips[handGripCount].key=handWeaponKey;
+                                                            handGrips[handGripCount].offset=avg;
+                                                            handGrips[handGripCount].anchor=avg;
+                                                            ++handGripCount;
+                                                        }
+                                                        // What the inputs were doing
+                                                        // across the window. The
+                                                        // decisive pair is wrist vs
+                                                        // muzzle movement: a gun held
+                                                        // in the hand moves with it.
+                                                        {
+                                                            float wm=0.f,mm=0.f,bm=0.f;
+                                                            for(int j=0;j<3;j++) {
+                                                                float a=world.m[12+j]-handGripWristStart[j];
+                                                                float b=handNativeMuzzle.m[12+j]-handGripMuzzleStart[j];
+                                                                float cb=body[j]-handGripBodyStart[j];
+                                                                wm+=a*a;mm+=b*b;bm+=cb*cb;
+                                                            }
+                                                            float toIn=39.3701f/worldScale;
+                                                            float got=0.f,had=0.f;
+                                                            for(int j=0;j<3;j++) {
+                                                                got+=avg.m[12+j]*avg.m[12+j];
+                                                                if(slot)had+=slot->m[12+j]*slot->m[12+j];
+                                                            }
+                                                            if(!changed)++handGripAgreed;
+                                                            if(changed && handGripLogged<64) {
+                                                                ++handGripLogged;
+                                                                FILE* df{};
+                                                                if(!fopen_s(&df,"DeusExHRVR-camera.log","a")) {
+                                                                    fprintf(df,"handGripWindow key=%08x %s inches=%.3f stored=%.3f "
+                                                                        "frame=%llu span=%llu wristMoved=%.2f muzzleMoved=%.2f bodyMoved=%.2f "
+                                                                        "suspendMode=%d distance=%d otherCam=%d mode=%s agreedSoFar=%u\n",
+                                                                        handWeaponKey,slot?"OBSERVED":"STORED",
+                                                                        double(sqrtf(got)*toIn),double(slot?sqrtf(had)*toIn:0.f),
+                                                                        frameId.load(),frameId.load()-handGripWindowStart,
+                                                                        double(sqrtf(wm)*toIn),double(sqrtf(mm)*toIn),double(sqrtf(bm)*toIn),
+                                                                        int(handGripWindowFlags&1u),int((handGripWindowFlags>>1)&1u),
+                                                                        int((handGripWindowFlags>>2)&1u),
+                                                                        (handGripWindowMode>=0?cameraModes[handGripWindowMode].name:"unknown"),
+                                                                        handGripAgreed);
+                                                                    fclose(df);
+                                                                }
+                                                            }
+                                                            handGripWindowOpen=false;
+                                                        }
+                                                        // The solve has completed:
+                                                        // always reset. Only the LOG
+                                                        // is conditional, which is
+                                                        // what the throttle was for -
+                                                        // `if(changed)` without braces
+                                                        // governed one statement and
+                                                        // threw both away.
+                                                        handGripRemeasure=false;
+                                                        handGripHavePrev=false;
+                                                        handGripSamples=0;
+                                                        handGripAccum=CameraMath::Matrix{};
+                                                        // Only a newly STORED weapon
+                                                        // changes the file. An
+                                                        // observation never does.
+                                                        if(!slot)SaveHandGrips();
+                                                        FILE* gf{};
+                                                        if(!slot && !fopen_s(&gf,"DeusExHRVR-camera.log","a")) {
+                                                            fprintf(gf,"handGrip solved key=%08x weapons=%u Offset=",handWeaponKey,handGripCount);
+                                                            for(int k=0;k<16;k++) {
+                                                                float v=avg.m[k];
+                                                                if(k==12||k==13||k==14)v/=worldScale;
+                                                                fprintf(gf," %.9g",v);
+                                                            }
+                                                            fprintf(gf,"\n");
+                                                            fclose(gf);
+                                                        }
+                                                    }
+                                                }
+                                                else {
+                                                    handGripAccum=CameraMath::Matrix{};
+                                                    handGripSamples=0;
+                                                    handGripWindowOpen=false;
+                                                }
+                                                handGripPrev=cand;
+                                                handGripHavePrev=true;
+                                                for(int j=0;j<3;j++)handGripRef[j]=rel[j];
+                                            }
+                                        }
+                                        auto handOnlyPlan=(controllerHandsMode==15 && drive==130 && n==223 &&
+                                            HandDrawDiagnostic::hookStatus.load()==1)?HandOnlyGeometry::Prepare(model):nullptr;
+                                        int lo=controllerHandsKeepFrom,hi=controllerHandsKeepTo;
+                                        if(lo<0)lo=0;
+                                        if(hi>int(n))hi=int(n);
+                                        // The drive bone's matrix AFTER the move: the
+                                        // weld copies this, so it has to be computed
+                                        // before the loop overwrites anything.
+                                        auto movedDrive=CameraMath::MoveSkinMatrix(m[drive],d);
+                                        // THE APEX IS THE WRIST ITSELF, not a guess
+                                        // at where the wrist is.
+                                        //
+                                        // Mark, 2026-10-14: "why not just collapse
+                                        // at the wrist, like you planned?" No good
+                                        // reason - it was built from handTarget,
+                                        // the CONTROLLER's position, and then walked
+                                        // back three inches to approximate the
+                                        // wrist. That is two independently computed
+                                        // quantities that are supposed to agree, and
+                                        // the trim knobs exist only to paper over
+                                        // the gap. Two quantities that must agree is
+                                        // how a cone opens between them.
+                                        //
+                                        // movedDrive is the kept wrist AFTER the
+                                        // move, and the drive bone is the one bone
+                                        // whose bind pose is valid - that is what
+                                        // this whole feature already rests on. So
+                                        // its world transform is exact, and the
+                                        // collapsed vertices land precisely on the
+                                        // wrist they are supposed to hide behind.
+                                        // One quantity, nothing to diverge.
+                                        auto wristWorld=CameraMath::Multiply(handBind[drive],SkinAffine(movedDrive));
+                                        // UNDO THE MUZZLE'S FORWARD PUSH, exactly as
+                                        // handTarget does. wristWorld equals the
+                                        // target, and the target is the MUZZLE frame
+                                        // - whose origin sits ~10 inches ahead of the
+                                        // visible hand, pushed along the hand's third
+                                        // row by ControllerMuzzleForwardMetres. That
+                                        // is dead-end #2 in this project's own notes,
+                                        // and the first version of this change walked
+                                        // straight into it: it put the apex 10 inches
+                                        // off the hand while being described as
+                                        // making it exact. The grip is what to use,
+                                        // and this is the same arithmetic handTarget
+                                        // uses - only derived from the hand's ACTUAL
+                                        // final transform instead of from the
+                                        // controller, which is the whole point.
+                                        float apex[3];
+                                        {
+                                            const float forward=controllerMuzzleForward*worldScale;
+                                            for(int j=0;j<3;j++)
+                                                apex[j]=wristWorld.m[12+j]+wristWorld.m[4+j]*forward;
+                                        }
+                                        // The seam itself, rather than a guess
+                                        // measured from the grip. Read before
+                                        // the hide loop overwrites the palette.
+                                        {
+                                            int cb=controllerHandsCollapseBone;
+                                            if(cb>=0 && uint32_t(cb)<n && uint32_t(cb)<handBindCount) {
+                                                auto bw=CameraMath::Multiply(handBind[cb],SkinAffine(m[cb]));
+                                                auto bm=CameraMath::Multiply(bw,d);
+                                                for(int j=0;j<3;j++)apex[j]=bm.m[12+j];
+                                            }
+                                        }
+                                        {
+                                            // The trim rides the WRIST's own axes, not
+                                            // the muzzle's. Offsetting along a second,
+                                            // separately computed frame would undo the
+                                            // whole point of the line above: whatever
+                                            // these values are, the apex stays rigidly
+                                            // attached to the wrist and cannot drift
+                                            // away from it.
+                                            const float inch=worldScale/39.37f;
+                                            for(int j=0;j<3;j++)
+                                                apex[j]+=wristWorld.m[4+j]*controllerHandsCollapseBackIn*inch
+                                                        +wristWorld.m[j]*controllerHandsCollapseSideIn*inch
+                                                        +wristWorld.m[8+j]*controllerHandsCollapseUpIn*inch;
+                                        }
+                                        // Work out the hide set before modifying
+                                        // anything, because membership is decided by
+                                        // comparing transforms and a modified slot
+                                        // would no longer match.
+                                        bool hide[512]{};
+                                        uint32_t hidden=0;
+                                        {
+                                            int hlo=controllerHandsHideFrom,hhi=controllerHandsHideTo;
+                                            if(hlo<0)hlo=0;
+                                            if(hhi>int(n))hhi=int(n);
+                                            if(hhi>hlo && hlo<512) {
+                                                for(int i=hlo;i<hhi&&i<512;i++) {
+                                                    // Never hide a kept bone.
+                                                    if(i>=lo&&i<hi)continue;
+                                                    hide[i]=true;++hidden;
+                                                }
+                                                // Slots duplicating a hidden transform -
+                                                // 121 and 123 carry the left thumb and
+                                                // index while sitting in the right arm's
+                                                // range, and hardcoding them would miss
+                                                // any others.
+                                                for(uint32_t i=0;i<n&&i<512;i++) {
+                                                    if(hide[i])continue;
+                                                    if(int(i)>=lo&&int(i)<hi)continue;
+                                                    for(int k=hlo;k<hhi&&k<512;k++) {
+                                                        if(std::fabs(m[i].m[12]-m[k].m[12])<=.05f
+                                                         &&std::fabs(m[i].m[13]-m[k].m[13])<=.05f
+                                                         &&std::fabs(m[i].m[14]-m[k].m[14])<=.05f) {
+                                                            hide[i]=true;++hidden;break;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        handHiddenSlots.store(hidden);
+                                        int wlo=controllerHandsWeldFrom,whi=controllerHandsWeldTo;
+                                        if(wlo<0)wlo=0;
+                                        if(whi>int(n))whi=int(n);
+                                        for(uint32_t i=0;i<n;i++) {
+                                            if(handOnlyPlan) {
+                                                // All influences of selected right-hand vertices
+                                                // receive the same rigid delta. No collapse or weld.
+                                                if(handOnlyPlan->bones[i])m[i]=CameraMath::MoveSkinMatrix(m[i],d);
+                                                continue;
+                                            }
+                                            // Hidden first, so a hidden slot inside the
+                                            // weld or kept range still disappears.
+                                            if(i<512&&hide[i]) {
+                                                float k3=m[i].m[3],k7=m[i].m[7],k11=m[i].m[11],k15=m[i].m[15];
+                                                m[i]=CameraMath::Matrix{};
+                                                for(int j=0;j<3;j++)m[i].m[12+j]=apex[j];
+                                                m[i].m[3]=k3;m[i].m[7]=k7;m[i].m[11]=k11;m[i].m[15]=k15;
+                                                continue;
+                                            }
+                                            if(int(i)>=lo&&int(i)<hi){m[i]=CameraMath::MoveSkinMatrix(m[i],d);continue;}
+                                            // 15 WELDS the forearm to the wrist
+                                            // rather than collapsing it. A vertex
+                                            // weighted across the wrist then gets
+                                            // the same transform from both sides,
+                                            // so there is nothing to drag and no
+                                            // cone can form - which is the one
+                                            // thing no collapse point can achieve.
+                                            // The forearm stays full size and rides
+                                            // the hand rigidly. Everything outside
+                                            // both ranges is left animated, as in
+                                            // mode 12, so the left arm is untouched.
+                                            if(controllerHandsMode==15) {
+                                                if(int(i)>=wlo&&int(i)<whi) {
+                                                    float k3=m[i].m[3],k7=m[i].m[7],k11=m[i].m[11],k15=m[i].m[15];
+                                                    m[i]=movedDrive;
+                                                    m[i].m[3]=k3;m[i].m[7]=k7;m[i].m[11]=k11;m[i].m[15]=k15;
+                                                }
+                                                continue;
+                                            }
+                                            // 12 collapses nothing, so no
+                                            // collapse artifact can disguise
+                                            // what the placement is doing.
+                                            if(controllerHandsMode==12)continue;
+                                            float k3=m[i].m[3],k7=m[i].m[7],k11=m[i].m[11],k15=m[i].m[15];
+                                            // Collapse to the GRIP, which is the
+                                            // controller's own hand position, NOT to
+                                            // target. target is the MUZZLE, and
+                                            // ControllerMuzzle pushes it forward from
+                                            // the hand by ControllerMuzzleForwardMetres
+                                            // (0.25 m, about 10 inches) along the hand's
+                                            // third row, so after calibration the drive
+                                            // bone's frame origin sits that far ahead of
+                                            // the visible hand. Collapsing there hauled
+                                            // every vertex shared across the wrist out
+                                            // past the fingertips - a spike pointing at
+                                            // the fingers, unaffected by the scale
+                                            // because this point does not depend on it.
+                                            float q[3]{apex[0],apex[1],apex[2]};
+                                            // Shrink every discarded vertex TOWARD the
+                                            // collapse point: v' = s*v + (1-s)*q, which
+                                            // expands to new 3x3 = s*palette3x3 and
+                                            // new t = s*p_t + (1-s)*q. It needs only the
+                                            // palette's own translation.
+                                            // NOT the bone's "own world position" from
+                                            // handBind: those bind poses were solved
+                                            // against one instant, so every bone's solved
+                                            // world transform COINCIDES at that instant.
+                                            // They measure a bone's motion since
+                                            // calibration - which is what mode 14 used
+                                            // them for - and are not world positions. A
+                                            // barely-moved bone evaluates to wherever
+                                            // Mark stood while calibrating, so pivoting
+                                            // on it throws the nub s * that distance.
+                                            float pt[3]{m[i].m[12],m[i].m[13],m[i].m[14]};
+                                            float sc=controllerHandsCollapseScale;
+                                            if(sc>0.f) {
+                                                // A zeroed 3x3 leaves a shared vertex no
+                                                // usable normal at all; a scaled one
+                                                // keeps its direction and only shortens
+                                                // it, so the geometry shrinks to a nub
+                                                // instead of losing its lighting.
+                                                for(int r=0;r<3;r++)for(int c=0;c<3;c++)
+                                                    m[i].m[r*4+c]*=sc;
+                                            }
+                                            else {m[i]=CameraMath::Matrix{};sc=0.f;}
+                                            for(int j=0;j<3;j++)
+                                                m[i].m[12+j]=sc*pt[j]+(1.f-sc)*q[j];
+                                            m[i].m[14]-=controllerHandsCollapseDrop*worldScale;
+                                            m[i].m[3]=k3;m[i].m[7]=k7;m[i].m[11]=k11;m[i].m[15]=k15;
+                                        }
+                                        if(handOnlyPlan)HandOnlyGeometry::Activate(uintptr_t(data),frameId.load(),handOnlyPlan,m[130].m);
+                                    }
+                                }
+                            }
+                        }
+                        else if(controllerHandsMode>=8 && controllerHandsMode<12 && handDeltaValid) {
+                            int lo=controllerHandsKeepFrom,hi=controllerHandsKeepTo;
+                            if(lo<0)lo=0;
+                            if(hi>int(n))hi=int(n);
+                            for(uint32_t i=0;i<n;i++) {
+                                bool keep=controllerHandsMode==8||(int(i)>=lo&&int(i)<hi);
+                                if(keep){m[i]=CameraMath::MoveSkinMatrix(m[i],handDelta);continue;}
+                                // 11 collapses nothing, so no collapse artifact can
+                                // hide what the band actually owns.
+                                if(controllerHandsMode==11)continue;
+                                // Collapse to the grip, keeping the fourth column
+                                // exactly as the engine wrote it. Zeroing it as well
+                                // left the shader a zero w, which divides to
+                                // infinity - the monstrosity Mark saw in mode 9.
+                                float k3=m[i].m[3],k7=m[i].m[7],k11=m[i].m[11],k15=m[i].m[15];
+                                m[i]=CameraMath::Matrix{};
+                                for(int j=0;j<3;j++)m[i].m[12+j]=handTarget[j];
+                                // The game is Z-up, so this drops them straight down.
+                                m[i].m[14]-=controllerHandsCollapseDrop*worldScale;
+                                m[i].m[3]=k3;m[i].m[7]=k7;m[i].m[11]=k11;m[i].m[15]=k15;
+                            }
+                        }
+                        else if(controllerHandsMode==7) {
+                            // Collapse to the first kept bone's translation. That
+                            // value is meaningless as a position, but it does not
+                            // need to be meaningful - everything discarded just has
+                            // to land on ONE point so its triangles have no area.
+                            int lo=controllerHandsKeepFrom,hi=controllerHandsKeepTo;
+                            if(lo<0)lo=0;
+                            if(hi>int(n))hi=int(n);
+                            if(lo<hi) {
+                                const float ax=m[lo].m[12],ay=m[lo].m[13],az=m[lo].m[14];
+                                for(uint32_t i=0;i<n;i++) {
+                                    if(int(i)>=lo&&int(i)<hi)continue;
+                                    float k3=m[i].m[3],k7=m[i].m[7],k11=m[i].m[11],k15=m[i].m[15];
+                                    m[i]=CameraMath::Matrix{};
+                                    m[i].m[12]=ax;m[i].m[13]=ay;m[i].m[14]=az;
+                                    m[i].m[3]=k3;m[i].m[7]=k7;m[i].m[11]=k11;m[i].m[15]=k15;
+                                }
+                            }
+                        }
+                        else if(controllerHandsMode==6) {
+                            // Index bisection. Nothing here depends on a bone's
+                            // translation meaning anything, which is why it works
+                            // where the proximity modes could not.
+                            const float d=controllerHandsRadius*worldScale/100.f;
+                            for(uint32_t i=0;i<n;i++) {
+                                float dz=0;
+                                if(int(i)<controllerHandsSplitA)dz=d;
+                                else if(int(i)<controllerHandsSplitB)dz=-d;
+                                else continue;
+                                CameraMath::Matrix move{};
+                                move.m[0]=move.m[5]=move.m[10]=move.m[15]=1;
+                                move.m[14]=dz;
+                                m[i]=CameraMath::MoveSkinMatrix(m[i],move);
+                            }
+                        }
+                        else if(controllerHandsMode>=4 && first>=0) {
+                            // Anchor on the bone that marks the hand, keep whatever
+                            // geometry sits near it, collapse everything else to it.
+                            const float r=controllerHandsRadius*worldScale/100.f,r2=r*r;
+                            const float ax=m[first].m[12],ay=m[first].m[13],az=m[first].m[14];
+                            float dx=0,dy=0,dz=0;
+                            if(controllerHandsMode==5) {
+                                dx=handTarget[0]-ax;dy=handTarget[1]-ay;dz=handTarget[2]-az;
+                            }
+                            for(uint32_t i=0;i<n;i++) {
+                                float ex=m[i].m[12]-ax,ey=m[i].m[13]-ay,ez=m[i].m[14]-az;
+                                if(ex*ex+ey*ey+ez*ez<=r2) {
+                                    if(controllerHandsMode==5) {
+                                        CameraMath::Matrix move{};
+                                        move.m[0]=move.m[5]=move.m[10]=move.m[15]=1;
+                                        move.m[12]=dx;move.m[13]=dy;move.m[14]=dz;
+                                        m[i]=CameraMath::MoveSkinMatrix(m[i],move);
+                                    }
+                                    continue;
+                                }
+                                float k3=m[i].m[3],k7=m[i].m[7],k11=m[i].m[11],k15=m[i].m[15];
+                                m[i]=CameraMath::Matrix{};
+                                m[i].m[12]=ax+dx;m[i].m[13]=ay+dy;m[i].m[14]=az+dz;
+                                m[i].m[3]=k3;m[i].m[7]=k7;m[i].m[11]=k11;m[i].m[15]=k15;
+                            }
+                        }
+                        else if(controllerHandsMode==3) {
+                            // Rigid translation of the whole palette: shape kept,
+                            // so any geometry this palette skins visibly shifts.
+                            int anchor=first>=0?first:0;
+                            CameraMath::Matrix move{};
+                            move.m[0]=move.m[5]=move.m[10]=move.m[15]=1;
+                            for(int j=0;j<3;j++)move.m[12+j]=handTarget[j]-m[anchor].m[12+j];
+                            for(uint32_t i=0;i<n;i++)m[i]=CameraMath::MoveSkinMatrix(m[i],move);
+                        }
+                        else if(controllerHandsMode>=12 && controllerHandsMode<=15) {
+                            // The calibrated modes NEVER fall through to the
+                            // branches below. The first-person gate shutting
+                            // must leave the palette untouched so the arm
+                            // animates normally - falling through to the
+                            // pre-calibration collapse (keyed on bone 158, which
+                            // skins nothing) erased Jensen entirely, which is the
+                            // same failure as 2026-10-12.
+                        }
+                        else if(first>=0 && controllerHandsMode!=1) {
+                            // Pure translation: the animation's own orientation is
+                            // kept. Nothing here knows the bone's rotation
+                            // convention, and a wrong rotation looks far worse than
+                            // an animated one.
+                            CameraMath::Matrix move{};
+                            move.m[0]=move.m[5]=move.m[10]=move.m[15]=1;
+                            for(int j=0;j<3;j++)move.m[12+j]=handTarget[j]-m[first].m[12+j];
+                            m[first]=CameraMath::MoveSkinMatrix(m[first],move);
+                        }
+                        // Collapse everything else. A zeroed 3x3 sends every vertex
+                        // of a bone to that bone's translation, so its triangles
+                        // have no area. The target is the NEAREST KEPT hand's final
+                        // position rather than a point far below the floor: a vertex
+                        // weighted partly to the wrist then lands beside the hand
+                        // instead of stretching a spike across the level.
+                        if(controllerHandsMode<2 && (first>=0 || second>=0))for(uint32_t i=0;i<n;i++) {
+                            if(int(i)==first || int(i)==second)continue;
+                            const CameraMath::Matrix* to=&m[first>=0?first:second];
+                            if(first>=0 && second>=0) {
+                                float da=0,db=0;
+                                for(int j=0;j<3;j++) {
+                                    float a=m[i].m[12+j]-m[first].m[12+j];
+                                    float b=m[i].m[12+j]-m[second].m[12+j];
+                                    da+=a*a;db+=b*b;
+                                }
+                                to=db<da?&m[second]:&m[first];
+                            }
+                            // Keep the fourth column exactly as the engine wrote it;
+                            // MoveSkinMatrix preserves the same four slots.
+                            float k3=m[i].m[3],k7=m[i].m[7],k11=m[i].m[11],k15=m[i].m[15];
+                            float t0=to->m[12],t1=to->m[13],t2=to->m[14];
+                            m[i]=CameraMath::Matrix{};
+                            m[i].m[12]=t0;m[i].m[13]=t1;m[i].m[14]=t2;
+                            m[i].m[3]=k3;m[i].m[7]=k7;m[i].m[11]=k11;m[i].m[15]=k15;
+                        }
+                    }
+                }
+            }
+        }
+        if(!ok)++handSkeletonMiss;
+    }
     if(!controllerDrawing || !state)return;
     // Verified native PCDX11MatrixState: poseData is +0x10, count at +0,
     // followed by aligned world-space matrices at +0x10. This is a render
@@ -738,24 +3042,33 @@ void __cdecl SkeletonHook(void* model,void* bones,uint32_t flags,uint32_t count,
     auto data=*reinterpret_cast<unsigned char**>(s+0x10);if(!data)return;
     auto n=*reinterpret_cast<uint32_t*>(data);if(!n || n>512 || n!=count)return;
     auto matrices=reinterpret_cast<CameraMath::Matrix*>(data+0x10);
+    bool capture=HandWeaponMotionDiagnostic::Wanted(1,frameId.load());
+    HandWeaponMotionDiagnostic::Sample motion{};
+    if(capture){MotionContext(motion,motionDrawPose,1);motion.delta=controllerDelta;motion.count=n;
+        for(unsigned i=0;i<n && i<16;i++)motion.before[i]=matrices[i];}
     for(uint32_t i=0;i<n;i++)matrices[i]=CameraMath::MoveSkinMatrix(matrices[i],controllerDelta);
+    if(capture){for(unsigned i=0;i<n && i<16;i++)motion.after[i]=matrices[i];HandWeaponMotionDiagnostic::Push(motion);}
     ++controllerDraws;
 }
 void __fastcall WeaponDrawHook(void* self,void*,void* matrix,void* args) {
     auto previous=controllerDrawing;auto savedDelta=controllerDelta;controllerDrawing=false;
+    auto savedMotionPose=motionDrawPose;
     if(experimentalMotionControls) {
-        auto pose=ReadWeaponPose();auto drawable=static_cast<unsigned char*>(self);
+        auto drawable=static_cast<unsigned char*>(self);
+        auto pose=ReadWeaponPose(true,MuzzleQueryDiagnostic::Draw,*reinterpret_cast<void**>(drawable+8));
         if(pose.active && *reinterpret_cast<void**>(drawable+8)==pose.instance) {
             CameraMath::Matrix nativeMuzzle;
             NativeWeaponMuzzle(pose.weapon,&nativeMuzzle,0,true);
             if(RigidWeaponMatrix(nativeMuzzle)) {
-                controllerDelta=CameraMath::Multiply(CameraMath::InverseRigid(nativeMuzzle),pose.muzzle);
+                controllerDelta=pose.nativeValid?pose.delta:CameraMath::Multiply(CameraMath::InverseRigid(nativeMuzzle),pose.muzzle);
                 controllerDrawing=true;
+                motionDrawPose=pose;
             }
         }
     }
     originalWeaponDraw(self,matrix,args);
     controllerDrawing=previous;controllerDelta=savedDelta;
+    motionDrawPose=savedMotionPose;
 }
 struct BillboardTint {float x,y,z,w;};
 // Native stack: matrix +8, sprite-list +12, sprite-count +16, tint +20.
@@ -786,6 +3099,23 @@ void __fastcall RenderStateHook(void* self,void*) {
     lumaPasses.RestoreDrawOverrides();
     shaderSwap.RestoreDrawOverrides();
     auto state=static_cast<unsigned char*>(self);
+    {
+        // Does a per-draw hook reach inside the actor's draw at all, and is its
+        // pixel shader its own? PrimitiveHook never fired in there, which is
+        // what makes this worth measuring rather than assuming either way.
+        auto boundPS=*reinterpret_cast<uintptr_t*>(state+0x198);
+        if(handDrawing) {
+            handShaderCalls.fetch_add(1);
+            bool known=false;
+            for(uint32_t i=0;i<handShaderCount;i++)if(handShaders[i]==boundPS){known=true;break;}
+            if(!known && handShaderCount<16)handShaders[handShaderCount++]=boundPS;
+        }
+        else if(otherShaderCount<512) {
+            bool known=false;
+            for(uint32_t i=0;i<otherShaderCount;i++)if(otherShaders[i]==boundPS){known=true;break;}
+            if(!known)otherShaders[otherShaderCount++]=boundPS;
+        }
+    }
     float* instance{};CameraMath::Matrix saved;
     auto shader=effectShaders.Identify(*reinterpret_cast<uintptr_t*>(state+0x198));
     // Luma port: identify the bound pixel shader in ReShade's hash space so
@@ -949,6 +3279,76 @@ void __fastcall UpdateHook(void* self,void*) {
         // Check the exact class before reading its active flag.
         auto hacking=manager+0x6f0+0x430;
         bool screen=*reinterpret_cast<uintptr_t*>(hacking)==base+0xaa774c-0x400000 && hacking[0x104]!=0;
+        // THE GAME'S OWN ANSWER to "where is the camera". PlayerCamera keeps the
+        // current mode in its blend stack at +0x770 (RTTI:
+        // CameraOperation_MultiBlend<CameraOperation_CrossBlend>): a 16-bit index
+        // at +0x774, then 19 entries of 0x24 bytes from +0x778, each holding its
+        // CameraMode pointer at +0x08. Read at 0x6AA9F0, which fetches that exact
+        // pointer to compare against a requested mode.
+        {
+            auto pc=manager+0x6f0;
+            int found=-1;
+            uint32_t idx=*reinterpret_cast<const uint16_t*>(pc+0x774);
+            const unsigned char* modeObj=nullptr;
+            if(idx<19) {
+                modeObj=*reinterpret_cast<const unsigned char* const*>(pc+0x778+0x24*idx+8);
+                // A mode is named only when the POINTER and the VTABLE agree.
+                // Two independent values from the same analysis; one alone could
+                // be a coincidence, both cannot.
+                if(modeObj)for(int i=0;i<9;i++) {
+                    if(modeObj!=pc+cameraModes[i].offset)continue;
+                    if(*reinterpret_cast<const uintptr_t*>(modeObj)!=
+                       base+cameraModes[i].vtable-0x400000)break;
+                    found=i;break;
+                }
+            }
+            cameraModeIndex.store(found);
+            if(found!=cameraModeLast) {
+                cameraModeLast=found;
+                FILE* f{};
+                if(!fopen_s(&f,"DeusExHRVR-camera.log","a")) {
+                    if(found>=0)
+                        fprintf(f,"cameraMode=%s index=%d suspendHands=%d frame=%llu\n",
+                            cameraModes[found].name,found,
+                            int((controllerHandsSuspendModes>>found)&1u),frameId.load());
+                    else fprintf(f,"cameraMode=unknown frame=%llu\n",frameId.load());
+                    fclose(f);
+                }
+            }
+            // Never silent: if the layout is wrong this says so, a bounded number
+            // of times, with the numbers needed to find out why.
+            if(found<0 && cameraModeUnknownLogged<8) {
+                ++cameraModeUnknownLogged;
+                FILE* f{};
+                if(!fopen_s(&f,"DeusExHRVR-camera.log","a")) {
+                    fprintf(f,"cameraModeUnknown idx=%u mode=%p pcHacking=%d frame=%llu\n",
+                        idx,static_cast<const void*>(modeObj),int(screen),frameId.load());
+                    fclose(f);
+                }
+            }
+            handsSuspendedByMode.store(found>=0 && ((controllerHandsSuspendModes>>found)&1u)!=0);
+            // WHICH CAMERA, not just which mode. The Icarus landing left the
+            // mode at Combat and still moved the camera off the body for ~10 s
+            // (frames 12778-13419 of the 2026-10-13 evening session), because it
+            // renders from a different camera OBJECT. If that object is not the
+            // player's camera, the view is not at his eyes - no threshold
+            // involved. A null active camera changes nothing.
+            activeCameraIsPlayer.store(!active || active==pc);
+            if(active!=activeCameraLast) {
+                activeCameraLast=active;
+                const char* name="unknown";
+                for(int i=0;i<9;i++)
+                    if(active==manager+cameraSlots[i].offset){name=cameraSlots[i].name;break;}
+                FILE* f{};
+                if(!fopen_s(&f,"DeusExHRVR-camera.log","a")) {
+                    fprintf(f,"activeCamera=%s offset=%d vtable=%08x frame=%llu\n",
+                        name,active?int(active-manager):-1,
+                        active?unsigned(*reinterpret_cast<uintptr_t*>(active)-base+0x400000):0u,
+                        frameId.load());
+                    fclose(f);
+                }
+            }
+        }
         if(screen!=interactionScreen) {
             interactionScreen=screen;
             FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")) {
@@ -1001,6 +3401,28 @@ void __fastcall UpdateHook(void* self,void*) {
             // Other camera modes skip the filter; its jump/gap checks reset it when gameplay resumes.
             if(active==manager+0x6f0) {
                 double ms=PreciseMs();
+                // Sprinting = LB reaching the game. README line 92: "Left grip |
+                // LB / sprint". Mark's layout sends it from the left stick click
+                // (LeftStickClick=LB), but reading the PAD bit rather than the
+                // physical click means any binding works and nothing breaks
+                // silently if he moves it.
+                if(controllerHands)
+                    handPoseSprinting.store(t.gamepad.valid &&
+                        (uint32_t(t.gamepad.buttons)&controllerHandsSprintMask)!=0);
+                // Publish the body origin for the grip test on the render thread.
+                if(auto pb=*reinterpret_cast<const unsigned char* const*>(active+0xaa0)) {
+                    float bx=*reinterpret_cast<const float*>(pb+0x20);
+                    float by=*reinterpret_cast<const float*>(pb+0x24);
+                    float bz=*reinterpret_cast<const float*>(pb+0x28);
+                    bool ok=std::isfinite(bx)&&std::isfinite(by)&&std::isfinite(bz);
+                    if(ok) {
+                        handBodyOrigin[0].store(bx);
+                        handBodyOrigin[1].store(by);
+                        handBodyOrigin[2].store(bz);
+                    }
+                    handBodyOriginValid.store(ok);
+                }
+                else handBodyOriginValid.store(false);
                 if(stanceHold.enabled) {
                     // Player entity origin: three floats at +0x20 (measured on the supported
                     // build; the camera's X/Y match it exactly, its Z sits an eye height below).
@@ -1022,6 +3444,8 @@ void __fastcall UpdateHook(void* self,void*) {
                         if(anchored) {
                             ++nativePositionUsed;
                             nativePositionPeak=std::max(nativePositionPeak,distance);
+                            const bool sprint=t.gamepad.valid && (uint32_t(t.gamepad.buttons)&controllerHandsSprintMask)!=0;
+                            if(sprint)nativePositionSprintPeak=std::max(nativePositionSprintPeak,distance);
                         } else ++nativePositionFallback;
                     }
                     if(anchored)swayHold.Reset();
@@ -1030,12 +3454,77 @@ void __fastcall UpdateHook(void* self,void*) {
                     else swayHold.Reset();
                     if(nativeCameraPosition && now-nativePositionLogTick>=2000) {
                         FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")) {
-                            fprintf(f,"nativeCameraPosition used=%llu rejected=%llu active=%d maxOffsetIn=%g\n",
+                            fprintf(f,"nativeCameraPosition used=%llu rejected=%llu active=%d maxOffsetIn=%g sprintMaxOffsetIn=%g\n",
                                 nativePositionUsed,nativePositionFallback,int(anchored),
-                                nativePositionPeak*39.37f/worldScale);
+                                nativePositionPeak*39.37f/worldScale,nativePositionSprintPeak*39.37f/worldScale);
                             fclose(f);
                         }
-                        nativePositionLogTick=now;nativePositionPeak=0;
+                        nativePositionLogTick=now;nativePositionPeak=nativePositionSprintPeak=0;
+                    }
+                }
+                if(controllerHands) {
+                    // Interact held, from the pad state the companion already
+                    // sends. Reading it changes nothing - the button reaches the
+                    // game exactly as before.
+                    handPoseInteract.store((t.gamepad.valid &&
+                        (uint32_t(t.gamepad.buttons)&controllerHandsPoseMask))!=0);
+                }
+                if(controllerHands) {
+                    // First person only. In normal gameplay the camera's X/Y
+                    // match the entity origin to 0.2 units (2026-09-17 trace);
+                    // in cover the 2026-09-21 trace caught it 1.5 m away.
+                    auto pe=*reinterpret_cast<const unsigned char* const*>(active+0xaa0);
+                    bool allow=false;
+                    if(pe) {
+                        float ex=*reinterpret_cast<const float*>(pe+0x20);
+                        float ey=*reinterpret_cast<const float*>(pe+0x24);
+                        if(std::isfinite(ex)&&std::isfinite(ey)) {
+                            float dx=renderBase.m[12]-ex,dy=renderBase.m[13]-ey;
+                            float lim=controllerHandsMaxOffsetIn*worldScale/39.37f;
+                            allow=dx*dx+dy*dy<=lim*lim;
+                        }
+                    }
+                    // A BACKSTOP, not the old gate. `far` is true only on
+                    // positive evidence: a live entity pointer, finite
+                    // coordinates, and a distance past the limit. A null pointer
+                    // or a bad number leaves it false and the hands running -
+                    // the opposite of the 2026-10-13 gate, which defaulted to
+                    // OFF and disabled the feature whenever the pointer was
+                    // missing. ControllerHandsMaxOffsetIn=0 turns it back into a
+                    // log and nothing else.
+                    // NOT `far`: windef.h defines that away as a legacy
+                    // segment keyword, so `bool far=x` compiles to `bool =x`.
+                    bool awayFromBody=false;
+                    if(pe && controllerHandsMaxOffsetIn>0.f) {
+                        float ex=*reinterpret_cast<const float*>(pe+0x20);
+                        float ey=*reinterpret_cast<const float*>(pe+0x24);
+                        if(std::isfinite(ex)&&std::isfinite(ey)) {
+                            float dx=renderBase.m[12]-ex,dy=renderBase.m[13]-ey;
+                            float lim=controllerHandsMaxOffsetIn*worldScale/39.37f;
+                            awayFromBody=dx*dx+dy*dy>lim*lim;
+                        }
+                    }
+                    handsFarFromBody.store(awayFromBody);
+                    if(awayFromBody!=handsFarLast) {
+                        handsFarLast=awayFromBody;
+                        // Never silent, and it says what the OTHER two
+                        // instruments thought at the same moment - which is the
+                        // whole question for the Icarus landing.
+                        int md=cameraModeIndex.load();
+                        FILE* f{};
+                        if(!fopen_s(&f,"DeusExHRVR-camera.log","a")) {
+                            fprintf(f,"handsDistance=%d mode=%s activeCameraIsPlayer=%d frame=%llu\n",
+                                int(awayFromBody),(md>=0?cameraModes[md].name:"unknown"),
+                                int(activeCameraIsPlayer.load()),frameId.load());
+                            fclose(f);
+                        }
+                    }
+                    handDriveAllowed.store(allow);
+                    if(allow!=handDriveAllowedLast) {
+                        handDriveAllowedLast=allow;
+                        FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")) {
+                            fprintf(f,"handsFirstPerson=%d frame=%llu\n",int(allow),frameId.load());fclose(f);
+                        }
                     }
                 }
                 if(!current.nativeHeading && yawOnlyCamera && (yawSwing.a.enabled||yawSwing.b.enabled)) {
@@ -1054,13 +3543,57 @@ void __fastcall UpdateHook(void* self,void*) {
                     // Afterwards, keep holding until the game camera is back at the held
                     // pose (at most 2 s), so its blend back from the last shot is not shown.
                     if(holdingPlayerBase && !dialogueCamera) {
-                        float d=std::hypot(renderBase.m[12]-lastPlayerBase.m[12],renderBase.m[13]-lastPlayerBase.m[13],renderBase.m[14]-lastPlayerBase.m[14]);
-                        if(d<.1f*worldScale || now-dialogueEndTick>2000)holdingPlayerBase=false;
+                        float dx=renderBase.m[12]-lastPlayerBase.m[12];
+                        float dy=renderBase.m[13]-lastPlayerBase.m[13];
+                        float dz=renderBase.m[14]-lastPlayerBase.m[14];
+                        float lim=.1f*worldScale;
+                        if(dx*dx+dy*dy+dz*dz<lim*lim || now-dialogueEndTick>2000)holdingPlayerBase=false;
                     }
                     if(holdingPlayerBase)renderBase=lastPlayerBase;
                     else {lastPlayerBase=renderBase;lastPlayerBaseTick=now;}
                     if(held!=holdingPlayerBase) {
-                        FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")){fprintf(f,"dialogueHold=%d frame=%llu\n",holdingPlayerBase,frameId.load());fclose(f);}
+                        // Mark was put at FLOOR HEIGHT in two conversations
+                        // (2026-10-18). Cause unknown; StanceHold was checked
+                        // and ruled out (it returns the true eye height on
+                        // reset, never 0). Record enough to tell next time
+                        // whether the hold engaged, what height it froze, and
+                        // how far that sits above the player's feet: a held
+                        // eye of ~0 means a bad pose was captured, while a
+                        // sane held eye with the view still on the floor means
+                        // something downstream moved it.
+                        auto entity=*reinterpret_cast<const unsigned char* const*>(active+0xaa0);
+                        float entZ=entity?*reinterpret_cast<const float*>(entity+0x28):0.f;
+                        const auto& b=holdingPlayerBase?lastPlayerBase:renderBase;
+                        FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")) {
+                            fprintf(f,"dialogueHold=%d frame=%llu heldZ=%.2f entityZ=%.2f eyeIn=%.2f ageMs=%llu stale=%d\n",
+                                holdingPlayerBase,frameId.load(),b.m[14],entZ,
+                                entity?b.m[14]-entZ:-1.f,now-lastPlayerBaseTick,
+                                int(now-lastPlayerBaseTick>=1000));
+                            fclose(f);
+                        }
+                    }
+                }
+            }
+            // Re-arm calibration by holding the RIGHT controller above the head.
+            // Positions only, so no axis convention can invert it, and raising a
+            // hand overhead and keeping it there does not happen in normal play -
+            // unlike pointing down, which is just an arm at rest. No button, so
+            // it cannot collide with [Buttons] or fubar's weapon calibration.
+            // It exists because the INI trigger needs a message from me, and my
+            // reply time is the one thing Mark cannot plan around.
+            if(controllerHands && controllerHandsArmGestureMs>0 && t.rightController.valid) {
+                auto gnow=GetTickCount64();
+                if(t.rightController.aim.position.y<=t.head.position.y+controllerHandsArmGestureCm*.01f)
+                    handArmGestureSince=0;
+                else if(!handArmGestureSince)handArmGestureSince=gnow;
+                else if(gnow-handArmGestureSince>=uint64_t(controllerHandsArmGestureMs>0?controllerHandsArmGestureMs:1500)) {
+                    handArmGestureSince=0;
+                    if(!handCalibrateArmed.exchange(1)) {
+                        handCalibrateArmTick.store(gnow);
+                        handArmGestures.fetch_add(1);
+                        // Audible: he can neither read a log nor press a key in
+                        // the headset. Same mechanism the weapon calibration uses.
+                        MessageBeep(MB_ICONASTERISK);
                     }
                 }
             }
@@ -1075,10 +3608,37 @@ void __fastcall UpdateHook(void* self,void*) {
                     auto instance=handle!=0x7fffffffu?reinterpret_cast<FindInstance>(base+0x6082a0-0x400000)(handle):nullptr;
                     if(instance) {
                         auto raw=CameraMath::ControllerMuzzle(renderBase,reference,t.rightController.aim,worldScale,controllerMuzzleForward);
+                        // Before any per-weapon offset: this is the controller and
+                        // nothing else, which is what the hand must follow.
+                        auto rawController=raw;
                         // Native weapon constructor 0x761130 stores the asset-table ID at +0x58.
                         // 0x777040 resolves its model through that ID, independent of instance handles.
                         auto key=*reinterpret_cast<uint32_t*>(weapon+0x58);
-                        if(key<0x18000) {
+                        CameraMath::Matrix modelTarget{};
+                        bool nativeRequested=controllerHandsModelAlignment.load() && controllerHands && controllerHandsWeapon &&
+                            controllerHandsMode==15 && !handsSuspendedByMode.load() && activeCameraIsPlayer.load() && !handsFarFromBody.load();
+                        bool targetValid=nativeRequested && ModelHandAlignment::GripTarget(t,now,renderBase,reference,worldScale,modelTarget);
+                        const CameraMath::Matrix* grip=
+                            (controllerHandsWeapon && controllerHands)?FindHandGrip(key):nullptr;
+                        if(nativeRequested){
+                            // Deliberately bypass BOTH learned-grip files and manual
+                            // weapon calibration. Resolve from the native pose below.
+                        }
+                        else if(grip) {
+                            // THIS weapon's own grip, from its own animation.
+                            // Replaces the per-weapon calibration rather than
+                            // adding to it, so nothing downstream changes.
+                            raw=CameraMath::Multiply(*grip,raw);
+                        }
+                        else if(key<0x18000 && !weaponCalibrationEnabled) {
+                            // Apply the stored offset and never capture. Same
+                            // composition the save-failure path uses below.
+                            raw=WeaponCalibration::Units(
+                                CameraMath::Multiply(calibrationStore.Get(key),
+                                    WeaponCalibration::Metres(raw,worldScale)),
+                                worldScale);
+                        }
+                        else if(key<0x18000) {
                             auto offset=calibrationStore.Get(key);
                             auto result=calibration.Update(WeaponCalibration::Metres(raw,worldScale),offset,key,
                                 reinterpret_cast<uintptr_t>(instance),t.controllerButtons,
@@ -1093,7 +3653,17 @@ void __fastcall UpdateHook(void* self,void*) {
                             }
                             raw=WeaponCalibration::Units(result.muzzle,worldScale);
                         }
-                        weaponPose={weapon,instance,raw,t.tick,true,*reinterpret_cast<void**>(weapon+0x64)};
+                        weaponPose={weapon,instance,raw,t.tick,true,*reinterpret_cast<void**>(weapon+0x64),rawController};
+                        weaponPose.nativeRequested=nativeRequested;weaponPose.gripTarget=modelTarget;
+                        if(diagnosticWeapon!=weapon || diagnosticInstance!=instance){
+                            diagnosticWeapon=weapon;diagnosticInstance=instance;diagnosticEquippedTick=now;
+                        }
+                        weaponPose.equippedTick=diagnosticEquippedTick;
+                        weaponPose.buttons=t.controllerButtons;weaponPose.diagnosticPad=t.gamepad;
+                        if(nativeRequested){
+                            weaponPose.active=targetValid;
+                            if(targetValid)ResolveNativePair(weaponPose);
+                        }
                     }
                 }
             }
@@ -1101,7 +3671,7 @@ void __fastcall UpdateHook(void* self,void*) {
             current.world=CameraMath::HeadWorld(renderBase,reference,t.head,worldScale);
             if(immersiveScopeActive) {
                 // Use the same calibrated firing line as the rendered rifle and shots.
-                if(weaponPose.active)current.world=WeaponCalibration::Camera(weaponPose.muzzle);
+                if(weaponPose.active && (!weaponPose.nativeRequested || weaponPose.nativeValid))current.world=WeaponCalibration::Camera(weaponPose.muzzle);
             }
             current.view=CameraMath::InverseRigid(current.world);
             current.manager=CameraMath::Load(manager+0x13b0);
@@ -1221,6 +3791,32 @@ void* __fastcall CreateHook(void* self,void*,void* viewport,void* target,void* d
     }
     return result;
 }
+using ModelDraw=void(__thiscall*)(void*,void*,void*,void*,bool);
+ModelDraw originalModelDraw{};
+void __fastcall ModelDrawHook(void* self,void*,void* device,void* state,void* stream,bool twice) {
+    auto frame=frameId.load();
+    if(!HandOnlyGeometry::DrawSelected(self,device,state,stream,twice,frame,originalModelDraw)) {
+        originalModelDraw(self,device,state,stream,twice);
+        HandDrawDiagnostic::Observe(self,stream,twice,frame);
+    }
+}
+void InstallHandDrawDiagnostic() {
+    // DXHRDC 2.0.66.0: validated 0x540150..0x540264. thiscall, four stack
+    // arguments, ret 0x10. Non-null stream reaches DrawIndexed at 0x540228
+    // (and 0x54025e for two-sided rendering). Install independently so a probe
+    // failure never disables the existing camera/hand hooks.
+    auto address=base+0x540150-0x400000;
+    const unsigned char signature[]={0x53,0x8b,0x5c,0x24,0x10,0x56,0x8b,0xf1,0x85,0xdb,0x0f,0x84,0x02,0x01,0x00,0x00};
+    if(memcmp(reinterpret_cast<void*>(address),signature,sizeof(signature))) {
+        HandDrawDiagnostic::hookStatus=-1;return;
+    }
+    if(MH_CreateHook(reinterpret_cast<void*>(address),reinterpret_cast<void*>(&ModelDrawHook),
+        reinterpret_cast<void**>(&originalModelDraw))!=MH_OK) {HandDrawDiagnostic::hookStatus=-2;return;}
+    if(MH_EnableHook(reinterpret_cast<void*>(address))!=MH_OK) {
+        MH_RemoveHook(reinterpret_cast<void*>(address));HandDrawDiagnostic::hookStatus=-3;return;
+    }
+    HandDrawDiagnostic::hookStatus=1;
+}
 void __fastcall DrawHook(void* self,void*,uint32_t pass,void* other) {
     auto previous=drawing;auto previousEyes=drawnEyes;
     {
@@ -1262,6 +3858,18 @@ void __fastcall MatricesHook(void* self,void*) {
 void __fastcall PrimitiveHook(void* self,void*,void* stream,bool backBeforeFront,uint32_t flags) {
     auto primitive=static_cast<unsigned char*>(self);
     auto primitiveState=*reinterpret_cast<unsigned char**>(primitive+0x10);
+    // Inside the player's own actor draw, each submitted piece gets an index.
+    if(handDrawing) {
+        auto idx=handPrimIndex++;
+        if(handPrimLogged<3 && handPrimTraceCount<64) {
+            auto& t=handPrimTrace[handPrimTraceCount++];
+            t.index=idx;t.primitive=reinterpret_cast<uintptr_t>(self);
+            t.material=primitiveState?*reinterpret_cast<uintptr_t*>(primitiveState+0xc):0;
+            t.flags=primitiveState?*reinterpret_cast<uint32_t*>(primitiveState):0;
+        }
+        // Simply do not submit it. Nothing is moved, so nothing can smear.
+        if(idx<32 && (controllerHandsSkipPrimMask&(1u<<idx)))return;
+    }
     auto snapshot=drawing.active?drawing:lastWorld;
     // scaleformData is consumed only by the engine's UI shader path at 0x532d3c.
     bool isUI=stream && snapshot.active && primitiveState && *reinterpret_cast<void**>(primitiveState+0x20);
@@ -1453,6 +4061,7 @@ void Install() {
     levelRecenter=GetPrivateProfileIntW(L"VR",L"LevelRecenter",1,config)!=0;
     levelMenu=GetPrivateProfileIntW(L"VR",L"LevelMenu",1,config)!=0;
     yawOnlyCamera=GetPrivateProfileIntW(L"VR",L"YawOnlyCamera",0,config)!=0;
+    controllerHandsForceFallback=GetPrivateProfileIntW(L"VR",L"ControllerHandsForceFallback",0,config)!=0;
     fixedDialogueCamera=GetPrivateProfileIntW(L"VR",L"FixedDialogueCamera",0,config)!=0;
     if(enabled && fixedDialogueCamera) {
         // Hooked on their own, like the screen hooks: a mismatch or failure only
@@ -1507,6 +4116,7 @@ void Install() {
     nativeLookPitchLock=GetPrivateProfileIntW(L"VR",L"NativeLookPitchLock",0,config)!=0;
     nativeLookHeading=GetPrivateProfileIntW(L"VR",L"NativeLookHeading",0,config)!=0;
     nativeCameraPosition=GetPrivateProfileIntW(L"VR",L"NativeCameraPosition",0,config)!=0;
+    HandWeaponMotionDiagnostic::enabled=GetPrivateProfileIntW(L"VR",L"HandWeaponMotionLog",0,config)!=0;
     if(enabled && (nativeLookPitchLock || nativeLookHeading)) {
         auto target=reinterpret_cast<void*>(VA(0x7ac8c0));
         const char inputBytes[]="\x55\x8b\xec\x83\xe4\xf0\x81\xec\x74\x01\x00\x00";
@@ -1521,13 +4131,87 @@ void Install() {
         nativeLookPitchLock=nativeLookPitchLock && ok;
         nativeLookHeading=nativeLookHeading && ok;
         FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")) {
-            fprintf(f,"nativeLookPitchLock hook=%s controllerOnly=1 combatOnly=1\n",ok?"ready":"failed");
-            fprintf(f,"nativeLookHeading enabled=%d sameEngineFrame=1 combatOnly=1\n",nativeLookHeading);
-            fclose(f);
+            fprintf(f,"nativeLookPitchLock hook=%s controllerOnly=1 combatOnly=1\n",ok?"ready":"failed");fclose(f);
+        }
+        FILE* headingLog{};if(!fopen_s(&headingLog,"DeusExHRVR-camera.log","a")) {
+            fprintf(headingLog,"nativeLookHeading enabled=%d sameEngineFrame=1 combatOnly=1\n",nativeLookHeading);
+            fclose(headingLog);
         }
     }
     experimentalMotionControls=motionControls && GetPrivateProfileIntW(L"VR",L"ExperimentalMotionControls",0,config)!=0;
+    weaponCalibrationEnabled=GetPrivateProfileIntW(L"VR",L"WeaponCalibration",1,config)!=0;
     controllerHideArms=GetPrivateProfileIntW(L"VR",L"ControllerHideArms",1,config)!=0;
+    controllerHands=GetPrivateProfileIntW(L"VR",L"ControllerHands",0,config)!=0;
+    controllerHandBone=int(GetPrivateProfileIntW(L"VR",L"ControllerHandBone",158,config));
+    controllerHandBone2=int(GetPrivateProfileIntW(L"VR",L"ControllerHandBone2",999,config));
+    controllerHandsMode=int(GetPrivateProfileIntW(L"VR",L"ControllerHandsMode",0,config));
+    controllerHandsModelAlignment=GetPrivateProfileIntW(L"VR",L"ControllerHandsModelAlignment",0,config)!=0;
+    controllerHandsLeft=GetPrivateProfileIntW(L"VR",L"ControllerHandsLeft",1,config)!=0;
+    controllerHandsNeutralWrist=GetPrivateProfileIntW(L"VR",L"ControllerHandsNeutralWrist",1,config)!=0;
+    controllerHandsRadius=float(GetPrivateProfileIntW(L"VR",L"ControllerHandsRadiusCm",15,config));
+    controllerHandsSplitA=int(GetPrivateProfileIntW(L"VR",L"ControllerHandsSplitA",74,config));
+    controllerHandsSplitB=int(GetPrivateProfileIntW(L"VR",L"ControllerHandsSplitB",148,config));
+    controllerHandsWeapon=GetPrivateProfileIntW(L"VR",L"ControllerHandsWeapon",0,config)!=0;
+    controllerHandsCollapseBone=int(GetPrivateProfileIntW(L"VR",L"ControllerHandsCollapseBone",-1,config));
+    {
+        int mo=int(GetPrivateProfileIntW(L"VR",L"ControllerHandsMaxOffsetIn",12,config));
+        if(mo>0&&mo<=400)controllerHandsMaxOffsetIn=float(mo);
+        int sm=int(GetPrivateProfileIntW(L"VR",L"ControllerHandsSuspendModes",342,config));
+        if(sm>=0&&sm<512)controllerHandsSuspendModes=uint32_t(sm);
+        controllerHandsPose=GetPrivateProfileIntW(L"VR",L"ControllerHandsPose",0,config)!=0;
+        int pm=int(GetPrivateProfileIntW(L"VR",L"ControllerHandsPoseButton",0x4000,config));
+        if(pm>0&&pm<=0xffff)controllerHandsPoseMask=uint32_t(pm);
+        int sb=int(GetPrivateProfileIntW(L"VR",L"ControllerHandsSprintButton",0x0100,config));
+        if(sb>0&&sb<=0xffff)controllerHandsSprintMask=uint32_t(sb);
+    }
+    controllerHandsKeepFrom=int(GetPrivateProfileIntW(L"VR",L"ControllerHandsKeepFrom",74,config));
+    controllerHandsKeepTo=int(GetPrivateProfileIntW(L"VR",L"ControllerHandsKeepTo",82,config));
+    {
+        int drop=int(GetPrivateProfileIntW(L"VR",L"ControllerHandsCollapseDropM",0,config));
+        if(drop>=0&&drop<=10000)controllerHandsCollapseDrop=float(drop);
+    }
+    controllerHandsProbe=GetPrivateProfileIntW(L"VR",L"ControllerHandsProbe",0,config)!=0;
+    controllerHandsProbeFrom=int(GetPrivateProfileIntW(L"VR",L"ControllerHandsProbeFrom",100,config));
+    controllerHandsProbeTo=int(GetPrivateProfileIntW(L"VR",L"ControllerHandsProbeTo",160,config));
+    controllerHandsDriveBone=int(GetPrivateProfileIntW(L"VR",L"ControllerHandsDriveBone",152,config));
+    readFloat(L"ControllerHandsTrimXCm",L"0",-200,200,handTrim[0]);
+    readFloat(L"ControllerHandsTrimYCm",L"0",-200,200,handTrim[1]);
+    readFloat(L"ControllerHandsTrimZCm",L"0",-200,200,handTrim[2]);
+    controllerHandsSteadyMs=int(GetPrivateProfileIntW(L"VR",L"ControllerHandsSteadyMs",800,config));
+    readFloat(L"ControllerHandsSteadyCm",L"5",.1f,100,controllerHandsSteadyCm);
+    readFloat(L"ControllerHandsTrimPitchDeg",L"0",-180,180,handTrimRot[0]);
+    readFloat(L"ControllerHandsTrimYawDeg",L"0",-180,180,handTrimRot[1]);
+    readFloat(L"ControllerHandsTrimRollDeg",L"0",-180,180,handTrimRot[2]);
+    readFloat(L"ControllerHandsIdGateDeg",L"0.5",.01f,90,controllerHandsIdGateDeg);
+    controllerHandsSkipPrimMask=uint32_t(GetPrivateProfileIntW(L"VR",L"ControllerHandsSkipPrimMask",0,config));
+    readFloat(L"ControllerHandsCollapseBackIn",L"0",-24,24,controllerHandsCollapseBackIn);
+    readFloat(L"ControllerHandsCollapseSideIn",L"0",-24,24,controllerHandsCollapseSideIn);
+    readFloat(L"ControllerHandsCollapseUpIn",L"0",-24,24,controllerHandsCollapseUpIn);
+    controllerHandsHideFrom=int(GetPrivateProfileIntW(L"VR",L"ControllerHandsHideFrom",0,config));
+    controllerHandsHideTo=int(GetPrivateProfileIntW(L"VR",L"ControllerHandsHideTo",0,config));
+    controllerHandsWeldFrom=int(GetPrivateProfileIntW(L"VR",L"ControllerHandsWeldFrom",112,config));
+    controllerHandsWeldTo=int(GetPrivateProfileIntW(L"VR",L"ControllerHandsWeldTo",130,config));
+    readFloat(L"ControllerHandsCollapseScale",L"0",0,1,controllerHandsCollapseScale);
+    controllerHandsArmGestureMs=int(GetPrivateProfileIntW(L"VR",L"ControllerHandsArmGestureMs",1500,config));
+    readFloat(L"ControllerHandsArmGestureCm",L"20",1,200,controllerHandsArmGestureCm);
+    if(controllerHands) {
+        LoadHandCalibration();
+        LoadHandGrips();
+
+        LoadHandPose();
+        // Armed from the start when asked for and nothing is saved yet, so the
+        // capture never has to wait on a message from me. Not armed when a
+        // calibration already loaded, or a later launch could overwrite a good
+        // one with whatever pose happened to be still first.
+        if(!handCalibrated && GetPrivateProfileIntW(L"VR",L"ControllerHandsCalibrate",0,config)!=0)
+            handCalibrateArmed.store(1);
+    }
+    // Only while the feature is on, so fubar's default build starts no thread.
+    if(controllerHands){
+        if(enabled)InstallHandDrawDiagnostic();
+        handsConfigPath=config;StartHandsConfigWatcher();
+    }
+    if(!(controllerHandsRadius>0)||controllerHandsRadius>500)controllerHandsRadius=15.f;
     interactionAim=DirectionConfig::Read(config,L"InteractionAim");
     movementDirection=DirectionConfig::Read(config,L"MovementDirection");
     immersiveScope=GetPrivateProfileIntW(L"VR",L"ImmersiveScope",0,config)!=0;
@@ -1594,7 +4278,8 @@ void Install() {
         }
     }
     FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")) {
-        fprintf(f,"Camera hooks base=%p enabled=%d unitsPerMetre=%g lockVerticalCamera=%d levelRecenter=%d levelMenu=%d yawOnlyCamera=%d stanceHold=%d/%g/%g yawMs=%d/%d yawLimit=%g sideSwayHold=%d sleepFix=%d fixedDialogueCamera=%d F6=toggle F9=recenter\n",reinterpret_cast<void*>(base),enabled,worldScale,lockVerticalCamera,levelRecenter,levelMenu,yawOnlyCamera,stanceHold.enabled,stanceHold.trigger,stanceHold.rate,yawSwing.a.windowMs[0],yawSwing.b.windowMs[0],yawSwing.a.limit[0],swayHold.windowMs,int(sleepFix),int(fixedDialogueCamera));fclose(f);
+        fprintf(f,"Camera hooks base=%p enabled=%d unitsPerMetre=%g lockVerticalCamera=%d levelRecenter=%d levelMenu=%d yawOnlyCamera=%d stanceHold=%d/%g/%g yawMs=%d/%d yawLimit=%g sideSwayHold=%d sleepFix=%d weaponCalibration=%d handsWeapon=%d controllerHideArms=%d controllerHands=%d/%d/%d/%d/%gcm split=%d/%d keep=%d-%d drive=%d calibrated=%d trim=%g/%g/%g fixedDialogueCamera=%d F6=toggle F9=recenter\n",reinterpret_cast<void*>(base),enabled,worldScale,lockVerticalCamera,levelRecenter,levelMenu,yawOnlyCamera,stanceHold.enabled,stanceHold.trigger,stanceHold.rate,yawSwing.a.windowMs[0],yawSwing.b.windowMs[0],yawSwing.a.limit[0],swayHold.windowMs,int(sleepFix),int(weaponCalibrationEnabled),int(controllerHandsWeapon),int(controllerHideArms),int(controllerHands),controllerHandBone,controllerHandBone2,controllerHandsMode,controllerHandsRadius,controllerHandsSplitA,controllerHandsSplitB,controllerHandsKeepFrom,controllerHandsKeepTo,
+            controllerHandsDriveBone,int(handCalibrated),handTrim[0],handTrim[1],handTrim[2],int(fixedDialogueCamera));fclose(f);
     }
 }
 }
@@ -1648,10 +4333,21 @@ Transport::RenderInfo OnPresent(uint64_t frame,bool capture) {
                 controllerAttachments.load(),controllerBounds.load());
             Matrix(motion,"controllerMuzzle",weaponPose.muzzle.m);
             fprintf(motion,"immersiveScope enabled=%d active=%d owned=%d zoom=%g\n",immersiveScope,immersiveScopeActive,autoScopeOwned,scopeMagnification);
+            fprintf(motion,"nativeLookPitchLock enabled=%d calls=%llu applied=%llu pitchBefore=%g pitchAfter=%g yaw=%g\n",
+                nativeLookPitchLock,nativeLookCalls.load(),nativeLookApplied.load(),nativeLookBefore.load(),nativeLookAfter.load(),nativeLookYaw.load());
             fprintf(motion,"directions interaction=%s movement=%s interactionQueries=%llu movementAxes=%llu motionControls=%d inputIndex=%u actions=%p/%p lastInput=%g,%g lastOutput=%g,%g heading=%g\n",
                 DirectionConfig::Name(interactionAim),DirectionConfig::Name(movementDirection),
                 interactionQueries.load(),movementAxes.load(),motionControls,current.inputIndex,walkAction.load(),strafeAction.load(),
                 lastMoveInput[0],lastMoveInput[1],lastMoveOutput[0],lastMoveOutput[1],lastMoveHeading);
+            fprintf(motion,"controllerHands enabled=%d mode=%d bone=%d bone2=%d draws=%llu skeletons=%llu miss=%llu bones=%u\n",
+                int(controllerHands),controllerHandsMode,controllerHandBone,controllerHandBone2,
+                handDraws.load(),handSkeletons.load(),handSkeletonMiss.load(),handBoneCount.load());
+            fprintf(motion,"controllerHandsDrive calibrated=%d bindBones=%u drive=%d trim=%g/%g/%g armed=%d holdUnits=%.1f\n",
+                int(handCalibrated),handBindCount,controllerHandsDriveBone,
+                handTrim[0],handTrim[1],handTrim[2],handCalibrateArmed.load(),handCalibrateQuality);
+            fprintf(motion,"controllerHandsIdentify samples=%u reported=%d enters=%llu noWeapon=%llu belowGate=%llu maxDeg=%.2f\n",
+                handIdSamples,int(handIdReported),handIdEnters.load(),handIdNoWeapon.load(),
+                handIdBelowGate.load(),handIdMaxDeg);
             {std::lock_guard lock(attachmentTraceMutex);for(const auto& t:attachmentTrace)if(t.queries)
                 fprintf(motion,"attachment caller=%08x bone=%d owner=%d queries=%llu corrected=%llu\n",
                     unsigned(t.caller),t.bone,t.owner,t.queries,t.corrected);}
@@ -1765,5 +4461,42 @@ void SetShaderSwapDevice(ID3D11Device* device){
     }
 }
 bool ImmersiveScopeButton(){return GetTickCount64()<scopePulseUntil.load();}
+// Arms hands calibration from a bindable [Buttons] target. Out here with the
+// other exported entry points: inside the anonymous namespace above it had
+// internal linkage and GamepadBridge could not see it.
+void ArmHandCalibration() {
+    if(!controllerHands)return;
+    // GAMEPLAY ONLY. This had exactly one check - controllerHands - and nothing
+    // else, which made a destructive action reachable from a menu.
+    //
+    // Mark worked this out on 2026-10-14: the game needs A in the opening menus
+    // to reach the loading screen, and his RightATap is HandCalibrate. So A
+    // armed it, and then it captured the moment he held still - which is what
+    // anyone does during a loading screen. That is almost certainly the source
+    // of the calibrations that wrecked his hand placement, and the file it
+    // overwrote had stood since 10/11 with no backup.
+    //
+    // Same three flags the weapon pose already gates on, so this adds no new
+    // notion of "in gameplay" - it uses the one the mod already trusts.
+    if(!requested || screenReasons || gameMenuOpen) {
+        FILE* f{};
+        if(!fopen_s(&f,"DeusExHRVR-camera.log","a") && f) {
+            fprintf(f,"handCalibrate REFUSED (not in gameplay) requested=%d screens=%u menu=%d\n",
+                int(requested),screenReasons,int(gameMenuOpen));
+            fclose(f);
+        }
+        return;
+    }
+    // exchange, so a held button cannot keep pushing the arming time forward
+    // and starve the steady hold that has to follow it.
+    if(handCalibrateArmed.exchange(1))return;
+    handCalibrateArmTick.store(GetTickCount64());
+    handArmGestures.fetch_add(1);
+    MessageBeep(MB_ICONASTERISK);
+    FILE* f{};
+    if(!fopen_s(&f,"DeusExHRVR-camera.log","a") && f) {
+        fprintf(f,"handCalibrate armed by button\n");fclose(f);
+    }
+}
 bool ToggleShaderSubstitution(){bool on=!shaderSwap.SubstitutionEnabled();shaderSwap.SetSubstitutionEnabled(on);return on;}
 }

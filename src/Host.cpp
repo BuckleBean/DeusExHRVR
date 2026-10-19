@@ -23,7 +23,10 @@ int wmain(int argc,wchar_t** argv) {
     wchar_t name[96];Transport::Name(name,pid);
     HANDLE mapping=OpenFileMappingW(FILE_MAP_ALL_ACCESS,FALSE,name);if(!mapping){CloseHandle(game);return 3;}
     auto* header=static_cast<Transport::Header*>(MapViewOfFile(mapping,FILE_MAP_ALL_ACCESS,0,0,sizeof(Transport::Header)));
-    if(!header||header->magic!=Transport::Magic||header->version!=Transport::Version||header->pid!=pid)return 4;
+    if(!Transport::Compatible(header,pid)) {
+        if(header)UnmapViewOfFile(header);
+        CloseHandle(mapping);CloseHandle(game);return 4;
+    }
     ComPtr<IDXGIFactory1> factory;if(FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))))return 5;
     ComPtr<ID3D11Device> dev;ComPtr<ID3D11DeviceContext> ctx;ComPtr<ID3D11Texture2D> shared,pair;
     ComPtr<IDXGIKeyedMutex> keyed;LONG generation=0;UINT height=0;bool fatal=false;

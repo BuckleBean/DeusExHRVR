@@ -2,13 +2,16 @@
 #include <windows.h>
 #include <cstdint>
 #include <cwchar>
+#include <cstddef>
 namespace Transport {
-inline constexpr uint32_t Magic=0x52485844, Version=5;
+inline constexpr uint32_t Magic=0x52485844, Version=6;
 struct Quaternion {float x,y,z,w;};
 struct Vector {float x,y,z;};
 struct Pose {Quaternion orientation;Vector position;};
 struct Eye {Pose pose;float left,right,up,down;};
 struct Controller {Pose aim;uint32_t valid;};
+struct GripPose {Pose pose;uint32_t valid;};
+static_assert(sizeof(Pose)==28 && sizeof(Controller)==32 && sizeof(GripPose)==32);
 struct Gamepad {
     uint32_t valid;
     uint16_t buttons;uint8_t leftTrigger,rightTrigger;
@@ -23,9 +26,13 @@ struct alignas(8) Tracking {
     Controller rightController;
     Gamepad gamepad;
     uint32_t controllerButtons; // Raw stick clicks: bit 0 left, bit 1 right (focused input only).
+    uint32_t reserved;
+    GripPose leftGrip,rightGrip; // Unmodified OpenXR grip poses, same space/time as aim.
 };
 struct RenderInfo {Tracking tracking;uint32_t mode,eyeMask;};
-static_assert(sizeof(Tracking)==192 && sizeof(RenderInfo)==200);
+static_assert(sizeof(Tracking)==256 && sizeof(RenderInfo)==264);
+static_assert(offsetof(Tracking,rightController)==136 && offsetof(Tracking,gamepad)==168);
+static_assert(offsetof(Tracking,leftGrip)==192 && offsetof(Tracking,rightGrip)==224);
 // Identical ABI in the x86 game and x64 companion. GPU keyed mutex protects
 // texture contents + frameId; generation publishes a new texture description.
 struct alignas(8) Header {
@@ -41,7 +48,11 @@ struct alignas(8) Header {
     Tracking tracking;
     RenderInfo rendered;
 };
-static_assert(sizeof(Header)==464);
+static_assert(sizeof(Header)==592);
+static_assert(offsetof(Header,tracking)==72 && offsetof(Header,rendered)==328);
+inline bool Compatible(const Header* h,DWORD pid) {
+    return h && h->magic==Magic && h->version==Version && h->pid==pid;
+}
 inline bool ReadTracking(Header* h,Tracking& result) {
     if(!h || InterlockedCompareExchange(&h->trackingLock,1,0))return false;
     result=h->tracking;InterlockedExchange(&h->trackingLock,0);return true;

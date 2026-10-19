@@ -6,16 +6,20 @@
 #include <vector>
 
 class ControllerInput {
-    enum Id {Aim,LeftStick,RightStick,LeftTrigger,RightTrigger,LeftGrip,RightGrip,A,B,X,Y,LeftClick,RightClick,Menu,Count};
+    enum Id {Aim,LeftStick,RightStick,LeftTrigger,RightTrigger,LeftGrip,RightGrip,A,B,X,Y,LeftClick,RightClick,Menu,LeftGripPose,RightGripPose,Count};
     XrActionSet actions{};
     XrAction action[Count]{};
     XrSpace aimSpace{};
+    XrSpace leftGripSpace{},rightGripSpace{};
     GamepadMapping::Mapper mapper;
 public:
     void Reset() {
         if(aimSpace)xrDestroySpace(aimSpace);
+        if(leftGripSpace)xrDestroySpace(leftGripSpace);
+        if(rightGripSpace)xrDestroySpace(rightGripSpace);
         if(actions)xrDestroyActionSet(actions);
         aimSpace=XR_NULL_HANDLE;actions=XR_NULL_HANDLE;
+        leftGripSpace=rightGripSpace=XR_NULL_HANDLE;
         for(auto& a:action)a=XR_NULL_HANDLE;
         mapper.Reset();
     }
@@ -39,7 +43,9 @@ public:
             {"button_y",XR_ACTION_TYPE_BOOLEAN_INPUT,"/user/hand/left/input/y/click"},
             {"left_click",XR_ACTION_TYPE_BOOLEAN_INPUT,"/user/hand/left/input/thumbstick/click"},
             {"right_click",XR_ACTION_TYPE_BOOLEAN_INPUT,"/user/hand/right/input/thumbstick/click"},
-            {"menu",XR_ACTION_TYPE_BOOLEAN_INPUT,"/user/hand/left/input/menu/click"}
+            {"menu",XR_ACTION_TYPE_BOOLEAN_INPUT,"/user/hand/left/input/menu/click"},
+            {"left_hand_grip_pose",XR_ACTION_TYPE_POSE_INPUT,"/user/hand/left/input/grip/pose"},
+            {"right_hand_grip_pose",XR_ACTION_TYPE_POSE_INPUT,"/user/hand/right/input/grip/pose"}
         };
         std::vector<XrActionSuggestedBinding> suggested;
         for(int i=0;i<Count;i++) {
@@ -56,18 +62,23 @@ public:
         if(XR_FAILED(xrSuggestInteractionProfileBindings(instance,&suggestion)))return false;
         // Retain basic aim/menu support for runtimes exposing the simple profile.
         if(XR_SUCCEEDED(xrStringToPath(instance,"/interaction_profiles/khr/simple_controller",&profile))) {
-            XrActionSuggestedBinding simple[]{suggested[Aim],suggested[Menu]};
-            suggestion.interactionProfile=profile;suggestion.countSuggestedBindings=2;suggestion.suggestedBindings=simple;
+            XrActionSuggestedBinding simple[]{suggested[Aim],suggested[Menu],suggested[LeftGripPose],suggested[RightGripPose]};
+            suggestion.interactionProfile=profile;suggestion.countSuggestedBindings=4;suggestion.suggestedBindings=simple;
             xrSuggestInteractionProfileBindings(instance,&suggestion);
         }
         XrSessionActionSetsAttachInfo attach{XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO};
         attach.countActionSets=1;attach.actionSets=&actions;
         if(XR_FAILED(xrAttachSessionActionSets(session,&attach)))return false;
         XrActionSpaceCreateInfo space{XR_TYPE_ACTION_SPACE_CREATE_INFO};space.action=action[Aim];space.poseInActionSpace.orientation.w=1;
-        return XR_SUCCEEDED(xrCreateActionSpace(session,&space,&aimSpace));
+        if(XR_FAILED(xrCreateActionSpace(session,&space,&aimSpace)))return false;
+        space.action=action[LeftGripPose];
+        if(XR_FAILED(xrCreateActionSpace(session,&space,&leftGripSpace)))return false;
+        space.action=action[RightGripPose];
+        return XR_SUCCEEDED(xrCreateActionSpace(session,&space,&rightGripSpace));
     }
     void Sample(XrSession session,XrSpace local,XrTime time,bool focused,Transport::Tracking& tracking) {
         tracking.rightController={};tracking.gamepad={};tracking.controllerButtons=0;
+        tracking.leftGrip={};tracking.rightGrip={};
         if(!aimSpace || !focused){mapper.Reset();return;}
         XrActiveActionSet active{actions,XR_NULL_PATH};
         XrActionsSyncInfo sync{XR_TYPE_ACTIONS_SYNC_INFO};sync.countActiveActionSets=1;sync.activeActionSets=&active;
@@ -80,6 +91,19 @@ public:
                 memcpy(&tracking.rightController.aim,&location.pose,sizeof(Transport::Pose));tracking.rightController.valid=1;
             }
         }
+        auto grip=[&](Id id,XrSpace source,Transport::GripPose& out) {
+            if(!source)return;
+            XrActionStateGetInfo get{XR_TYPE_ACTION_STATE_GET_INFO};get.action=action[id];
+            XrActionStatePose activePose{XR_TYPE_ACTION_STATE_POSE};
+            if(XR_FAILED(xrGetActionStatePose(session,&get,&activePose)) || !activePose.isActive)return;
+            XrSpaceLocation location{XR_TYPE_SPACE_LOCATION};
+            constexpr XrSpaceLocationFlags required=XR_SPACE_LOCATION_POSITION_VALID_BIT|XR_SPACE_LOCATION_ORIENTATION_VALID_BIT;
+            if(XR_FAILED(xrLocateSpace(source,local,time,&location)) || (location.locationFlags&required)!=required)return;
+            static_assert(sizeof(location.pose)==sizeof(out.pose));
+            memcpy(&out.pose,&location.pose,sizeof(out.pose));out.valid=1;
+        };
+        grip(LeftGripPose,leftGripSpace,tracking.leftGrip);
+        grip(RightGripPose,rightGripSpace,tracking.rightGrip);
         GamepadMapping::Input input;
         auto boolean=[&](Id id) {
             info.action=action[id];XrActionStateBoolean state{XR_TYPE_ACTION_STATE_BOOLEAN};
