@@ -54,6 +54,12 @@ StanceHold=1
 HeadSwayYawMs=667
 HeadSwayYawMs2=526
 
+; Stutter fix from HRDCfix (imring, MIT). One of the game's wait loops calls
+; Sleep(1) without raising the Windows timer resolution, so each call can last
+; a whole timer tick - about 15.6 ms, nearly two frames at 120 Hz. This makes it
+; Sleep(0), which only yields. The loop's bytes are checked before patching.
+SleepFix=1
+
 
 ; ---------------------------------------------------------------------------
 ; Motion controllers, hands and weapons
@@ -68,6 +74,17 @@ ExperimentalMotionControls=1
 InteractionAim=Controller
 ; Walk where you're looking.
 MovementDirection=Headset
+
+; Clicking the left stick normally has to be held for 150 ms before it
+; registers, so a stray tap does nothing. That delay is noticeable on a control
+; you use as often as sprint, so it is off here. Set it to 150 to get the
+; original behaviour back.
+LeftStickClickDelayMs=0
+
+; Bring a scoped rifle to your eye and the whole headset becomes the scope,
+; aimed with the controller, instead of a flat picture-in-picture. Needs the
+; right-hand weapon pose above.
+ImmersiveScope=1
 
 ; Jensen's hands drawn at your controllers, with the weapon carried using the
 ; game's own hand-to-weapon relationship. No calibration is needed: the hand
