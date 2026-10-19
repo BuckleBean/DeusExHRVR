@@ -28,9 +28,11 @@ Other executable versions and the original non-Director's Cut release are not su
 
 4. Launch `DXHRDC.exe` and load a save. Gameplay enters full VR automatically. Press **F9** to recenter if needed.
 
-For motion-controlled weapons, copy `DeusExHRVR.ini.example` beside `DXHRDC.exe` as `DeusExHRVR.ini`, set `ExperimentalMotionControls=1`, and restart. `MotionControls=1` enables controller buttons; `InteractionAim` and `MovementDirection` independently accept `Mouse`, `Headset`, or `Controller`. The confirmed local setup uses `WorldUnitsPerMetre=300` with both direction settings at `Headset`; adjust scale for comfort. Upgrading replaces both the game DLL and its companion together. Existing INI settings are preserved.
+On a first install the installer also writes `DeusExHRVR.ini` beside `DXHRDC.exe`, containing the configuration the mod is tested with: controller hands, the motion-sickness fixes, the comfort options, snap turn, and motion-controlled weapons. **If you already have a `DeusExHRVR.ini`, the installer leaves it alone** — upgrading never changes your settings, and never reads them.
 
-For a ready-made comfort setup, copy `DeusExHRVR.ini.comfort` beside `DXHRDC.exe` as `DeusExHRVR.ini` instead. It turns on the options below that remove imposed head motion (yaw-only camera, stance hold, heading-swing filtering, fixed conversation camera), snap turn at 30°, controller interaction aim and headset walking direction, with `WorldUnitsPerMetre=300`. It keeps the stock button layout. Nothing in it is enabled by default.
+**Snap turn is on, and it is a matter of taste.** It replaces the right stick's smooth, accelerating camera turn with an instant step, because smooth turning makes many people sick in VR — but plenty of people dislike snapping and are fine with smooth. To go back to the game's original turning, open `DeusExHRVR.ini`, set `SnapTurn=0`, and restart. Nothing else depends on it. To keep snapping but change the step, set `SnapTurnDegrees` (30 by default, 45 is a common alternative).
+
+To change anything else, edit `DeusExHRVR.ini` and restart the game. `DeusExHRVR.ini.example` lists every option the mod has with its default and what it does; `DeusExHRVR.ini.comfort` is a copy of the configuration the installer writes. Deleting a line returns that option to its default, which for most of them means off. `InteractionAim` and `MovementDirection` independently accept `Mouse`, `Headset`, or `Controller`; `WorldUnitsPerMetre` is world scale and the tested value is 300. Upgrading replaces both the game DLL and its companion together.
 
 Run the installer as the Windows user who plays the game. It backs up replaced files and original graphics settings to `DeusExHRVR-backup` in the game folder. It enables DX11/native stereo and disables VSync and antialiasing for the tested configuration.
 
@@ -192,6 +194,51 @@ RightTrigger=RT
 Inputs are `RightA`, `RightB`, `LeftX`, `LeftY`, `LeftGrip`, `RightGrip`, `LeftStickClick`, `RightStickClick`, `LeftTrigger`, `RightTrigger`, plus `RightStickUp` and `RightStickDown` in `[Buttons]` (below). Targets are `A`, `B`, `X`, `Y`, `LB`, `RB`, `LS`/`L3`, `RS`/`R3`, `LT`, `RT`, `Back`, `Start`, `DPadUp`, `DPadDown`, `DPadLeft`, `DPadRight`, `QuickSave`, or `None`. `QuickSave` presses F5, the game's quicksave key, which has no gamepad binding (for example `LeftXHoldMs=500` with `LeftXTap=QuickSave`). Triggers may be mapped to buttons and buttons to triggers. `<Input>HoldMs=250` makes that input send its target only after it has been held that long, so accidental taps send nothing; with a hold delay set, `<Input>Tap=A` sends a different target as a 120 ms pulse when the input is released early. Unrecognized names are logged and ignored. Restart after editing. The left menu button is not remappable: a tap sends Back (in-game menu) and a hold of 1.5 seconds sends Start (pause), as in the table above.
 
 `RightStickUp` and `RightStickDown` under `[Buttons]` can hold a button while the right stick is pushed within 30 degrees of vertical during gameplay (for example `RightStickUp=A` to jump and `RightStickDown=LS` to crouch). This gives up vertical stick aiming, which you don't need when aiming with the controller (`ExperimentalMotionControls=1`). It works with snap turn or smooth turn. With `SnapTurn=0`, setting either key takes the stick's vertical axis for these buttons and leaves the horizontal axis for smooth turning; a push inside the 30-degree cone also holds the turn, so jumping or crouching doesn't drift the view. Menus, terminals and the scope keep the native right stick.
+
+## Controller hands
+
+With motion controls enabled the mod draws Jensen's hands at your controllers, instead of showing the arms the game animates. An equipped weapon is carried with the right hand, using the game's own hand-to-weapon relationship, so the gun sits in the hand the way the game intends rather than at a learned offset. The installed configuration turns this on; the settings are:
+
+```ini
+ExperimentalMotionControls=1
+ControllerHands=1
+ControllerHandsMode=15
+ControllerHandsModelAlignment=1
+ControllerHandsWeapon=1
+ControllerHandsLeft=1
+WeaponCalibration=0
+```
+
+`ControllerHands` defaults to `0`. Restart the game after changing any of them.
+
+**No calibration is required.** `ControllerHandsMode=15` with `ControllerHandsModelAlignment=1` takes the hand position from the player model's own skeleton, so there is no gesture to perform, no file to build, and nothing to redo if you change controllers. `ControllerHandsCalibrate=0` and `WeaponCalibration=0` keep the older measured paths out of the way; they are not needed here and are not recommended.
+
+The left hand needs the 64-bit companion that carries the left controller's pose. The DLL and companion are installed together and must match — an upgrade replaces both. `ControllerHandsLeft=0` leaves the right hand alone.
+
+`ControllerHandsNeutralWrist=1` (the default) holds the wrist at the model's own resting angle to the palm. Without it the wrist keeps the animation the game is playing underneath, which shows up as the wrist wiggling while you sprint and sitting at a different angle for each weapon. Set it to `0` to see the game's animated wrist instead.
+
+### When the hands step aside
+
+The game moves its camera out of Jensen's eyes for several things: taking cover, climbing ladders, lying down, and some scripted shots that ride an animation bone. Hands at your controllers only make sense while you are looking out of his eyes, so in those modes the mod steps aside and the game draws Jensen normally.
+
+`ControllerHandsSuspendModes` is a bit mask over the game's camera modes and defaults to `342` — cover, ladders, the animation-bone camera, lying down and the orbit camera. First-person combat and iron sights are not included, and the conversation and hacking cameras have their own handling. There is rarely a reason to change it.
+
+> **Known limitation — weapons in third-person views.** When the game takes the camera out of Jensen's eyes — cover, ladders and some scripted shots — the controller hands step aside and Jensen is drawn normally, but an equipped weapon still follows your controller rather than returning to his hand. You will see the gun beside you while his hands are empty, and its angle differs from the one you are used to. Aiming and firing still work. This is a known limitation, not a fault in your setup.
+
+### If a player model is not recognized
+
+The hands are built against the exact layout of the player model. The game does not use one model throughout: a second player model, with 162 bones instead of 223, appears from **M1 - Searching for Proof** (Chapter 9, Corporate Warfare) onward at Tai Yong Medical. Both are supported.
+
+If a model turns up that the mod does not recognize, it does not guess at it. The hands are not drawn, Jensen's body is hidden, and the weapon is carried at your controller on its own. Aiming, firing and muzzle effects keep working, so the game stays playable — but this is a degraded state, not a second way to play, and you should not meet it in normal use. The mod keeps retrying about once a second, so a supported model is picked up again on the next load or chapter change without restarting the game.
+
+**If you lose your hands and they do not come back,** the mod has met a model it cannot build against. `DeusExHRVR-hand-only.log` identifies it:
+
+```
+handOnly version=3 ready=0 rejected=12 rejectionStage=1 observedBones=...
+observedLayout=... observedIndices=...
+```
+
+`observedBones`, `observedLayout` and `observedIndices` describe the model that was refused. Those three values are what a new model needs to be added, so include that line when reporting it.
 
 ## Restore the original game
 

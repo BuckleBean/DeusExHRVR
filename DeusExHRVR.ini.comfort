@@ -1,21 +1,50 @@
 [VR]
-; Optional comfort preset. Nothing here is on by default; to use it, copy this
-; file beside DXHRDC.exe as DeusExHRVR.ini (or copy the lines you want into your
-; existing DeusExHRVR.ini) and restart the game. Anything not listed keeps its
-; default. See DeusExHRVR.ini.example for every option and what it does.
+; This is the setup the installer puts in place as DeusExHRVR.ini the first time
+; you install, and it is the configuration the mod is tested with. If you
+; already had a DeusExHRVR.ini, the installer leaves it exactly as it is and
+; never touches it again.
+;
+; To change anything: edit DeusExHRVR.ini beside DXHRDC.exe and restart the
+; game. Every option the mod has, with its default, is listed in
+; DeusExHRVR.ini.example. Deleting a line here returns that option to its
+; default, which for most of them means off.
 ;
 ; Tested on one setup: Quest 3 over Virtual Desktop, VDXR runtime.
 
-; World scale. The README's confirmed local setup uses 300.
-WorldUnitsPerMetre=300
+
+; ---------------------------------------------------------------------------
+; TURNING - this one is personal taste, and you may well want to change it
+; ---------------------------------------------------------------------------
+; Snap turn replaces the right stick's smooth, accelerating camera turn with an
+; instant step. Smooth turning makes a lot of people sick in VR, so it is on
+; here; plenty of other people dislike snapping and are fine with smooth.
+;
+;   SnapTurn=1   snap in steps of SnapTurnDegrees   (set here)
+;   SnapTurn=0   the game's original smooth turning
+;
+; If you prefer smooth turning, set SnapTurn=0 and restart. Nothing else
+; depends on it. If you keep snap turn but want bigger or smaller steps, change
+; SnapTurnDegrees - 30 is the default, 45 is a common alternative.
+SnapTurn=1
+SnapTurnDegrees=30
+
+
+; ---------------------------------------------------------------------------
+; Keeping the game's animation out of your view
+; ---------------------------------------------------------------------------
+; The game builds its camera from an animated skeleton, so walking, sprinting
+; and drawing a weapon move the camera. On a monitor that reads as normal
+; animation; in a headset it is motion you did not make, and it is the main
+; cause of sickness with this game. These take the view from your aiming input
+; instead, before the animation is applied.
+NativeLookPitchLock=1
+NativeLookHeading=1
+NativeCameraPosition=1
 
 ; The headset supplies all tilt: no aiming pitch, and none of the camera's own
 ; pitch or roll from the walk animation.
 LockVerticalCamera=1
 YawOnlyCamera=1
-
-; Stay at Jensen's eyes in conversations instead of cutting between shots.
-FixedDialogueCamera=1
 
 ; Hold the eye height: removes walking bob and the bounce when you stop after
 ; crouch-walking or sprinting.
@@ -25,25 +54,51 @@ StanceHold=1
 HeadSwayYawMs=667
 HeadSwayYawMs2=526
 
-; Snap turn instead of the stick's accelerating smooth turn.
-SnapTurn=1
-SnapTurnDegrees=30
 
-; Motion controllers: buttons, directions and the right-hand weapon pose.
-; ExperimentalMotionControls is the weapon experiment; set it to 0 if the gun
+; ---------------------------------------------------------------------------
+; Motion controllers, hands and weapons
+; ---------------------------------------------------------------------------
+; MotionControls covers buttons and directions. ExperimentalMotionControls is
+; the right-hand weapon pose, which the hands need; set it to 0 if the gun
 ; misbehaves.
 MotionControls=1
 ExperimentalMotionControls=1
+
 ; Point at items with the right controller instead of leaning your head at them.
 InteractionAim=Controller
 ; Walk where you're looking.
 MovementDirection=Headset
 
-; Keep the game's own walk and equip animation out of the VR view. Without
-; these, a save whose look angle is steep can make the whole scene sway while
-; you walk, sprint or draw a weapon. They need the two settings above.
-NativeLookPitchLock=1
-NativeLookHeading=1
-NativeCameraPosition=1
+; Jensen's hands drawn at your controllers, with the weapon carried using the
+; game's own hand-to-weapon relationship. No calibration is needed: the hand
+; position comes from the player model's own skeleton.
+ControllerHands=1
+ControllerHandsMode=15
+ControllerHandsModelAlignment=1
+ControllerHandsWeapon=1
+ControllerHandsLeft=1
+ControllerHandsNeutralWrist=1
+ControllerHandsSuspendModes=342
+ControllerHandsPose=0
+ControllerHandsCalibrate=0
+ControllerHandsArmGestureMs=0
+WeaponCalibration=0
+
+
+; ---------------------------------------------------------------------------
+; World scale
+; ---------------------------------------------------------------------------
+; Higher values make the world look smaller and increase close-range depth.
+; 300 is the tested value; the accepted range is 10-1000.
+WorldUnitsPerMetre=300
+
+
+; ---------------------------------------------------------------------------
+; Off on purpose
+; ---------------------------------------------------------------------------
+; Holds the view at Jensen's eyes through a conversation instead of letting the
+; game cut between shots. It can leave the view at the wrong height in some
+; conversations, so it is off until that is fixed. Set it to 1 to try it.
+FixedDialogueCamera=0
 
 ; No [Buttons] or [ScreenButtons] sections: the stock button layout is kept.

@@ -44,4 +44,24 @@ foreach($f in $files){
 $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $manifestPath -Encoding utf8
 foreach($f in $files){$target=Join-Path $gameRoot $f;New-Item -ItemType Directory -Path (Split-Path $target) -Force|Out-Null;Copy-Item -LiteralPath (Join-Path $payload $f) -Destination $target -Force}
 foreach($key in $changes.Keys){New-ItemProperty -LiteralPath $regPath -Name $key -Value $changes[$key] -PropertyType DWord -Force|Out-Null}
+
+# First install only: put the tested configuration in place, so the mod is
+# actually the tested experience out of the box rather than compiled defaults
+# (which leave the hands, the comfort options and the motion-sickness fixes all
+# off). An existing DeusExHRVR.ini is somebody's own setup and is never read,
+# written or backed up here - upgrades keep it untouched.
+$iniTarget=Join-Path $gameRoot 'DeusExHRVR.ini'
+$iniSource=Join-Path $PSScriptRoot 'DeusExHRVR.ini.comfort'
+if(Test-Path -LiteralPath $iniTarget){
+    $iniNote='Kept your existing DeusExHRVR.ini.'
+}elseif(Test-Path -LiteralPath $iniSource){
+    # No BOM: the mod reads this with GetPrivateProfile*, which silently ignores
+    # the whole [VR] section if the file starts with one.
+    [IO.File]::WriteAllText($iniTarget,[IO.File]::ReadAllText($iniSource),(New-Object Text.UTF8Encoding $false))
+    $iniNote='Wrote the tested configuration to DeusExHRVR.ini. Snap turn is on; see the comments in that file to use smooth turning instead.'
+}else{
+    $iniNote='DeusExHRVR.ini.comfort not found; no configuration was written and the mod will run on its defaults.'
+}
+
 'Installed native stereo bridge. Original files/settings are in '+$backupRoot
+$iniNote

@@ -59,6 +59,35 @@ ControllerHideArms=1
 ; Position the muzzle this far ahead of the controller aim pose (0-1 metre).
 ControllerMuzzleForwardMetres=0.25
 
+; Draw Jensen's hands at your controllers instead of the arms the game
+; animates, carrying an equipped weapon with the right hand. Needs
+; ExperimentalMotionControls=1. Mode 15 with model alignment takes the hand
+; position from the player model's own skeleton, so no calibration is needed;
+; this is the combination the installed configuration uses and the only one
+; that is tested. See the README for what happens in cover and on an
+; unrecognised player model. Restart to apply.
+ControllerHands=0
+ControllerHandsMode=0
+ControllerHandsModelAlignment=0
+; Carry an equipped weapon with the hand.
+ControllerHandsWeapon=0
+; Draw the left hand too. Needs the companion that carries its pose.
+ControllerHandsLeft=1
+; Hold the wrist at the model's resting angle instead of letting the game's
+; animation move it, which otherwise wiggles while sprinting and sits at a
+; different angle per weapon.
+ControllerHandsNeutralWrist=1
+; Which camera modes the hands step aside for, as a bit mask over the game's
+; modes. 342 = cover, ladders, the animation-bone camera, lying down, orbit.
+ControllerHandsSuspendModes=342
+; Older measured paths, superseded by model alignment and not recommended.
+ControllerHandsPose=0
+ControllerHandsCalibrate=0
+ControllerHandsArmGestureMs=1500
+; Learn and store a per-weapon grip offset. Leave at 0 with the hands; the
+; game's own hand-to-weapon relationship is used instead.
+WeaponCalibration=1
+
 ; Keep only heading (yaw) from the head pose captured when tracking starts and
 ; on F9, so a head tilted up or down at that moment does not tilt the world.
 ; Position, including height, is still captured. 0 restores the old behavior.
