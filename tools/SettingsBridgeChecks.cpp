@@ -22,7 +22,7 @@ int wmain(int argc,wchar_t** argv) {
     GamepadBridge::originalGet=RealGet;
     GamepadBridge::MenuTick(2);assert(h.menu.eligible&&h.menu.snapEnabled&&h.menu.degrees==30);
     auto request=[&](uint32_t id,float angle,unsigned reasons=2){
-        h.menu.hostTick=GetTickCount64();h.menu.blocked=1;h.menu.request=id;h.menu.requestedDegrees=angle;GamepadBridge::MenuTick(reasons);
+        h.menu.hostTick=GetTickCount64();h.menu.blocked=1;h.menu.request=id;h.menu.requestedDegrees=angle;h.menu.requestedSnap=1;GamepadBridge::MenuTick(reasons);
     };
     request(1,45);assert(h.menu.acknowledged==1&&h.menu.degrees==45&&GamepadBridge::snapCounts==450);
     request(1,90);assert(h.menu.degrees==45); // duplicate request cannot reapply
@@ -49,6 +49,22 @@ int wmain(int argc,wchar_t** argv) {
     wcscpy_s(GamepadBridge::configPath,missing.c_str());request(5,60);
     for(int n=0;n<200&&h.menu.result!=3;++n){Sleep(10);GamepadBridge::MenuTick(2);}
     assert(h.menu.acknowledged==5&&h.menu.result==3&&h.menu.saved!=5&&h.menu.degrees==60);
+    wcscpy_s(GamepadBridge::configPath,path.c_str());
+    auto oldCounts=GamepadBridge::snapCounts;auto oldAngle=GamepadBridge::snapDegrees;
+    h.menu.hostTick=GetTickCount64();h.menu.request=6;h.menu.requestedSnap=0;h.menu.requestedDegrees=oldAngle;
+    GamepadBridge::snapPending=GamepadBridge::snapMoving=GamepadBridge::snapArmed=true;
+    GamepadBridge::MenuTick(2);
+    assert(!h.menu.snapEnabled&&!GamepadBridge::snapEnabled&&GamepadBridge::snapCounts==oldCounts);
+    assert(!GamepadBridge::snapPending&&!GamepadBridge::snapMoving&&!GamepadBridge::snapArmed);
+    for(int n=0;n<200&&h.menu.saved!=6;++n){Sleep(10);GamepadBridge::MenuTick(2);}
+    assert(h.menu.saved==6&&GetPrivateProfileIntW(L"VR",L"SnapTurn",2,path.c_str())==0);
+    GamepadBridge::LoadSnap();assert(!GamepadBridge::snapEnabled&&GamepadBridge::snapDegrees==oldAngle);
+    request(7,oldAngle);assert(h.menu.snapEnabled&&GamepadBridge::snapCounts==oldCounts);
+    for(int n=0;n<200&&h.menu.saved!=7;++n){Sleep(10);GamepadBridge::MenuTick(2);}
+    assert(h.menu.saved==7&&GetPrivateProfileIntW(L"VR",L"SnapTurn",2,path.c_str())==1);
+    GamepadBridge::LoadSnap();assert(GamepadBridge::snapEnabled&&GamepadBridge::snapDegrees==oldAngle);
+    h.menu.request=8;h.menu.requestedSnap=2;h.menu.hostTick=GetTickCount64();GamepadBridge::MenuTick(2);
+    assert(h.menu.result==2&&h.menu.snapEnabled&&GamepadBridge::snapCounts==oldCounts);
     GamepadBridge::SetChannel(nullptr);
     printf("PASS %zu-bit actual bridge: request/ack/save/error, duplicate/stale/refused edits, calibration scaling, virtual/physical input and focus recovery\n",sizeof(void*)*8);
 }

@@ -105,7 +105,7 @@ struct Bridge {
         if(menuUI.blocked){controller.SuppressMapping();t.gamepad={};t.gamepad.valid=1;t.controllerButtons=0;}
         if(Transport::LockMenu(trackingChannel)) {
             auto& m=trackingChannel->menu;m.hostTick=t.tick;m.blocked=menuUI.blocked;
-            m.request=menuUI.request;m.requestedDegrees=menuUI.requested;
+            m.request=menuUI.request;m.requestedDegrees=menuUI.requested;m.requestedSnap=menuUI.requestedSnap;
             m.pointerX=menuUI.x/SettingsMenu::Width;m.pointerY=menuUI.y/SettingsMenu::Height;
             m.pointerActive=menuUI.nativePointer;m.pointerDown=menuUI.nativeDown;
             Transport::UnlockMenu(trackingChannel);

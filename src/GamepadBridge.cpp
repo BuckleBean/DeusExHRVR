@@ -439,10 +439,11 @@ void MenuTick(unsigned screenReasons) {
     m.snapEnabled=snapEnabled;m.degrees=snapDegrees;
     if(m.request!=m.acknowledged && Transport::Fresh(m.hostTick,now)) {
         m.acknowledged=m.request;
-        if(m.eligible&&m.blocked&&snapEnabled&&SettingsMenu::ApplyAngle(m.requestedDegrees,snapDegrees,snapCounts)) {
+        if(m.eligible&&m.blocked&&m.requestedSnap<=1&&SettingsMenu::ApplyAngle(m.requestedDegrees,snapDegrees,snapCounts)) {
             snapPending=snapMoving=snapArmed=false;snapHoldUntil=0;
+            snapEnabled=m.requestedSnap!=0;m.snapEnabled=snapEnabled;
             m.degrees=snapDegrees;m.result=1;
-            SettingsWriter().Queue(configPath,snapCounts,m.request,snapDegrees);
+            SettingsWriter().Queue(configPath,snapCounts,m.request,snapDegrees,int(snapEnabled));
         } else m.result=2;
     }
     auto& writer=SettingsWriter();

@@ -9,7 +9,7 @@
 
 int wmain(int argc,wchar_t** argv) {
     assert(argc==2);std::filesystem::path out=argv[1];std::filesystem::create_directories(out);
-    Transport::Header h{};h.magic=Transport::Magic;h.version=7;h.pid=42;
+    Transport::Header h{};h.magic=Transport::Magic;h.version=8;h.pid=42;
     assert(!Transport::Compatible(&h,42));h.version=Transport::Version;assert(Transport::Compatible(&h,42));
     assert(Transport::LockMenu(&h));Transport::MenuState read{};assert(!Transport::ReadMenu(&h,read));Transport::UnlockMenu(&h);
     assert(Transport::ReadMenu(&h,read));assert(Transport::Fresh(100,599));assert(!Transport::Fresh(100,600));assert(!Transport::Fresh(100,99));
@@ -58,6 +58,15 @@ int wmain(int argc,wchar_t** argv) {
     in.rightTrigger=0;update(1250,450);in.rightX=.8f;update(1250,450);
     assert(s.draft==75&&s.request==3);update(1250,450);assert(s.draft==75);
     in.rightX=0;update(1250,450);in.rightX=-.8f;update(1250,450);assert(s.draft==60);
+    // Mode edits are drafts; smooth preserves angle and disables angle edits.
+    s={};in={};in.active=true;game={};game.snapEnabled=1;game.degrees=30;
+    click(1200,450);click(1200,350);assert(!s.draftSnap&&s.request==0);
+    click(1450,465);assert(s.draft==30);click(1200,730);assert(!s.open&&s.request==0);
+    click(1200,450);assert(s.draftSnap);click(1200,350);click(1200,650);
+    assert(s.saving&&s.request==1&&!s.requestedSnap&&s.requested==30);
+    game.acknowledged=game.saved=1;game.snapEnabled=0;in.rightTrigger=0;update(1200,650);
+    click(1200,450);assert(!s.draftSnap);click(1200,350);click(1450,465);
+    assert(s.draftSnap&&s.draft==45);click(1200,650);assert(s.requestedSnap&&s.requested==45);
     // Native-menu hover and click route independently of the VR panel.
     s={};in={};in.active=true;update(800,450);assert(s.nativePointer&&!s.nativeDown&&!s.blocked);
     in.rightTrigger=.1f;update(800,450);assert(s.blocked&&!s.nativeDown);
@@ -108,7 +117,7 @@ int wmain(int argc,wchar_t** argv) {
     assert(writer.completed.load()==101&&writer.failed.load()!=101);
     assert(GetPrivateProfileIntW(L"VR",L"SnapTurnDegrees",0,ini.c_str())==60);
     assert(GetPrivateProfileIntW(L"VR",L"SnapTurnMouseCounts",0,ini.c_str())==600);
-    SettingsMenuDraw draw;s={};s.visible=true;s.draft=s.original=30;game={};game.snapEnabled=1;game.degrees=30;
+    SettingsMenuDraw draw;s={};s.visible=true;s.draftSnap=s.originalSnap=true;s.draft=s.original=30;game={};game.snapEnabled=1;game.degrees=30;
     assert(draw.Save((out/L"menu-entry.bmp").c_str(),s,game));s.open=true;s.pointer=true;s.x=1450;s.y=465;
     assert(draw.Save((out/L"menu-panel.bmp").c_str(),s,game));
     auto pixels=static_cast<const uint32_t*>(draw.Draw(s,game));

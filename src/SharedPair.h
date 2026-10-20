@@ -4,11 +4,11 @@
 #include <cwchar>
 #include <cstddef>
 namespace Transport {
-inline constexpr uint32_t Magic=0x52485844, Version=8;
+inline constexpr uint32_t Magic=0x52485844, Version=9;
 struct alignas(8) MenuState {
     uint64_t gameTick,hostTick;
     uint32_t eligible,blocked,snapEnabled,request;
-    uint32_t acknowledged,saved,result,reserved;
+    uint32_t acknowledged,saved,result,requestedSnap;
     float degrees,requestedDegrees;
     float pointerX,pointerY;
     uint32_t pointerActive,pointerDown;
