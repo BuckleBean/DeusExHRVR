@@ -1612,8 +1612,14 @@ float nativeHeadingPeakDelta{};
 // above all three anomalies it was meant to catch, so they were applied and
 // never latched. 5 leaves four times the headroom over the observed normal
 // maximum and still rejects at well under half the smallest anomaly.
+// One source of truth for the default. It used to be written twice - here and
+// as the INI read's fallback string - and on 2026-10-20 they diverged: the
+// initialiser moved to 5 while the fallback stayed 60, so an absent key read
+// back 60 and silently kept the old behaviour through a rebuild, an install and
+// a headset test. Install() formats its fallback from this constant.
+constexpr float nativeHeadingMaxDegDefault=5.f;
 uint64_t nativeHeadingRejected{},nativeHeadingCalmSince{};
-float nativeHeadingMaxDeg=5.f,nativeHeadingRejectedPeak{};
+float nativeHeadingMaxDeg=nativeHeadingMaxDegDefault,nativeHeadingRejectedPeak{};
 bool nativeHeadingLatched{};
 constexpr float nativeHeadingCalmDeg=2.f;
 constexpr uint64_t nativeHeadingCalmMs=250;
@@ -4177,7 +4183,8 @@ void Install() {
     nativeCameraPosition=GetPrivateProfileIntW(L"VR",L"NativeCameraPosition",0,config)!=0;
     {
         wchar_t headingLimit[32];
-        GetPrivateProfileStringW(L"VR",L"NativeLookHeadingMaxDeg",L"60",headingLimit,32,config);
+        wchar_t fallback[32];swprintf_s(fallback,L"%g",double(nativeHeadingMaxDegDefault));
+        GetPrivateProfileStringW(L"VR",L"NativeLookHeadingMaxDeg",fallback,headingLimit,32,config);
         float value=static_cast<float>(_wtof(headingLimit));
         if(std::isfinite(value) && value>=0 && value<=180)nativeHeadingMaxDeg=value;
     }
@@ -4343,8 +4350,9 @@ void Install() {
         }
     }
     FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")) {
-        fprintf(f,"Camera hooks base=%p enabled=%d unitsPerMetre=%g lockVerticalCamera=%d levelRecenter=%d levelMenu=%d yawOnlyCamera=%d stanceHold=%d/%g/%g yawMs=%d/%d yawLimit=%g sideSwayHold=%d sleepFix=%d weaponCalibration=%d handsWeapon=%d controllerHideArms=%d controllerHands=%d/%d/%d/%d/%gcm split=%d/%d keep=%d-%d drive=%d calibrated=%d trim=%g/%g/%g fixedDialogueCamera=%d F6=toggle F9=recenter\n",reinterpret_cast<void*>(base),enabled,worldScale,lockVerticalCamera,levelRecenter,levelMenu,yawOnlyCamera,stanceHold.enabled,stanceHold.trigger,stanceHold.rate,yawSwing.a.windowMs[0],yawSwing.b.windowMs[0],yawSwing.a.limit[0],swayHold.windowMs,int(sleepFix),int(weaponCalibrationEnabled),int(controllerHandsWeapon),int(controllerHideArms),int(controllerHands),controllerHandBone,controllerHandBone2,controllerHandsMode,controllerHandsRadius,controllerHandsSplitA,controllerHandsSplitB,controllerHandsKeepFrom,controllerHandsKeepTo,
-            controllerHandsDriveBone,int(handCalibrated),handTrim[0],handTrim[1],handTrim[2],int(fixedDialogueCamera));fclose(f);
+        fprintf(f,"Camera hooks base=%p enabled=%d unitsPerMetre=%g lockVerticalCamera=%d levelRecenter=%d levelMenu=%d yawOnlyCamera=%d stanceHold=%d/%g/%g yawMs=%d/%d yawLimit=%g sideSwayHold=%d sleepFix=%d weaponCalibration=%d handsWeapon=%d controllerHideArms=%d controllerHands=%d/%d/%d/%d/%gcm split=%d/%d keep=%d-%d drive=%d calibrated=%d trim=%g/%g/%g fixedDialogueCamera=%d nativeLook=%d/%d/%d headingMaxDeg=%g F6=toggle F9=recenter\n",reinterpret_cast<void*>(base),enabled,worldScale,lockVerticalCamera,levelRecenter,levelMenu,yawOnlyCamera,stanceHold.enabled,stanceHold.trigger,stanceHold.rate,yawSwing.a.windowMs[0],yawSwing.b.windowMs[0],yawSwing.a.limit[0],swayHold.windowMs,int(sleepFix),int(weaponCalibrationEnabled),int(controllerHandsWeapon),int(controllerHideArms),int(controllerHands),controllerHandBone,controllerHandBone2,controllerHandsMode,controllerHandsRadius,controllerHandsSplitA,controllerHandsSplitB,controllerHandsKeepFrom,controllerHandsKeepTo,
+            controllerHandsDriveBone,int(handCalibrated),handTrim[0],handTrim[1],handTrim[2],int(fixedDialogueCamera),
+            int(nativeLookPitchLock),int(nativeLookHeading),int(nativeCameraPosition),nativeHeadingMaxDeg);fclose(f);
     }
 }
 }
