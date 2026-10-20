@@ -27,7 +27,7 @@ NativeLookHeading=0
 ; Take the VR camera's horizontal position from the player's own position,
 ; discarding the animation's sideways offset. Needs NativeLookHeading.
 NativeCameraPosition=0
-; Safety limit on NativeLookHeading, in degrees. The aiming yaw replaces the
+; Safety limit on NativeLookHeading, in degrees (default 5). The aiming yaw replaces the
 ; camera's heading only while the two still agree about where you are facing.
 ; A scripted third-person shot - a takedown, Icarus, Typhoon - swings the camera
 ; away from your body on a frame that still looks like ordinary gameplay to
@@ -38,10 +38,10 @@ NativeCameraPosition=0
 ; body, the disagreement sweeps down through the limit rather than stopping at
 ; it, so the rejection latches: once out it stays out until the two headings
 ; agree within 2 degrees for a continuous 250 ms. Ordinary play sits at about
-; 0.1 degrees, so the limit never binds during normal movement and the latch
-; clears immediately. 0 disables both and always substitutes, which is the
-; behaviour before October 20, 2026. Restart after changing it.
-NativeLookHeadingMaxDeg=60
+; 0.1 degrees and peaks near 1.2, so the limit never binds during normal
+; movement and the latch clears immediately. 0 disables both and always
+; substitutes, the behaviour before October 20, 2026. Restart after changing it.
+NativeLookHeadingMaxDeg=5
 
 ; Master switch for ALL right-controller features. 0 disables controller
 ; tracking, Xbox button emulation, weapon motion, and controller directions.

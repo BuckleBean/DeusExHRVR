@@ -1605,8 +1605,15 @@ float nativeHeadingPeakDelta{};
 // within nativeHeadingCalmDeg for a continuous nativeHeadingCalmMs, rather
 // than resuming the moment the sweep crosses the limit. Ordinary play sits at
 // 0.1 deg, so the latch clears almost immediately in normal movement.
+// The limit is 5 because that is where the measurement put it, not a guess. In
+// Mark's 2026-10-20 session, 56 logged windows under the latched build split
+// cleanly: 53 of them applied between 0 and 1.22 deg, and the only others were
+// 12.29, 32.48 and 51.03, with nothing in between. The first limit of 60 sat
+// above all three anomalies it was meant to catch, so they were applied and
+// never latched. 5 leaves four times the headroom over the observed normal
+// maximum and still rejects at well under half the smallest anomaly.
 uint64_t nativeHeadingRejected{},nativeHeadingCalmSince{};
-float nativeHeadingMaxDeg=60.f,nativeHeadingRejectedPeak{};
+float nativeHeadingMaxDeg=5.f,nativeHeadingRejectedPeak{};
 bool nativeHeadingLatched{};
 constexpr float nativeHeadingCalmDeg=2.f;
 constexpr uint64_t nativeHeadingCalmMs=250;
