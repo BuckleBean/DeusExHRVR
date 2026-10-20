@@ -60,6 +60,10 @@ struct Bridge {
     std::vector<XrSwapchainImageD3D11KHR> menuImages;
     XrCompositionLayerQuad menuLayer{XR_TYPE_COMPOSITION_LAYER_QUAD};
     bool menuReady{},menuFailed{};
+    DXGI_FORMAT menuFormat=DXGI_FORMAT_UNKNOWN;
+    std::vector<uint32_t> menuPixels;
+    bool menuWasVisible{},menuWasOpen{};
+    uint32_t menuLastRequest{},menuLastAck{},menuLastResult{},menuLastSaved{};
     bool EnsureMenu() {
         if(menuReady)return true;
         if(menuFailed)return false;
@@ -68,16 +72,19 @@ struct Bridge {
         if(XR_FAILED(xrGetSystemProperties(instance,system,&props))||props.graphicsProperties.maxLayerCount<3)return false;
         uint32_t n{};if(XR_FAILED(xrEnumerateSwapchainFormats(session,0,&n,nullptr)))return false;
         std::vector<int64_t> formats(n);if(XR_FAILED(xrEnumerateSwapchainFormats(session,n,&n,formats.data())))return false;
-        int64_t fmt=DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
-        if(std::find(formats.begin(),formats.end(),fmt)==formats.end())return false;
+        for(auto candidate:{DXGI_FORMAT_B8G8R8A8_UNORM_SRGB,DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
+                            DXGI_FORMAT_B8G8R8A8_UNORM,DXGI_FORMAT_R8G8B8A8_UNORM}) {
+            if(std::find(formats.begin(),formats.end(),int64_t(candidate))!=formats.end()){menuFormat=candidate;break;}
+        }
+        if(menuFormat==DXGI_FORMAT_UNKNOWN){Log("Settings menu unavailable: no RGBA/BGRA swapchain format");return false;}
         XrSwapchainCreateInfo ci{XR_TYPE_SWAPCHAIN_CREATE_INFO};ci.usageFlags=XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT|XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
-        ci.format=fmt;ci.sampleCount=1;ci.width=SettingsMenu::Width;ci.height=SettingsMenu::Height;ci.faceCount=ci.arraySize=ci.mipCount=1;
+        ci.format=menuFormat;ci.sampleCount=1;ci.width=SettingsMenu::Width;ci.height=SettingsMenu::Height;ci.faceCount=ci.arraySize=ci.mipCount=1;
         if(XR_FAILED(xrCreateSwapchain(session,&ci,&menuChain)))return false;
         if(XR_FAILED(xrEnumerateSwapchainImages(menuChain,0,&n,nullptr)))return false;
         menuImages.assign(n,{XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR});
         if(XR_FAILED(xrEnumerateSwapchainImages(menuChain,n,&n,reinterpret_cast<XrSwapchainImageBaseHeader*>(menuImages.data()))))return false;
         menuReady=menuDraw.Init();
-        Log("Settings menu resources ready=%d transport=%u",int(menuReady),Transport::Version);
+        Log("Settings menu resources ready=%d format=%d transport=%u",int(menuReady),int(menuFormat),Transport::Version);
         return menuReady;
     }
     void MenuInput(Transport::Tracking& t) {
@@ -87,6 +94,14 @@ struct Bridge {
         float x{},y{};Transport::Pose panel{};memcpy(&panel,&anchor,sizeof(panel));
         bool ray=t.rightController.valid&&SettingsMenu::Hit(t.rightController.aim,panel,x,y);
         menuUI.Update(eligible&&EnsureMenu(),state==XR_SESSION_STATE_FOCUSED,ray,x,y,controller.raw,menuGame);
+        if(menuUI.visible!=menuWasVisible||menuUI.open!=menuWasOpen||menuUI.request!=menuLastRequest||
+           menuGame.acknowledged!=menuLastAck||menuGame.result!=menuLastResult||menuGame.saved!=menuLastSaved) {
+            Log("Settings menu visible=%d open=%d eligible=%u renderMode=%u pointer=%d xy=%.0f/%.0f request=%u ack=%u saved=%u result=%u angle=%.0f",
+                int(menuUI.visible),int(menuUI.open),menuGame.eligible,renderInfo.mode,int(ray),x,y,
+                menuUI.request,menuGame.acknowledged,menuGame.saved,menuGame.result,menuGame.degrees);
+            menuWasVisible=menuUI.visible;menuWasOpen=menuUI.open;menuLastRequest=menuUI.request;
+            menuLastAck=menuGame.acknowledged;menuLastResult=menuGame.result;menuLastSaved=menuGame.saved;
+        }
         if(menuUI.blocked){controller.SuppressMapping();t.gamepad={};t.gamepad.valid=1;t.controllerButtons=0;}
         if(Transport::LockMenu(trackingChannel)) {
             auto& m=trackingChannel->menu;m.hostTick=t.tick;m.blocked=menuUI.blocked;
@@ -96,14 +111,25 @@ struct Bridge {
     }
     bool DrawMenu() {
         if(!menuUI.visible||!menuReady||!anchorValid)return false;
-        auto pixels=menuDraw.Draw(menuUI,menuGame);if(!pixels)return false;
+        auto fail=[&]{
+            menuReady=false;menuFailed=true;menuUI.visible=false;
+            Log("Settings menu rendering failed; disabled until XR session restart");
+            return false;
+        };
+        auto pixels=menuDraw.Draw(menuUI,menuGame);if(!pixels)return fail();
         uint32_t index{};XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
-        if(XR_FAILED(xrAcquireSwapchainImage(menuChain,&ai,&index)))return false;
+        if(XR_FAILED(xrAcquireSwapchainImage(menuChain,&ai,&index)))return fail();
         XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};wi.timeout=XR_INFINITE_DURATION;
-        if(XR_FAILED(xrWaitSwapchainImage(menuChain,&wi)))return false;
-        if(index>=menuImages.size())return false;
+        if(XR_FAILED(xrWaitSwapchainImage(menuChain,&wi)))return fail();
+        XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+        if(index>=menuImages.size()){xrReleaseSwapchainImage(menuChain,&ri);return fail();}
+        if(menuFormat==DXGI_FORMAT_R8G8B8A8_UNORM_SRGB||menuFormat==DXGI_FORMAT_R8G8B8A8_UNORM) {
+            auto src=static_cast<const uint32_t*>(pixels);menuPixels.resize(SettingsMenu::Width*SettingsMenu::Height);
+            for(size_t i=0;i<menuPixels.size();++i)menuPixels[i]=(src[i]&0xff00ff00u)|((src[i]&0xffu)<<16)|((src[i]>>16)&0xffu);
+            pixels=menuPixels.data();
+        }
         context->UpdateSubresource(menuImages[index].texture,0,nullptr,pixels,SettingsMenu::Width*4,0);context->Flush();
-        XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};if(XR_FAILED(xrReleaseSwapchainImage(menuChain,&ri)))return false;
+        if(XR_FAILED(xrReleaseSwapchainImage(menuChain,&ri)))return fail();
         menuLayer={XR_TYPE_COMPOSITION_LAYER_QUAD};menuLayer.layerFlags=XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
         menuLayer.space=space;menuLayer.eyeVisibility=XR_EYE_VISIBILITY_BOTH;menuLayer.pose=anchor;menuLayer.size={3.2f,1.8f};
         menuLayer.subImage.swapchain=menuChain;menuLayer.subImage.imageRect={{0,0},{SettingsMenu::Width,SettingsMenu::Height}};
@@ -163,6 +189,8 @@ struct Bridge {
         DestroySwapchain();
         menuImages.clear();if(menuChain)xrDestroySwapchain(menuChain);menuChain=XR_NULL_HANDLE;
         menuDraw.Reset();menuUI={};menuGame={};menuReady=menuFailed=false;
+        menuFormat=DXGI_FORMAT_UNKNOWN;menuPixels.clear();menuWasVisible=menuWasOpen=false;
+        menuLastRequest=menuLastAck=menuLastResult=menuLastSaved=0;
         controller.Reset();
         if(headSpace) xrDestroySpace(headSpace);
         if(space) xrDestroySpace(space);

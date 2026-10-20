@@ -2,6 +2,7 @@
 #include "DirectionConfig.h"
 #include "EngineCamera.h"
 #include "SettingsPersistence.h"
+#include "SettingsMenu.h"
 #include <Xinput.h>
 #include <mutex>
 #include <cstring>
@@ -22,6 +23,7 @@ bool enabled{},configured{},installed{},connected{};
 DWORD packet{};XINPUT_GAMEPAD previous{};
 uint64_t polls{},changes{},retryTick{};
 bool calibrationInputBlocked{},menuBlocked{};
+SettingsMenu::InputGate menuGate;
 wchar_t configPath[MAX_PATH]{};
 
 void InputLog(const char* format,...) {
@@ -339,6 +341,14 @@ bool Read(XINPUT_GAMEPAD& pad) {
     if(Transport::ReadTracking(channel,sample))latest=sample;
     auto now=GetTickCount64();
     bool fresh=latest.tick && now>=latest.tick && now-latest.tick<250;
+    Transport::ReadMenu(channel,menuGate.latest);
+    menuBlocked=menuGate.Blocked(now);
+    if(menuBlocked){
+        pad={};quickSaveWanted=false;
+        for(size_t i=0;i<buttonCount;i++){buttonWasDown[i]=false;buttonTapUntil[i]=0;}
+        snapPending=snapMoving=snapArmed=false;snapHoldUntil=0;
+        connected=true;return true;
+    }
     if(fresh && latest.gamepad.valid) {
         static_assert(sizeof(pad)==sizeof(Transport::Gamepad)-sizeof(uint32_t));
         std::memcpy(&pad,&latest.gamepad.buttons,sizeof(pad));connected=true;
@@ -348,15 +358,6 @@ bool Read(XINPUT_GAMEPAD& pad) {
             for(size_t i=0;i<buttonCount;i++){buttonWasDown[i]=false;buttonTapUntil[i]=0;}
             snapPending=snapMoving=snapArmed=false;
             if(!latest.controllerButtons)calibrationInputBlocked=false;
-            return true;
-        }
-        Transport::MenuState menu{};
-        if(Transport::ReadMenu(channel,menu))menuBlocked=Transport::Fresh(menu.hostTick,now)&&menu.blocked;
-        else if(!fresh)menuBlocked=false;
-        if(menuBlocked){
-            pad={};quickSaveWanted=false;
-            for(size_t i=0;i<buttonCount;i++){buttonWasDown[i]=false;buttonTapUntil[i]=0;}
-            snapPending=snapMoving=snapArmed=false;snapHoldUntil=0;
             return true;
         }
         ApplyButtons(pad);
@@ -385,7 +386,8 @@ DWORD WINAPI GetHook(DWORD index,XINPUT_STATE* state) {
         pad.sThumbLX=Stronger(pad.sThumbLX,real.sThumbLX);pad.sThumbLY=Stronger(pad.sThumbLY,real.sThumbLY);
         pad.sThumbRX=Stronger(pad.sThumbRX,real.sThumbRX);pad.sThumbRY=Stronger(pad.sThumbRY,real.sThumbRY);
     }
-    if(menuBlocked)pad={}; // includes physical XInput and generated pulses
+    const XINPUT_GAMEPAD real=result==ERROR_SUCCESS?state->Gamepad:XINPUT_GAMEPAD{};
+    if(menuGate.Physical(menuBlocked,real))pad={}; // includes physical pad release after closing
     if(std::memcmp(&pad,&previous,sizeof(pad))){previous=pad;++packet;++changes;}
     state->Gamepad=pad;state->dwPacketNumber=packet;
     return ERROR_SUCCESS;
@@ -424,20 +426,19 @@ void SetChannel(Transport::Header* header) {
         enabled=DirectionConfig::MotionEnabled(configPath);configured=true;
         if(enabled){LoadButtons();LoadSnap();}
     }
-    channel=header;latest={};connected=false;menuBlocked=false;
+    channel=header;latest={};connected=false;menuBlocked=false;menuGate={};
 }
 void MenuTick(unsigned screenReasons) {
     std::lock_guard lock(guard);
     if(!Transport::LockMenu(channel))return;
     auto& m=channel->menu;auto now=GetTickCount64();
     // Bit 2 is ScreenMode::Menu (TitleMenu/PauseMenu), not the inventory bit 32.
-    m.eligible=(screenReasons&2u) && !(screenReasons&(1u|4u|8u|16u|64u|128u));m.gameTick=now;
+    m.eligible=SettingsMenu::Eligible(screenReasons);m.gameTick=now;
     m.snapEnabled=snapEnabled;m.degrees=snapDegrees;
     if(m.request!=m.acknowledged && Transport::Fresh(m.hostTick,now)) {
         m.acknowledged=m.request;
-        if(m.eligible&&m.blocked&&snapEnabled&&std::isfinite(m.requestedDegrees)&&m.requestedDegrees>=5&&m.requestedDegrees<=180) {
-            snapCounts=std::clamp(snapCounts*double(m.requestedDegrees)/snapDegrees,1.,20000.);
-            snapDegrees=m.requestedDegrees;snapPending=snapMoving=snapArmed=false;snapHoldUntil=0;
+        if(m.eligible&&m.blocked&&snapEnabled&&SettingsMenu::ApplyAngle(m.requestedDegrees,snapDegrees,snapCounts)) {
+            snapPending=snapMoving=snapArmed=false;snapHoldUntil=0;
             m.degrees=snapDegrees;m.result=1;
             SettingsWriter().Queue(configPath,snapCounts,m.request,snapDegrees);
         } else m.result=2;

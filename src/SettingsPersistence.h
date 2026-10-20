@@ -26,9 +26,11 @@ public:
         if(n!=4||memcmp(start,"[VR]",4))return false;
         wchar_t text[40];swprintf_s(text,L"%.3f",count);
         if(!WritePrivateProfileStringW(L"VR",L"SnapTurnMouseCounts",text,path.c_str()))return false;
-        if(angle){swprintf_s(text,L"%.0f",degrees);if(!WritePrivateProfileStringW(L"VR",L"SnapTurnDegrees",text,path.c_str()))return false;}
+        if(angle){swprintf_s(text,L"%.6g",double(degrees));if(!WritePrivateProfileStringW(L"VR",L"SnapTurnDegrees",text,path.c_str()))return false;}
         WritePrivateProfileStringW(nullptr,nullptr,nullptr,path.c_str());
         if(angle){GetPrivateProfileStringW(L"VR",L"SnapTurnDegrees",L"",text,40,path.c_str());if(std::abs(_wtof(text)-degrees)>.01)return false;}
+        GetPrivateProfileStringW(L"VR",L"SnapTurnMouseCounts",L"",text,40,path.c_str());
+        if(std::abs(_wtof(text)-count)>.01)return false;
         return true;
     }
     SettingsPersistence() {

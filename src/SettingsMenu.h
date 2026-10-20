@@ -29,8 +29,29 @@ inline bool Neutral(const GamepadMapping::Input& i) {
         i.leftTrigger<.05f&&i.rightTrigger<.05f&&i.leftGrip<.1f&&i.rightGrip<.1f&&
         std::abs(i.leftX)<.2f&&std::abs(i.leftY)<.2f&&std::abs(i.rightX)<.2f&&std::abs(i.rightY)<.2f;
 }
+inline bool Eligible(unsigned reasons) {
+    return (reasons&2u) && !(reasons&(1u|4u|8u|16u|64u|128u));
+}
+inline bool ApplyAngle(float value,float& degrees,double& counts) {
+    if(!std::isfinite(value)||value<5||value>180||!std::isfinite(degrees)||degrees<=0||
+       !std::isfinite(counts)||counts<=0)return false;
+    counts=std::clamp(counts*double(value)/degrees,1.,20000.);degrees=value;return true;
+}
+struct InputGate {
+    Transport::MenuState latest{};
+    bool physicalRelease{};
+    bool Blocked(uint64_t now) const {return Transport::Fresh(latest.hostTick,now)&&latest.blocked;}
+    bool Physical(bool blocked,const XINPUT_GAMEPAD& pad) {
+        if(blocked)physicalRelease=true;
+        bool neutral=!pad.wButtons&&pad.bLeftTrigger<13&&pad.bRightTrigger<13&&
+            std::abs(int(pad.sThumbLX))<6554&&std::abs(int(pad.sThumbLY))<6554&&
+            std::abs(int(pad.sThumbRX))<6554&&std::abs(int(pad.sThumbRY))<6554;
+        if(neutral)physicalRelease=false;
+        return blocked||physicalRelease;
+    }
+};
 struct State {
-    bool open{},blocked{},releaseGate{},triggerDown{},armed{},visible{},pointer{};
+    bool open{},blocked{},releaseGate{},triggerDown{},armed{},visible{},pointer{},stickArmed{};
     float x{},y{};uint32_t request{};float requested{};
     void Update(bool eligible,bool focused,bool ray,float px,float py,const GamepadMapping::Input& in,const Transport::MenuState& game) {
         visible=eligible&&focused;pointer=visible&&ray;x=px;y=py;
@@ -49,10 +70,19 @@ struct State {
                 if(delta){requested=std::clamp(game.degrees+delta,5.f,180.f);++request;}
             }
         }
+        // One step per stick deflection; no frame-rate-dependent repeats.
+        // The first slice fits on one page, so no scrolling is needed yet.
+        if(std::abs(in.rightX)<.2f)stickArmed=true;
+        if(open&&pointer&&Panel.Has(x,y)&&stickArmed&&std::abs(in.rightX)>.6f&&
+           std::abs(in.rightX)>std::abs(in.rightY)&&in.rightTrigger<.05f&&
+           game.snapEnabled&&request==game.acknowledged) {
+            requested=std::clamp(game.degrees+(in.rightX>0?5.f:-5.f),5.f,180.f);
+            ++request;stickArmed=false;
+        }
         triggerDown=down;
         if(wasOpen&&!open)releaseGate=true;
         blocked=open||releaseGate;
-        if(!open&&Neutral(in)){releaseGate=false;blocked=false;}
+        if(!open&&in.active&&Neutral(in)){releaseGate=false;blocked=false;}
     }
 };
 }
