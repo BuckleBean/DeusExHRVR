@@ -2,6 +2,7 @@
 #include "PairHistory.h"
 #include "ControllerInput.h"
 #include "DirectionConfig.h"
+#include "SettingsMenuDraw.h"
 #include <windows.h>
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
@@ -52,6 +53,62 @@ struct Bridge {
     XrDuration lastPeriod{};
     PairHistory history;
     ControllerInput controller;
+    SettingsMenu::State menuUI;
+    SettingsMenuDraw menuDraw;
+    Transport::MenuState menuGame{};
+    XrSwapchain menuChain{};
+    std::vector<XrSwapchainImageD3D11KHR> menuImages;
+    XrCompositionLayerQuad menuLayer{XR_TYPE_COMPOSITION_LAYER_QUAD};
+    bool menuReady{},menuFailed{};
+    bool EnsureMenu() {
+        if(menuReady)return true;
+        if(menuFailed)return false;
+        menuFailed=true;
+        XrSystemProperties props{XR_TYPE_SYSTEM_PROPERTIES};
+        if(XR_FAILED(xrGetSystemProperties(instance,system,&props))||props.graphicsProperties.maxLayerCount<3)return false;
+        uint32_t n{};if(XR_FAILED(xrEnumerateSwapchainFormats(session,0,&n,nullptr)))return false;
+        std::vector<int64_t> formats(n);if(XR_FAILED(xrEnumerateSwapchainFormats(session,n,&n,formats.data())))return false;
+        int64_t fmt=DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+        if(std::find(formats.begin(),formats.end(),fmt)==formats.end())return false;
+        XrSwapchainCreateInfo ci{XR_TYPE_SWAPCHAIN_CREATE_INFO};ci.usageFlags=XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT|XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
+        ci.format=fmt;ci.sampleCount=1;ci.width=SettingsMenu::Width;ci.height=SettingsMenu::Height;ci.faceCount=ci.arraySize=ci.mipCount=1;
+        if(XR_FAILED(xrCreateSwapchain(session,&ci,&menuChain)))return false;
+        if(XR_FAILED(xrEnumerateSwapchainImages(menuChain,0,&n,nullptr)))return false;
+        menuImages.assign(n,{XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR});
+        if(XR_FAILED(xrEnumerateSwapchainImages(menuChain,n,&n,reinterpret_cast<XrSwapchainImageBaseHeader*>(menuImages.data()))))return false;
+        menuReady=menuDraw.Init();
+        Log("Settings menu resources ready=%d transport=%u",int(menuReady),Transport::Version);
+        return menuReady;
+    }
+    void MenuInput(Transport::Tracking& t) {
+        Transport::ReadMenu(trackingChannel,menuGame);
+        bool eligible=Transport::Fresh(menuGame.gameTick,t.tick)&&menuGame.eligible&&renderInfo.mode==0&&anchorValid;
+        if(!menuUI.request)menuUI.request=menuGame.acknowledged;
+        float x{},y{};Transport::Pose panel{};memcpy(&panel,&anchor,sizeof(panel));
+        bool ray=t.rightController.valid&&SettingsMenu::Hit(t.rightController.aim,panel,x,y);
+        menuUI.Update(eligible&&EnsureMenu(),state==XR_SESSION_STATE_FOCUSED,ray,x,y,controller.raw,menuGame);
+        if(menuUI.blocked){controller.SuppressMapping();t.gamepad={};t.gamepad.valid=1;t.controllerButtons=0;}
+        if(Transport::LockMenu(trackingChannel)) {
+            auto& m=trackingChannel->menu;m.hostTick=t.tick;m.blocked=menuUI.blocked;
+            m.request=menuUI.request;m.requestedDegrees=menuUI.requested;
+            Transport::UnlockMenu(trackingChannel);
+        }
+    }
+    bool DrawMenu() {
+        if(!menuUI.visible||!menuReady||!anchorValid)return false;
+        auto pixels=menuDraw.Draw(menuUI,menuGame);if(!pixels)return false;
+        uint32_t index{};XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+        if(XR_FAILED(xrAcquireSwapchainImage(menuChain,&ai,&index)))return false;
+        XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};wi.timeout=XR_INFINITE_DURATION;
+        if(XR_FAILED(xrWaitSwapchainImage(menuChain,&wi)))return false;
+        if(index>=menuImages.size())return false;
+        context->UpdateSubresource(menuImages[index].texture,0,nullptr,pixels,SettingsMenu::Width*4,0);context->Flush();
+        XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};if(XR_FAILED(xrReleaseSwapchainImage(menuChain,&ri)))return false;
+        menuLayer={XR_TYPE_COMPOSITION_LAYER_QUAD};menuLayer.layerFlags=XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+        menuLayer.space=space;menuLayer.eyeVisibility=XR_EYE_VISIBILITY_BOTH;menuLayer.pose=anchor;menuLayer.size={3.2f,1.8f};
+        menuLayer.subImage.swapchain=menuChain;menuLayer.subImage.imageRect={{0,0},{SettingsMenu::Width,SettingsMenu::Height}};
+        return true;
+    }
     bool historyArmed{},f10Down{};
     IDXGISwapChain* owner{};
     // Local patch (frozen-view reset): while the game's camera is stopped (in-game
@@ -104,6 +161,8 @@ struct Bridge {
     void Reset() {
         history.Reset();historyArmed=false;f10Down=false;
         DestroySwapchain();
+        menuImages.clear();if(menuChain)xrDestroySwapchain(menuChain);menuChain=XR_NULL_HANDLE;
+        menuDraw.Reset();menuUI={};menuGame={};menuReady=menuFailed=false;
         controller.Reset();
         if(headSpace) xrDestroySpace(headSpace);
         if(space) xrDestroySpace(space);
@@ -325,6 +384,7 @@ struct Bridge {
             tracking.valid=1;
         }
         controller.Sample(session,space,fs.predictedDisplayTime,state==XR_SESSION_STATE_FOCUSED,tracking);
+        MenuInput(tracking);
         Transport::WriteTracking(trackingChannel,tracking);
         // Low-rate status for an ordinary later session; no calibration gesture needed.
         static uint64_t gripLogTick{};
@@ -341,7 +401,7 @@ struct Bridge {
         XrCompositionLayerQuad quads[2]{{XR_TYPE_COMPOSITION_LAYER_QUAD},{XR_TYPE_COMPOSITION_LAYER_QUAD}};
         XrCompositionLayerProjection projection{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
         XrCompositionLayerProjectionView projectionViews[2]{{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW},{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
-        const XrCompositionLayerBaseHeader* layers[2]{}; uint32_t layerCount=0;
+        const XrCompositionLayerBaseHeader* layers[3]{}; uint32_t layerCount=0;
         if(fs.shouldRender && EnsureSwapchain(d,h)) {
             uint32_t index=0; XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
             if(Good(xrAcquireSwapchainImage(swapchain,&ai,&index),"xrAcquireSwapchainImage")) {
@@ -419,6 +479,7 @@ struct Bridge {
                 } else {Good(wait,"xrWaitSwapchainImage"); failed=true;}
             } else failed=true;
         }
+        if(fs.shouldRender&&layerCount&&DrawMenu())layers[layerCount++]=reinterpret_cast<XrCompositionLayerBaseHeader*>(&menuLayer);
         XrFrameEndInfo ei{XR_TYPE_FRAME_END_INFO}; ei.displayTime=fs.predictedDisplayTime;
         ei.environmentBlendMode=XR_ENVIRONMENT_BLEND_MODE_OPAQUE; ei.layerCount=layerCount; ei.layers=layers;
         if(Good(xrEndFrame(session,&ei),"xrEndFrame")) {

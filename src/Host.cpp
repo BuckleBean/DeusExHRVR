@@ -31,12 +31,13 @@ int wmain(int argc,wchar_t** argv) {
     ComPtr<ID3D11Device> dev;ComPtr<ID3D11DeviceContext> ctx;ComPtr<ID3D11Texture2D> shared,pair;
     ComPtr<IDXGIKeyedMutex> keyed;LONG generation=0;UINT height=0;bool fatal=false;
     NativeBridge::SetTrackingChannel(header);
+    bool haveFrame=false;bool lastSwap=false;
     while(WaitForSingleObject(game,0)==WAIT_TIMEOUT&&!fatal) {
         LONG next=header->generation;MemoryBarrier();
         if(next && next!=generation) {
             Transport::Header desc{};memcpy(&desc,header,sizeof(desc));MemoryBarrier();
             if(header->generation!=next)continue;
-            NativeBridge::Shutdown();keyed.Reset();shared.Reset();pair.Reset();ctx.Reset();dev.Reset();
+            haveFrame=false;NativeBridge::Shutdown();keyed.Reset();shared.Reset();pair.Reset();ctx.Reset();dev.Reset();
             ComPtr<IDXGIAdapter1> selected;
             for(UINT i=0;;i++) {
                 ComPtr<IDXGIAdapter1> a;if(factory->EnumAdapters1(i,&a)==DXGI_ERROR_NOT_FOUND)break;
@@ -53,7 +54,12 @@ int wmain(int argc,wchar_t** argv) {
         }
         if(!keyed){Sleep(2);continue;}
         HRESULT hr=keyed->AcquireSync(1,10);
-        if(hr==WAIT_TIMEOUT)continue;
+        if(hr==WAIT_TIMEOUT){
+            // Continue pumping XR from the last complete image if the game stalls.
+            // Eligibility expires separately; stale state cannot accept edits.
+            if(haveFrame)NativeBridge::Present(nullptr,pair.Get(),height,lastSwap);
+            continue;
+        }
         if(hr!=S_OK)break;
         if(header->generation!=generation){keyed->ReleaseSync(0);continue;}
         uint64_t frame=header->frameId;bool swap=header->swapEyes!=0;
@@ -63,7 +69,7 @@ int wmain(int argc,wchar_t** argv) {
         // Private snapshot remains stable even while producer writes the next pair.
         NativeBridge::SetSourceFrame(frame);
         NativeBridge::SetRenderInfo(rendered);
-        NativeBridge::Present(nullptr,pair.Get(),height,swap);
+        haveFrame=true;lastSwap=swap;NativeBridge::Present(nullptr,pair.Get(),height,swap);
     }
     NativeBridge::Shutdown();NativeBridge::SetTrackingChannel(nullptr);UnmapViewOfFile(header);CloseHandle(mapping);CloseHandle(game);return 0;
 }

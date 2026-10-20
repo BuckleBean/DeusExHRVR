@@ -1,6 +1,7 @@
 #include "GamepadBridge.h"
 #include "DirectionConfig.h"
 #include "EngineCamera.h"
+#include "SettingsPersistence.h"
 #include <Xinput.h>
 #include <mutex>
 #include <cstring>
@@ -20,7 +21,7 @@ GetState originalGet{};SetState originalSet{};
 bool enabled{},configured{},installed{},connected{};
 DWORD packet{};XINPUT_GAMEPAD previous{};
 uint64_t polls{},changes{},retryTick{};
-bool calibrationInputBlocked{};
+bool calibrationInputBlocked{},menuBlocked{};
 wchar_t configPath[MAX_PATH]{};
 
 void InputLog(const char* format,...) {
@@ -257,8 +258,7 @@ void SnapTurn(XINPUT_GAMEPAD& pad) {
                 next=std::clamp(next,1.,20000.);
                 if(std::abs(next-snapCounts)>snapCounts*.02) {
                     snapCounts=next;
-                    wchar_t text[32]{};swprintf_s(text,L"%.0f",snapCounts);
-                    WritePrivateProfileStringW(L"VR",L"SnapTurnMouseCounts",text,configPath);
+                    SettingsWriter().Queue(configPath,snapCounts);
                 }
                 InputLog("snap #%llu dir=%d moving=%d counts=%.0f measured=%.2f deg signed=%.2f target=%.1f nextCounts=%.0f",
                     snapCount,snapDir,snapMoving,used,measured,delta*180/Pi,snapDegrees,snapCounts);
@@ -350,6 +350,15 @@ bool Read(XINPUT_GAMEPAD& pad) {
             if(!latest.controllerButtons)calibrationInputBlocked=false;
             return true;
         }
+        Transport::MenuState menu{};
+        if(Transport::ReadMenu(channel,menu))menuBlocked=Transport::Fresh(menu.hostTick,now)&&menu.blocked;
+        else if(!fresh)menuBlocked=false;
+        if(menuBlocked){
+            pad={};quickSaveWanted=false;
+            for(size_t i=0;i<buttonCount;i++){buttonWasDown[i]=false;buttonTapUntil[i]=0;}
+            snapPending=snapMoving=snapArmed=false;snapHoldUntil=0;
+            return true;
+        }
         ApplyButtons(pad);
         if(EngineCamera::ImmersiveScopeButton())pad.wButtons|=XINPUT_GAMEPAD_RIGHT_THUMB;
         if(snapEnabled)SnapTurn(pad);
@@ -376,6 +385,7 @@ DWORD WINAPI GetHook(DWORD index,XINPUT_STATE* state) {
         pad.sThumbLX=Stronger(pad.sThumbLX,real.sThumbLX);pad.sThumbLY=Stronger(pad.sThumbLY,real.sThumbLY);
         pad.sThumbRX=Stronger(pad.sThumbRX,real.sThumbRX);pad.sThumbRY=Stronger(pad.sThumbRY,real.sThumbRY);
     }
+    if(menuBlocked)pad={}; // includes physical XInput and generated pulses
     if(std::memcmp(&pad,&previous,sizeof(pad))){previous=pad;++packet;++changes;}
     state->Gamepad=pad;state->dwPacketNumber=packet;
     return ERROR_SUCCESS;
@@ -414,7 +424,30 @@ void SetChannel(Transport::Header* header) {
         enabled=DirectionConfig::MotionEnabled(configPath);configured=true;
         if(enabled){LoadButtons();LoadSnap();}
     }
-    channel=header;latest={};connected=false;
+    channel=header;latest={};connected=false;menuBlocked=false;
+}
+void MenuTick(unsigned screenReasons) {
+    std::lock_guard lock(guard);
+    if(!Transport::LockMenu(channel))return;
+    auto& m=channel->menu;auto now=GetTickCount64();
+    // Bit 2 is ScreenMode::Menu (TitleMenu/PauseMenu), not the inventory bit 32.
+    m.eligible=(screenReasons&2u) && !(screenReasons&(1u|4u|8u|16u|64u|128u));m.gameTick=now;
+    m.snapEnabled=snapEnabled;m.degrees=snapDegrees;
+    if(m.request!=m.acknowledged && Transport::Fresh(m.hostTick,now)) {
+        m.acknowledged=m.request;
+        if(m.eligible&&m.blocked&&snapEnabled&&std::isfinite(m.requestedDegrees)&&m.requestedDegrees>=5&&m.requestedDegrees<=180) {
+            snapCounts=std::clamp(snapCounts*double(m.requestedDegrees)/snapDegrees,1.,20000.);
+            snapDegrees=m.requestedDegrees;snapPending=snapMoving=snapArmed=false;snapHoldUntil=0;
+            m.degrees=snapDegrees;m.result=1;
+            SettingsWriter().Queue(configPath,snapCounts,m.request,snapDegrees);
+        } else m.result=2;
+    }
+    auto& writer=SettingsWriter();
+    if(m.acknowledged&&writer.completed.load()==m.acknowledged&&m.result!=2){
+        if(writer.failed.load()==m.acknowledged)m.result=3;
+        else {m.saved=m.acknowledged;m.result=0;}
+    }
+    Transport::UnlockMenu(channel);
 }
 void OnPresent(bool capture) {
     std::lock_guard lock(guard);Install();

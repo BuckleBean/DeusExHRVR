@@ -104,6 +104,7 @@ void Present(IDXGISwapChain* chain,ID3D11Texture2D* pair,UINT h,bool swap) {
     bool capture=captureKey&&!p.f8;
     GamepadBridge::OnPresent(capture);
     auto rendered=EngineCamera::OnPresent(p.frame,capture);
+    GamepadBridge::MenuTick(EngineCamera::CurrentScreenReasons());
     if(p.process&&WaitForSingleObject(p.process,0)==WAIT_OBJECT_0){p.Reset();p.retry=GetTickCount64()+5000;}
     if(GetTickCount64()<p.retry)return;
     ComPtr<ID3D11Device> dev;pair->GetDevice(&dev);

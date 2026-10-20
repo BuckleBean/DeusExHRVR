@@ -3,4 +3,5 @@
 namespace GamepadBridge {
 void SetChannel(Transport::Header* header);
 void OnPresent(bool capture);
+void MenuTick(unsigned screenReasons);
 }

@@ -13,6 +13,8 @@ class ControllerInput {
     XrSpace leftGripSpace{},rightGripSpace{};
     GamepadMapping::Mapper mapper;
 public:
+    GamepadMapping::Input raw{};
+    void SuppressMapping(){mapper.Reset();}
     void Reset() {
         if(aimSpace)xrDestroySpace(aimSpace);
         if(leftGripSpace)xrDestroySpace(leftGripSpace);
@@ -77,6 +79,7 @@ public:
         return XR_SUCCEEDED(xrCreateActionSpace(session,&space,&rightGripSpace));
     }
     void Sample(XrSession session,XrSpace local,XrTime time,bool focused,Transport::Tracking& tracking) {
+        raw={};
         tracking.rightController={};tracking.gamepad={};tracking.controllerButtons=0;
         tracking.leftGrip={};tracking.rightGrip={};
         if(!aimSpace || !focused){mapper.Reset();return;}
@@ -125,6 +128,7 @@ public:
         input.leftGrip=scalar(LeftGrip);input.rightGrip=scalar(RightGrip);
         stick(LeftStick,input.leftX,input.leftY);stick(RightStick,input.rightX,input.rightY);
         tracking.controllerButtons=input.active?((input.leftClick?1u:0u)|(input.rightClick?2u:0u)):0u;
+        raw=input;
         tracking.gamepad=mapper.Update(input,tracking.tick);
     }
 };
