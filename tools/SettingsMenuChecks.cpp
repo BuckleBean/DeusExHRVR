@@ -34,7 +34,7 @@ int wmain(int argc,wchar_t** argv) {
     in.rightTrigger=.8f;update(1200,450);assert(s.open&&s.blocked);
     // Holding the opening trigger cannot also change a setting.
     update(1450,465);assert(!s.request);
-    in.rightTrigger=0;update(1450,465);in.rightTrigger=.8f;update(1450,465);assert(s.request==1&&s.requested==35);
+    in.rightTrigger=0;update(1450,465);in.rightTrigger=.8f;update(1450,465);assert(s.request==1&&s.requested==45);
     in.rightTrigger=0;update(1450,465);in.rightTrigger=.8f;update(1450,465);assert(s.request==1); // pending request
     game.acknowledged=1;game.degrees=180;in.rightTrigger=0;update(1450,465);in.rightTrigger=.8f;update(1450,465);assert(s.requested==180);
     in.rightTrigger=0;update(1200,680);in.rightTrigger=.8f;update(1200,680);assert(!s.open&&s.blocked);
@@ -46,8 +46,8 @@ int wmain(int argc,wchar_t** argv) {
     in={};s.Update(false,false,false,0,0,in,game);assert(s.blocked); // inactive is not observed release
     in.active=true;s.Update(false,true,false,0,0,in,game);assert(!s.blocked);
     s={};s.open=true;game.acknowledged=0;game.degrees=30;
-    update(1250,450);in.rightX=.8f;update(1250,450);assert(s.request==1&&s.requested==35);
-    game.acknowledged=1;game.degrees=35;update(1250,450);assert(s.request==1);
+    update(1250,450);in.rightX=.8f;update(1250,450);assert(s.request==1&&s.requested==45);
+    game.acknowledged=1;game.degrees=45;update(1250,450);assert(s.request==1);
     in.rightX=0;update(1250,450);in.rightX=-.8f;update(1250,450);assert(s.request==2&&s.requested==30);
     // Existing mappings retain their calibration and menu chords.
     GamepadMapping::Mapper mapper;in={};in.active=true;in.leftClick=in.rightClick=true;auto pad=mapper.Update(in,1);assert(!pad.buttons&&!pad.leftTrigger&&!pad.rightTrigger);
@@ -61,11 +61,29 @@ int wmain(int argc,wchar_t** argv) {
     assert(!SettingsPersistence::Save(bom.wstring(),true,45,450));
     assert(!SettingsPersistence::Save((out/L"missing.ini").wstring(),true,45,450));
     assert(SettingsPersistence::Save(ini.wstring(),true,22.5f,225));
+    // Rapid requests apply elsewhere immediately, but only the latest is persisted.
+    auto& writer=SettingsWriter();
+    writer.Queue(ini.c_str(),450,100,45);
+    writer.Queue(ini.c_str(),600,101,60);
+    assert(writer.completed.load()==0);
+    assert(GetPrivateProfileIntW(L"VR",L"SnapTurnDegrees",0,ini.c_str())==22);
+    for(int n=0;n<200&&writer.completed.load()!=101;++n)Sleep(10);
+    assert(writer.completed.load()==101&&writer.failed.load()!=101);
+    assert(GetPrivateProfileIntW(L"VR",L"SnapTurnDegrees",0,ini.c_str())==60);
+    assert(GetPrivateProfileIntW(L"VR",L"SnapTurnMouseCounts",0,ini.c_str())==600);
     SettingsMenuDraw draw;s={};s.visible=true;game={};game.snapEnabled=1;game.degrees=30;
     assert(draw.Save((out/L"menu-entry.bmp").c_str(),s,game));s.open=true;s.pointer=true;s.x=1450;s.y=465;
     assert(draw.Save((out/L"menu-panel.bmp").c_str(),s,game));
     auto pixels=static_cast<const uint32_t*>(draw.Draw(s,game));
     assert(pixels[0]==0);assert((pixels[300*SettingsMenu::Width+1050]>>24)==255);
+    // Pointer remains visible during the approach, outside either clickable area.
+    for(bool panelOpen : {false,true}){
+        s.open=panelOpen;s.x=800;s.y=450;
+        pixels=static_cast<const uint32_t*>(draw.Draw(s,game));assert(pixels);
+        assert(pixels[450*SettingsMenu::Width+800]==0xffffffff);
+        assert(pixels[440*SettingsMenu::Width+800]==0);
+    }
+    s.x=1450;s.y=465;
     // A successful GDI API call alone does not prove the labels reached the DIB.
     auto bright=[&](SettingsMenu::Rect rect){
         unsigned count=0;

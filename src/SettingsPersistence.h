@@ -10,11 +10,13 @@
 #include <cstdint>
 #include <cstring>
 #include <cstdlib>
+#include <chrono>
 
 // One worker owns all snap-setting writes, including learned calibration.
 // Single-key profile writes preserve unrelated settings and existing comments.
 class SettingsPersistence {
     std::mutex mutex;std::condition_variable wake;
+    std::chrono::steady_clock::time_point saveAfter{};
     std::wstring path;bool pending{},anglePending{};float angle{};double counts{};uint32_t sequence{};
 public:
     std::atomic<uint32_t> completed{},failed{};
@@ -36,6 +38,8 @@ public:
     SettingsPersistence() {
         std::thread([this]{for(;;){
             std::unique_lock lock(mutex);wake.wait(lock,[&]{return pending;});
+            // Coalesce rapid adjustments without holding the producer lock during IO.
+            while(std::chrono::steady_clock::now()<saveAfter){auto deadline=saveAfter;wake.wait_until(lock,deadline);}
             auto file=path;auto a=angle;auto c=counts;auto seq=sequence;bool saveAngle=anglePending;
             pending=anglePending=false;lock.unlock();
             bool ok=Save(file,saveAngle,a,c);
@@ -44,7 +48,9 @@ public:
     }
     void Queue(const wchar_t* file,double count,uint32_t seq=0,float degrees=0) {
         std::lock_guard lock(mutex);path=file;counts=count;pending=true;
-        if(seq){sequence=seq;angle=degrees;anglePending=true;}wake.notify_one();
+        if(seq){sequence=seq;angle=degrees;anglePending=true;}
+        saveAfter=std::chrono::steady_clock::now()+std::chrono::milliseconds(500);
+        wake.notify_one();
     }
 };
 inline SettingsPersistence& SettingsWriter(){static auto* writer=new SettingsPersistence;return *writer;}

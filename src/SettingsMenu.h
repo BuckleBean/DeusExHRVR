@@ -66,7 +66,7 @@ struct State {
             if(!open){open=true;releaseGate=true;}
             else if(Back.Has(x,y)){open=false;armed=false;}
             else if(game.snapEnabled&&request==game.acknowledged) {
-                int delta=Minus.Has(x,y)?-5:Plus.Has(x,y)?5:0;
+                int delta=Minus.Has(x,y)?-15:Plus.Has(x,y)?15:0;
                 if(delta){requested=std::clamp(game.degrees+delta,5.f,180.f);++request;}
             }
         }
@@ -76,7 +76,7 @@ struct State {
         if(open&&pointer&&Panel.Has(x,y)&&stickArmed&&std::abs(in.rightX)>.6f&&
            std::abs(in.rightX)>std::abs(in.rightY)&&in.rightTrigger<.05f&&
            game.snapEnabled&&request==game.acknowledged) {
-            requested=std::clamp(game.degrees+(in.rightX>0?5.f:-5.f),5.f,180.f);
+            requested=std::clamp(game.degrees+(in.rightX>0?15.f:-15.f),5.f,180.f);
             ++request;stickArmed=false;
         }
         triggerDown=down;

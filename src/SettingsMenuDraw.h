@@ -57,7 +57,7 @@ public:
         if(!GdiFlush()||drawError)return nullptr;
         auto data=static_cast<uint32_t*>(pixels);
         for(int y=area.y;y<area.y+area.h;++y)for(int x=area.x;x<area.x+area.w;++x)data[y*SettingsMenu::Width+x]|=0xff000000;
-        if(s.pointer&&area.Has(s.x,s.y)) {
+        if(s.pointer) {
             int px=int(s.x),py=int(s.y);
             for(int y=std::max(0,py-5);y<std::min(SettingsMenu::Height,py+6);++y)
                 for(int x=std::max(0,px-5);x<std::min(SettingsMenu::Width,px+6);++x)data[y*SettingsMenu::Width+x]=0xffffffff;
