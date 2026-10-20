@@ -1585,6 +1585,18 @@ float nativePositionPeak{},nativePositionSprintPeak{};
 NativeHeading::Sample nativeHeadingSample; // guarded by stateMutex
 uint64_t nativeHeadingUsed{},nativeHeadingFallback{},nativeHeadingLogTick{};
 float nativeHeadingPeakDelta{};
+// [VR] NativeLookHeadingMaxDeg. The aiming yaw may only replace the camera's
+// heading while the two still agree about where the player is facing. A
+// scripted third-person shot (takedown, Icarus, Typhoon) swings the camera away
+// from the body on a frame that still reports Combat ownership and a same-frame
+// aiming sample, so every existing guard passes and the substitution lands a
+// heading tens of degrees from the rendered scene. Measured 2026-10-20 in
+// Mark's camera log: ordinary play peaks under 0.2 deg per 2 s window, while the
+// windows containing scripted-camera transitions recorded 90.3 and 114.5 deg.
+// Reject rather than clamp: a partial heading is not a heading anyone aimed.
+// 0 restores the pre-2026-10-20 behaviour of always substituting.
+uint64_t nativeHeadingRejected{};
+float nativeHeadingMaxDeg=60.f,nativeHeadingRejectedPeak{};
 bool nativeHeadingWasUsed{};
 using NativeLookInput=float*(__thiscall*)(void*,float*,void*);
 using NativeLookSet=void(__thiscall*)(void*,const float*);
@@ -3382,16 +3394,25 @@ void __fastcall UpdateHook(void* self,void*) {
                        reinterpret_cast<uintptr_t>(instance),engineFrame)) {
                     auto clean=NativeHeading::Base(nativeHeadingSample.yaw,renderBase);
                     const float delta=std::abs(CameraMath::HeadingDelta(renderBase,clean))*57.2957795f;
-                    nativeHeadingPeakDelta=std::max(nativeHeadingPeakDelta,delta);
-                    renderBase=clean;current.nativeHeading=true;++nativeHeadingUsed;
+                    if(nativeHeadingMaxDeg>0.f && std::isfinite(delta) && delta>nativeHeadingMaxDeg) {
+                        // The camera is somewhere the aim does not explain: leave
+                        // it alone for this frame. NativeCameraPosition keys off
+                        // current.nativeHeading, so it stands down with us.
+                        nativeHeadingRejectedPeak=std::max(nativeHeadingRejectedPeak,delta);
+                        ++nativeHeadingRejected;
+                    } else {
+                        nativeHeadingPeakDelta=std::max(nativeHeadingPeakDelta,delta);
+                        renderBase=clean;current.nativeHeading=true;++nativeHeadingUsed;
+                    }
                 } else ++nativeHeadingFallback;
                 if(now-nativeHeadingLogTick>=2000) {
                     FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")) {
-                        fprintf(f,"nativeLookHeading used=%llu fallback=%llu active=%d engineFrame=%u sampleFrame=%u maxRemovedDeg=%g\n",
+                        fprintf(f,"nativeLookHeading used=%llu fallback=%llu active=%d engineFrame=%u sampleFrame=%u maxRemovedDeg=%g rejected=%llu maxRejectedDeg=%g limitDeg=%g\n",
                             nativeHeadingUsed,nativeHeadingFallback,int(current.nativeHeading),engineFrame,
-                            nativeHeadingSample.engineFrame,nativeHeadingPeakDelta);fclose(f);
+                            nativeHeadingSample.engineFrame,nativeHeadingPeakDelta,
+                            nativeHeadingRejected,nativeHeadingRejectedPeak,nativeHeadingMaxDeg);fclose(f);
                     }
-                    nativeHeadingLogTick=now;nativeHeadingPeakDelta=0;
+                    nativeHeadingLogTick=now;nativeHeadingPeakDelta=0;nativeHeadingRejectedPeak=0;
                 }
             }
             // Do not feed an intentional input heading through animation filters.
@@ -4116,6 +4137,12 @@ void Install() {
     nativeLookPitchLock=GetPrivateProfileIntW(L"VR",L"NativeLookPitchLock",0,config)!=0;
     nativeLookHeading=GetPrivateProfileIntW(L"VR",L"NativeLookHeading",0,config)!=0;
     nativeCameraPosition=GetPrivateProfileIntW(L"VR",L"NativeCameraPosition",0,config)!=0;
+    {
+        wchar_t headingLimit[32];
+        GetPrivateProfileStringW(L"VR",L"NativeLookHeadingMaxDeg",L"60",headingLimit,32,config);
+        float value=static_cast<float>(_wtof(headingLimit));
+        if(std::isfinite(value) && value>=0 && value<=180)nativeHeadingMaxDeg=value;
+    }
     HandWeaponMotionDiagnostic::enabled=GetPrivateProfileIntW(L"VR",L"HandWeaponMotionLog",0,config)!=0;
     if(enabled && (nativeLookPitchLock || nativeLookHeading)) {
         auto target=reinterpret_cast<void*>(VA(0x7ac8c0));

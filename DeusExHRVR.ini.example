@@ -27,6 +27,17 @@ NativeLookHeading=0
 ; Take the VR camera's horizontal position from the player's own position,
 ; discarding the animation's sideways offset. Needs NativeLookHeading.
 NativeCameraPosition=0
+; Safety limit on NativeLookHeading, in degrees. The aiming yaw replaces the
+; camera's heading only while the two still agree about where you are facing.
+; A scripted third-person shot - a takedown, Icarus, Typhoon - swings the camera
+; away from your body on a frame that still looks like ordinary gameplay to
+; every other guard, and the substitution then lands a heading tens of degrees
+; from the scene you are looking at. Past this limit the frame is left alone and
+; counted as 'rejected' in DeusExHRVR-camera.log; NativeCameraPosition stands
+; down with it. Ordinary play stays under 0.2 degrees, so the default never
+; binds during normal movement. 0 disables the limit and always substitutes,
+; which is the behaviour before October 20, 2026. Restart after changing it.
+NativeLookHeadingMaxDeg=60
 
 ; Master switch for ALL right-controller features. 0 disables controller
 ; tracking, Xbox button emulation, weapon motion, and controller directions.
