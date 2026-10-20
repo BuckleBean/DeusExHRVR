@@ -60,10 +60,23 @@ public:
         if(!GdiFlush()||drawError)return nullptr;
         auto data=static_cast<uint32_t*>(pixels);
         for(int y=area.y;y<area.y+area.h;++y)for(int x=area.x;x<area.x+area.w;++x)data[y*SettingsMenu::Width+x]|=0xff000000;
-        if(s.pointer) {
+        // The native cursor continues moving underneath the XR panel. Draw its
+        // gold-arrow counterpart only where this opaque layer would cover it.
+        if(s.pointer&&area.Has(s.x,s.y)) {
             int px=int(s.x),py=int(s.y);
-            for(int y=std::max(0,py-5);y<std::min(SettingsMenu::Height,py+6);++y)
-                for(int x=std::max(0,px-5);x<std::min(SettingsMenu::Width,px+6);++x)data[y*SettingsMenu::Width+x]=0xffffffff;
+            POINT arrow[]={{px,py},{px+42,py+19},{px+25,py+25},{px+19,py+42}};
+            auto brush=CreateSolidBrush(RGB(239,171,35));auto pen=CreatePen(PS_SOLID,3,RGB(116,72,16));
+            auto ob=SelectObject(dc,brush),op=SelectObject(dc,pen);
+            Polygon(dc,arrow,4);SelectObject(dc,ob);SelectObject(dc,op);DeleteObject(brush);DeleteObject(pen);
+            if(!GdiFlush())return nullptr;
+            // GDI leaves alpha unset. Cover the cursor's silhouette, including
+            // the portion extending past the panel edge, without a square halo.
+            POINT pts[]={{px-2,py-2},{px+46,py+19},{px+27,py+27},{px+19,py+46}};
+            auto region=CreatePolygonRgn(pts,4,WINDING);
+            for(int cy=std::max(0,py-2);cy<std::min(SettingsMenu::Height,py+47);++cy)
+                for(int cx=std::max(0,px-2);cx<std::min(SettingsMenu::Width,px+47);++cx)
+                    if(PtInRegion(region,cx,cy)&&data[cy*SettingsMenu::Width+cx])data[cy*SettingsMenu::Width+cx]|=0xff000000;
+            DeleteObject(region);
         }
         return pixels;
     }

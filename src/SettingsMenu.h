@@ -52,6 +52,7 @@ struct InputGate {
 };
 struct State {
     bool nativePointer{},nativeDown{},nativeCapture{};
+    bool stickNavigation{};float stickAnchorX{},stickAnchorY{};
     bool open{},blocked{},releaseGate{},triggerDown{},armed{},visible{},pointer{},stickArmed{};
     float x{},y{};uint32_t request{};float requested{};
     float draft{},original{};bool saving{},committed{};
@@ -59,6 +60,12 @@ struct State {
     void Update(bool eligible,bool focused,bool ray,float px,float py,const GamepadMapping::Input& in,const Transport::MenuState& game) {
         visible=eligible&&focused;pointer=visible&&ray;x=px;y=py;
         const bool wasOpen=open;
+        // Stick navigation owns focus until deliberate aim movement or a trigger.
+        if(!open&&(std::abs(in.leftX)>.2f||std::abs(in.leftY)>.2f)){
+            stickNavigation=true;stickAnchorX=x;stickAnchorY=y;
+        }else if(stickNavigation&&pointer&&
+            (std::hypot(x-stickAnchorX,y-stickAnchorY)>35.f||in.rightTrigger>.05f))stickNavigation=false;
+        if(stickNavigation&&!open)pointer=false;
         if(saving&&game.acknowledged==request){
             if(game.saved==request&&game.result==0){saving=false;open=false;armed=false;}
             else if(game.result==2||game.result==3)saving=false;
@@ -70,9 +77,10 @@ struct State {
         if(visible&&hit&&in.rightTrigger>.05f)releaseGate=true;
         // Lock a press to the native menu or the VR panel until trigger release.
         if(in.rightTrigger<.05f)nativeCapture=false;
-        nativePointer=pointer&&!open&&!Entry.Has(x,y)&&!releaseGate;
-        if(nativePointer&&armed&&in.rightTrigger>.05f)nativeCapture=true;
-        nativeDown=nativePointer&&nativeCapture&&in.rightTrigger>.5f;
+        nativePointer=pointer;
+        bool nativeHit=pointer&&!open&&!Entry.Has(x,y)&&!releaseGate;
+        if(nativeHit&&armed&&in.rightTrigger>.05f)nativeCapture=true;
+        nativeDown=nativeHit&&nativeCapture&&in.rightTrigger>.5f;
         const bool down=in.rightTrigger>.5f;
         if(visible&&armed&&down&&!triggerDown&&hit&&!nativeCapture) {
             if(!open){open=true;releaseGate=true;draft=original=game.degrees;committed=false;}

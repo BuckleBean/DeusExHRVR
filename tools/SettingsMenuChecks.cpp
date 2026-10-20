@@ -66,6 +66,13 @@ int wmain(int argc,wchar_t** argv) {
     in.rightTrigger=0;update(800,450);update(800,450);assert(!s.blocked&&s.nativePointer);
     s.Update(false,false,false,0,0,in,game);in.rightTrigger=.8f;update(800,450);assert(!s.nativeDown);
     in.rightTrigger=0;update(800,450);in.rightTrigger=.8f;update(800,450);assert(s.nativeDown);
+    s={};in={};in.active=true;update(800,450);
+    in.leftY=.8f;update(800,450);assert(!s.nativePointer&&!s.blocked);
+    in.leftY=0;update(805,452);assert(!s.nativePointer); // tremor cannot steal focus
+    update(850,450);assert(s.nativePointer); // deliberate aim resumes mouse
+    in.leftY=.8f;update(850,450);in.leftY=0;in.rightTrigger=.1f;update(850,450);assert(s.nativePointer);
+    in.rightTrigger=0;update(1200,450);in.rightTrigger=.8f;update(1200,450);
+    assert(s.open&&s.nativePointer&&!s.nativeDown); // arrow moves over VR, click remains isolated
     LONG dx{},dy{};
     assert(NativeMenuPointer::Position(.5f,.5f,{0,0,1920,1080},{0,0},{-1920,0,1920,1080},dx,dy));
     assert(dx>49000&&dx<49200&&dy>32700&&dy<32800);
@@ -75,7 +82,7 @@ int wmain(int argc,wchar_t** argv) {
     mouse.Update(true,true,0,0,send);assert(!mouse.down); // held at entry
     mouse.Update(true,false,0,0,send);mouse.Update(true,true,0,0,send);
     assert(mouse.down&&(flags&MOUSEEVENTF_LEFTDOWN));
-    mouse.Update(true,true,0,0,send);assert(!(flags&MOUSEEVENTF_LEFTDOWN));
+    flags=0;mouse.Update(true,true,0,0,send);assert(flags==0); // no redundant mouse movement
     success=false;mouse.Update(false,false,0,0,send);assert(mouse.down); // retry failed release
     success=true;mouse.Update(false,false,0,0,send);assert(!mouse.down&&(flags&MOUSEEVENTF_LEFTUP));
     mouse.Update(true,true,0,0,send);assert(!mouse.down); // no refocus click
@@ -110,7 +117,7 @@ int wmain(int argc,wchar_t** argv) {
     for(bool panelOpen : {false,true}){
         s.open=panelOpen;s.x=800;s.y=450;
         pixels=static_cast<const uint32_t*>(draw.Draw(s,game));assert(pixels);
-        assert(pixels[450*SettingsMenu::Width+800]==0xffffffff);
+        assert(pixels[450*SettingsMenu::Width+800]==0); // native arrow owns regular menu
         assert(pixels[440*SettingsMenu::Width+800]==0);
     }
     s.x=1450;s.y=465;

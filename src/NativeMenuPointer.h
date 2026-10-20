@@ -14,15 +14,16 @@ inline bool Position(float x,float y,RECT client,POINT origin,RECT desktop,LONG&
     dy=LONG(std::clamp((py-desktop.top)*65535./(desktop.bottom-desktop.top-1),0.,65535.));return true;
 }
 struct State {
-    bool down{},armed{};
+    bool down{},armed{},positioned{};LONG lastX{},lastY{};
     // Losing focus/eligibility/ray releases our press and requires a new release.
     template<class Send> void Update(bool active,bool pressed,LONG x,LONG y,Send send) {
-        if(!active){armed=false;if(down&&send(0,0,MOUSEEVENTF_LEFTUP))down=false;return;}
+        if(!active){armed=false;positioned=false;if(down&&send(0,0,MOUSEEVENTF_LEFTUP))down=false;return;}
         if(!pressed)armed=true;
         bool want=pressed&&armed;
+        if(positioned&&x==lastX&&y==lastY&&want==down)return;
         DWORD flags=MOUSEEVENTF_MOVE|MOUSEEVENTF_ABSOLUTE|MOUSEEVENTF_VIRTUALDESK;
         if(want!=down)flags|=want?MOUSEEVENTF_LEFTDOWN:MOUSEEVENTF_LEFTUP;
-        if(send(x,y,flags))down=want;
+        if(send(x,y,flags)){down=want;lastX=x;lastY=y;positioned=true;}
     }
 };
 inline State state;
