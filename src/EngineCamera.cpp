@@ -1595,8 +1595,21 @@ float nativeHeadingPeakDelta{};
 // windows containing scripted-camera transitions recorded 90.3 and 114.5 deg.
 // Reject rather than clamp: a partial heading is not a heading anyone aimed.
 // 0 restores the pre-2026-10-20 behaviour of always substituting.
-uint64_t nativeHeadingRejected{};
+// The limit alone is not enough. A scripted shot ENDS by swinging the camera
+// back onto the body, so the disagreement sweeps down through the limit instead
+// of stopping at it, and the first frame under the limit is still tens of
+// degrees wrong. Measured 2026-10-20 with the limit at 60: the log recorded an
+// applied maxRemovedDeg of 59.9694, then 32.7, 17.8 and 5.7 on the way down,
+// and Mark still saw the artifact at the tail of two of five takedowns. So the
+// rejection latches: once out, stay out until the two headings have agreed
+// within nativeHeadingCalmDeg for a continuous nativeHeadingCalmMs, rather
+// than resuming the moment the sweep crosses the limit. Ordinary play sits at
+// 0.1 deg, so the latch clears almost immediately in normal movement.
+uint64_t nativeHeadingRejected{},nativeHeadingCalmSince{};
 float nativeHeadingMaxDeg=60.f,nativeHeadingRejectedPeak{};
+bool nativeHeadingLatched{};
+constexpr float nativeHeadingCalmDeg=2.f;
+constexpr uint64_t nativeHeadingCalmMs=250;
 bool nativeHeadingWasUsed{};
 using NativeLookInput=float*(__thiscall*)(void*,float*,void*);
 using NativeLookSet=void(__thiscall*)(void*,const float*);
@@ -3394,11 +3407,28 @@ void __fastcall UpdateHook(void* self,void*) {
                        reinterpret_cast<uintptr_t>(instance),engineFrame)) {
                     auto clean=NativeHeading::Base(nativeHeadingSample.yaw,renderBase);
                     const float delta=std::abs(CameraMath::HeadingDelta(renderBase,clean))*57.2957795f;
-                    if(nativeHeadingMaxDeg>0.f && std::isfinite(delta) && delta>nativeHeadingMaxDeg) {
+                    bool reject=false;
+                    if(nativeHeadingMaxDeg>0.f) {
+                        if(!std::isfinite(delta))reject=true;
+                        else if(nativeHeadingLatched) {
+                            // Hold out through the camera's return sweep.
+                            if(delta<=nativeHeadingCalmDeg) {
+                                if(!nativeHeadingCalmSince)nativeHeadingCalmSince=now;
+                                if(now-nativeHeadingCalmSince>=nativeHeadingCalmMs) {
+                                    nativeHeadingLatched=false;nativeHeadingCalmSince=0;
+                                }
+                            } else nativeHeadingCalmSince=0;
+                            reject=nativeHeadingLatched;
+                        } else if(delta>nativeHeadingMaxDeg) {
+                            nativeHeadingLatched=true;nativeHeadingCalmSince=0;reject=true;
+                        }
+                    }
+                    if(reject) {
                         // The camera is somewhere the aim does not explain: leave
-                        // it alone for this frame. NativeCameraPosition keys off
+                        // it alone. NativeCameraPosition keys off
                         // current.nativeHeading, so it stands down with us.
-                        nativeHeadingRejectedPeak=std::max(nativeHeadingRejectedPeak,delta);
+                        if(std::isfinite(delta))
+                            nativeHeadingRejectedPeak=std::max(nativeHeadingRejectedPeak,delta);
                         ++nativeHeadingRejected;
                     } else {
                         nativeHeadingPeakDelta=std::max(nativeHeadingPeakDelta,delta);
@@ -3407,10 +3437,11 @@ void __fastcall UpdateHook(void* self,void*) {
                 } else ++nativeHeadingFallback;
                 if(now-nativeHeadingLogTick>=2000) {
                     FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")) {
-                        fprintf(f,"nativeLookHeading used=%llu fallback=%llu active=%d engineFrame=%u sampleFrame=%u maxRemovedDeg=%g rejected=%llu maxRejectedDeg=%g limitDeg=%g\n",
+                        fprintf(f,"nativeLookHeading used=%llu fallback=%llu active=%d engineFrame=%u sampleFrame=%u maxRemovedDeg=%g rejected=%llu maxRejectedDeg=%g limitDeg=%g latched=%d\n",
                             nativeHeadingUsed,nativeHeadingFallback,int(current.nativeHeading),engineFrame,
                             nativeHeadingSample.engineFrame,nativeHeadingPeakDelta,
-                            nativeHeadingRejected,nativeHeadingRejectedPeak,nativeHeadingMaxDeg);fclose(f);
+                            nativeHeadingRejected,nativeHeadingRejectedPeak,nativeHeadingMaxDeg,
+                            int(nativeHeadingLatched));fclose(f);
                     }
                     nativeHeadingLogTick=now;nativeHeadingPeakDelta=0;nativeHeadingRejectedPeak=0;
                 }

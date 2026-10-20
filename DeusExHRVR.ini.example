@@ -34,9 +34,13 @@ NativeCameraPosition=0
 ; every other guard, and the substitution then lands a heading tens of degrees
 ; from the scene you are looking at. Past this limit the frame is left alone and
 ; counted as 'rejected' in DeusExHRVR-camera.log; NativeCameraPosition stands
-; down with it. Ordinary play stays under 0.2 degrees, so the default never
-; binds during normal movement. 0 disables the limit and always substitutes,
-; which is the behaviour before October 20, 2026. Restart after changing it.
+; down with it. Because such a shot ENDS by swinging the camera back onto your
+; body, the disagreement sweeps down through the limit rather than stopping at
+; it, so the rejection latches: once out it stays out until the two headings
+; agree within 2 degrees for a continuous 250 ms. Ordinary play sits at about
+; 0.1 degrees, so the limit never binds during normal movement and the latch
+; clears immediately. 0 disables both and always substitutes, which is the
+; behaviour before October 20, 2026. Restart after changing it.
 NativeLookHeadingMaxDeg=60
 
 ; Master switch for ALL right-controller features. 0 disables controller
