@@ -23,7 +23,7 @@ public:
     }
     void Text(const wchar_t* text,int x,int y,int w,int h,bool heading=false) {
         auto old=SelectObject(dc,heading?title:font);SetBkMode(dc,TRANSPARENT);SetTextColor(dc,heading?RGB(255,190,55):RGB(244,227,191));
-        RECT r{x,y,x+w,y+h};if(!DrawTextW(dc,text,-1,&r,DT_CENTER|DT_VCENTER|DT_SINGLELINE))drawError=true;SelectObject(dc,old);
+        RECT r{x,y,x+w,y+h};if(!DrawTextW(dc,text,-1,&r,DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_NOPREFIX))drawError=true;SelectObject(dc,old);
     }
     void Button(SettingsMenu::Rect r,const wchar_t* label,bool hover) {
         auto brush=CreateSolidBrush(hover?RGB(119,78,12):RGB(35,28,16));auto pen=CreatePen(PS_SOLID,2,RGB(210,150,30));
