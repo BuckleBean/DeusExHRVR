@@ -3,6 +3,7 @@
 #include "EngineCamera.h"
 #include "SettingsPersistence.h"
 #include "SettingsMenu.h"
+#include "NativeMenuPointer.h"
 #include <Xinput.h>
 #include <mutex>
 #include <cstring>
@@ -421,6 +422,7 @@ void Install() {
 }
 void SetChannel(Transport::Header* header) {
     std::lock_guard lock(guard);
+    NativeMenuPointer::Update({},false,GetTickCount64());
     if(!configured) {
         GetFullPathNameW(L"DeusExHRVR.ini",MAX_PATH,configPath,nullptr);
         enabled=DirectionConfig::MotionEnabled(configPath);configured=true;
@@ -430,7 +432,7 @@ void SetChannel(Transport::Header* header) {
 }
 void MenuTick(unsigned screenReasons) {
     std::lock_guard lock(guard);
-    if(!Transport::LockMenu(channel))return;
+    if(!Transport::LockMenu(channel)){NativeMenuPointer::Update({},false,GetTickCount64());return;}
     auto& m=channel->menu;auto now=GetTickCount64();
     // Bit 2 is ScreenMode::Menu (TitleMenu/PauseMenu), not the inventory bit 32.
     m.eligible=SettingsMenu::Eligible(screenReasons);m.gameTick=now;
@@ -448,7 +450,9 @@ void MenuTick(unsigned screenReasons) {
         if(writer.failed.load()==m.acknowledged)m.result=3;
         else {m.saved=m.acknowledged;m.result=0;}
     }
+    auto pointer=m;
     Transport::UnlockMenu(channel);
+    NativeMenuPointer::Update(pointer,pointer.eligible!=0,now);
 }
 void OnPresent(bool capture) {
     std::lock_guard lock(guard);Install();

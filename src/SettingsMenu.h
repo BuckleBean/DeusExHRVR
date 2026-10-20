@@ -51,18 +51,24 @@ struct InputGate {
     }
 };
 struct State {
+    bool nativePointer{},nativeDown{},nativeCapture{};
     bool open{},blocked{},releaseGate{},triggerDown{},armed{},visible{},pointer{},stickArmed{};
     float x{},y{};uint32_t request{};float requested{};
     void Update(bool eligible,bool focused,bool ray,float px,float py,const GamepadMapping::Input& in,const Transport::MenuState& game) {
         visible=eligible&&focused;pointer=visible&&ray;x=px;y=py;
         const bool wasOpen=open;
-        if(!visible){open=false;armed=false;}
+        if(!visible){open=false;armed=false;nativeCapture=false;}
         if(visible&&in.rightTrigger<.05f)armed=true;
         bool hit=pointer&&(open?Panel.Has(x,y):Entry.Has(x,y));
         // Capture from first trigger movement, before the game's low threshold.
         if(visible&&hit&&in.rightTrigger>.05f)releaseGate=true;
+        // Lock a press to the native menu or the VR panel until trigger release.
+        if(in.rightTrigger<.05f)nativeCapture=false;
+        nativePointer=pointer&&!open&&!Entry.Has(x,y)&&!releaseGate;
+        if(nativePointer&&armed&&in.rightTrigger>.05f)nativeCapture=true;
+        nativeDown=nativePointer&&nativeCapture&&in.rightTrigger>.5f;
         const bool down=in.rightTrigger>.5f;
-        if(visible&&armed&&down&&!triggerDown&&hit) {
+        if(visible&&armed&&down&&!triggerDown&&hit&&!nativeCapture) {
             if(!open){open=true;releaseGate=true;}
             else if(Back.Has(x,y)){open=false;armed=false;}
             else if(game.snapEnabled&&request==game.acknowledged) {
@@ -81,8 +87,8 @@ struct State {
         }
         triggerDown=down;
         if(wasOpen&&!open)releaseGate=true;
-        blocked=open||releaseGate;
-        if(!open&&in.active&&Neutral(in)){releaseGate=false;blocked=false;}
+        blocked=open||releaseGate||nativeCapture;
+        if(!open&&!nativeCapture&&in.active&&Neutral(in)){releaseGate=false;blocked=false;}
     }
 };
 }

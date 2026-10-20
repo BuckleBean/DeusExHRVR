@@ -1,5 +1,6 @@
 #include "SettingsMenuDraw.h"
 #include "SettingsPersistence.h"
+#include "NativeMenuPointer.h"
 #include <cassert>
 #include <filesystem>
 #include <fstream>
@@ -8,8 +9,8 @@
 
 int wmain(int argc,wchar_t** argv) {
     assert(argc==2);std::filesystem::path out=argv[1];std::filesystem::create_directories(out);
-    Transport::Header h{};h.magic=Transport::Magic;h.version=6;h.pid=42;
-    assert(!Transport::Compatible(&h,42));h.version=7;assert(Transport::Compatible(&h,42));
+    Transport::Header h{};h.magic=Transport::Magic;h.version=7;h.pid=42;
+    assert(!Transport::Compatible(&h,42));h.version=Transport::Version;assert(Transport::Compatible(&h,42));
     assert(Transport::LockMenu(&h));Transport::MenuState read{};assert(!Transport::ReadMenu(&h,read));Transport::UnlockMenu(&h);
     assert(Transport::ReadMenu(&h,read));assert(Transport::Fresh(100,599));assert(!Transport::Fresh(100,600));assert(!Transport::Fresh(100,99));
     assert(SettingsMenu::Eligible(2));assert(SettingsMenu::Eligible(2|32));
@@ -49,6 +50,27 @@ int wmain(int argc,wchar_t** argv) {
     update(1250,450);in.rightX=.8f;update(1250,450);assert(s.request==1&&s.requested==45);
     game.acknowledged=1;game.degrees=45;update(1250,450);assert(s.request==1);
     in.rightX=0;update(1250,450);in.rightX=-.8f;update(1250,450);assert(s.request==2&&s.requested==30);
+    // Native-menu hover and click route independently of the VR panel.
+    s={};in={};in.active=true;update(800,450);assert(s.nativePointer&&!s.nativeDown&&!s.blocked);
+    in.rightTrigger=.1f;update(800,450);assert(s.blocked&&!s.nativeDown);
+    in.rightTrigger=.8f;update(800,450);assert(s.nativeDown&&s.blocked&&!s.open);
+    update(1200,450);assert(!s.open&&!s.nativeDown&&s.blocked); // drag cannot open VR panel
+    in.rightTrigger=0;update(800,450);update(800,450);assert(!s.blocked&&s.nativePointer);
+    s.Update(false,false,false,0,0,in,game);in.rightTrigger=.8f;update(800,450);assert(!s.nativeDown);
+    in.rightTrigger=0;update(800,450);in.rightTrigger=.8f;update(800,450);assert(s.nativeDown);
+    LONG dx{},dy{};
+    assert(NativeMenuPointer::Position(.5f,.5f,{0,0,1920,1080},{0,0},{-1920,0,1920,1080},dx,dy));
+    assert(dx>49000&&dx<49200&&dy>32700&&dy<32800);
+    assert(!NativeMenuPointer::Position(1,0,{0,0,1920,1080},{0,0},{0,0,1920,1080},dx,dy));
+    NativeMenuPointer::State mouse;DWORD flags{};bool success=true;
+    auto send=[&](LONG,LONG,DWORD f){flags=f;return success;};
+    mouse.Update(true,true,0,0,send);assert(!mouse.down); // held at entry
+    mouse.Update(true,false,0,0,send);mouse.Update(true,true,0,0,send);
+    assert(mouse.down&&(flags&MOUSEEVENTF_LEFTDOWN));
+    mouse.Update(true,true,0,0,send);assert(!(flags&MOUSEEVENTF_LEFTDOWN));
+    success=false;mouse.Update(false,false,0,0,send);assert(mouse.down); // retry failed release
+    success=true;mouse.Update(false,false,0,0,send);assert(!mouse.down&&(flags&MOUSEEVENTF_LEFTUP));
+    mouse.Update(true,true,0,0,send);assert(!mouse.down); // no refocus click
     // Existing mappings retain their calibration and menu chords.
     GamepadMapping::Mapper mapper;in={};in.active=true;in.leftClick=in.rightClick=true;auto pad=mapper.Update(in,1);assert(!pad.buttons&&!pad.leftTrigger&&!pad.rightTrigger);
     mapper.Reset();in={};in.active=true;in.rightClick=in.x=true;pad=mapper.Update(in,1);assert(pad.buttons&XINPUT_GAMEPAD_BACK);

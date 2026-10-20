@@ -4,14 +4,16 @@
 #include <cwchar>
 #include <cstddef>
 namespace Transport {
-inline constexpr uint32_t Magic=0x52485844, Version=7;
+inline constexpr uint32_t Magic=0x52485844, Version=8;
 struct alignas(8) MenuState {
     uint64_t gameTick,hostTick;
     uint32_t eligible,blocked,snapEnabled,request;
     uint32_t acknowledged,saved,result,reserved;
     float degrees,requestedDegrees;
+    float pointerX,pointerY;
+    uint32_t pointerActive,pointerDown;
 };
-static_assert(sizeof(MenuState)==56);
+static_assert(sizeof(MenuState)==72);
 struct Quaternion {float x,y,z,w;};
 struct Vector {float x,y,z;};
 struct Pose {Quaternion orientation;Vector position;};
@@ -58,7 +60,7 @@ struct alignas(8) Header {
     uint32_t menuPadding;
     MenuState menu;
 };
-static_assert(sizeof(Header)==656);
+static_assert(sizeof(Header)==672);
 static_assert(offsetof(Header,tracking)==72 && offsetof(Header,rendered)==328);
 inline bool Compatible(const Header* h,DWORD pid) {
     return h && h->magic==Magic && h->version==Version && h->pid==pid;

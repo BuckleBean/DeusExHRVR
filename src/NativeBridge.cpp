@@ -106,6 +106,8 @@ struct Bridge {
         if(Transport::LockMenu(trackingChannel)) {
             auto& m=trackingChannel->menu;m.hostTick=t.tick;m.blocked=menuUI.blocked;
             m.request=menuUI.request;m.requestedDegrees=menuUI.requested;
+            m.pointerX=menuUI.x/SettingsMenu::Width;m.pointerY=menuUI.y/SettingsMenu::Height;
+            m.pointerActive=menuUI.nativePointer;m.pointerDown=menuUI.nativeDown;
             Transport::UnlockMenu(trackingChannel);
         }
     }
