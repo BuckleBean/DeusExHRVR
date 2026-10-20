@@ -47,12 +47,15 @@ public:
             Text(L"DEUS EX / VR SETTINGS",1040,255,490,60,true);
             Text(L"CONTROLS",1070,335,430,40,true);
             Text(L"Snap-turn angle",1070,380,430,40);
-            wchar_t value[40];swprintf_s(value,L"%.6g\u00b0",double(game.degrees));Text(value,1180,430,210,80,true);
+            wchar_t value[40];swprintf_s(value,L"%.6g\u00b0",double(s.draft));Text(value,1180,430,210,80,true);
             Button(SettingsMenu::Minus,L"-",hovered(SettingsMenu::Minus));Button(SettingsMenu::Plus,L"+",hovered(SettingsMenu::Plus));
-            const wchar_t* status=!game.snapEnabled?L"Snap turning is disabled":s.request!=game.acknowledged?L"Applying...":
-                game.result==2?L"Change refused":game.result==3?L"Applied - could not save":game.saved!=game.acknowledged?L"Applied - saving...":game.acknowledged?L"Saved":L"Current setting";
-            Text(status,1040,535,490,45);Text(L"Trigger selects / stick adjusts",1040,585,490,40);
-            Button(SettingsMenu::Back,L"BACK",hovered(SettingsMenu::Back));
+            const wchar_t* status=s.saving?L"Saving...":s.committed&&game.result==3?L"Applied - save failed; retry":
+                s.committed&&game.result==2?L"Change refused; retry":!game.snapEnabled?L"Snap turning is disabled":s.Dirty()?L"Unsaved changes":L"Current setting";
+            Text(status,1040,525,490,40);Text(L"Trigger selects / stick adjusts",1040,570,490,40);
+            if(s.Dirty()){
+                Button(SettingsMenu::Save,s.saving?L"SAVING...":L"SAVE & BACK",!s.saving&&hovered(SettingsMenu::Save));
+                Button(SettingsMenu::Discard,s.committed?L"BACK":L"DISCARD & BACK",!s.saving&&hovered(SettingsMenu::Discard));
+            }else Button(SettingsMenu::Back,L"BACK",hovered(SettingsMenu::Back));
         }
         if(!GdiFlush()||drawError)return nullptr;
         auto data=static_cast<uint32_t*>(pixels);

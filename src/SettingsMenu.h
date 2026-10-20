@@ -8,7 +8,7 @@ namespace SettingsMenu {
 constexpr int Width=1600,Height=900;
 struct Rect {int x,y,w,h; bool Has(float px,float py) const {return px>=x&&py>=y&&px<x+w&&py<y+h;}};
 inline constexpr Rect Entry{1080,420,410,70},Panel{1020,230,530,550};
-inline constexpr Rect Minus{1070,430,100,80},Plus{1400,430,100,80},Back{1070,650,430,70};
+inline constexpr Rect Minus{1070,430,100,80},Plus{1400,430,100,80},Back{1070,650,430,70},Save{1070,625,430,60},Discard{1070,700,430,60};
 inline Transport::Vector Rotate(Transport::Quaternion q,Transport::Vector v) {
     Transport::Vector t{2*(q.y*v.z-q.z*v.y),2*(q.z*v.x-q.x*v.z),2*(q.x*v.y-q.y*v.x)};
     return {v.x+q.w*t.x+q.y*t.z-q.z*t.y,v.y+q.w*t.y+q.z*t.x-q.x*t.z,v.z+q.w*t.z+q.x*t.y-q.y*t.x};
@@ -54,10 +54,16 @@ struct State {
     bool nativePointer{},nativeDown{},nativeCapture{};
     bool open{},blocked{},releaseGate{},triggerDown{},armed{},visible{},pointer{},stickArmed{};
     float x{},y{};uint32_t request{};float requested{};
+    float draft{},original{};bool saving{},committed{};
+    bool Dirty() const {return draft!=original||committed;}
     void Update(bool eligible,bool focused,bool ray,float px,float py,const GamepadMapping::Input& in,const Transport::MenuState& game) {
         visible=eligible&&focused;pointer=visible&&ray;x=px;y=py;
         const bool wasOpen=open;
-        if(!visible){open=false;armed=false;nativeCapture=false;}
+        if(saving&&game.acknowledged==request){
+            if(game.saved==request&&game.result==0){saving=false;open=false;armed=false;}
+            else if(game.result==2||game.result==3)saving=false;
+        }
+        if(!visible){open=false;draft=original;armed=false;nativeCapture=false;}
         if(visible&&in.rightTrigger<.05f)armed=true;
         bool hit=pointer&&(open?Panel.Has(x,y):Entry.Has(x,y));
         // Capture from first trigger movement, before the game's low threshold.
@@ -69,11 +75,12 @@ struct State {
         nativeDown=nativePointer&&nativeCapture&&in.rightTrigger>.5f;
         const bool down=in.rightTrigger>.5f;
         if(visible&&armed&&down&&!triggerDown&&hit&&!nativeCapture) {
-            if(!open){open=true;releaseGate=true;}
-            else if(Back.Has(x,y)){open=false;armed=false;}
-            else if(game.snapEnabled&&request==game.acknowledged) {
+            if(!open){open=true;releaseGate=true;draft=original=game.degrees;committed=false;}
+            else if(!saving&&((!Dirty()&&Back.Has(x,y))||(Dirty()&&Discard.Has(x,y)))){open=false;armed=false;}
+            else if(!saving&&Dirty()&&Save.Has(x,y)){requested=draft;++request;saving=true;committed=true;}
+            else if(!saving&&game.snapEnabled) {
                 int delta=Minus.Has(x,y)?-15:Plus.Has(x,y)?15:0;
-                if(delta){requested=std::clamp(game.degrees+delta,5.f,180.f);++request;}
+                if(delta){draft=std::clamp(draft+delta,5.f,180.f);}
             }
         }
         // One step per stick deflection; no frame-rate-dependent repeats.
@@ -81,9 +88,9 @@ struct State {
         if(std::abs(in.rightX)<.2f)stickArmed=true;
         if(open&&pointer&&Panel.Has(x,y)&&stickArmed&&std::abs(in.rightX)>.6f&&
            std::abs(in.rightX)>std::abs(in.rightY)&&in.rightTrigger<.05f&&
-           game.snapEnabled&&request==game.acknowledged) {
-            requested=std::clamp(game.degrees+(in.rightX>0?15.f:-15.f),5.f,180.f);
-            ++request;stickArmed=false;
+           !saving&&game.snapEnabled) {
+            draft=std::clamp(draft+(in.rightX>0?15.f:-15.f),5.f,180.f);
+            stickArmed=false;
         }
         triggerDown=down;
         if(wasOpen&&!open)releaseGate=true;

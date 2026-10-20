@@ -33,23 +33,31 @@ int wmain(int argc,wchar_t** argv) {
     update(1200,450);assert(!s.open&&!s.blocked);
     in.rightTrigger=.1f;update(1200,450);assert(s.blocked&&!s.open);
     in.rightTrigger=.8f;update(1200,450);assert(s.open&&s.blocked);
-    // Holding the opening trigger cannot also change a setting.
+    // Edits stay local, including rapid clicks, until explicit save.
+    auto click=[&](float px,float py){in.rightTrigger=0;update(px,py);in.rightTrigger=.8f;update(px,py);};
     update(1450,465);assert(!s.request);
-    in.rightTrigger=0;update(1450,465);in.rightTrigger=.8f;update(1450,465);assert(s.request==1&&s.requested==45);
-    in.rightTrigger=0;update(1450,465);in.rightTrigger=.8f;update(1450,465);assert(s.request==1); // pending request
-    game.acknowledged=1;game.degrees=180;in.rightTrigger=0;update(1450,465);in.rightTrigger=.8f;update(1450,465);assert(s.requested==180);
-    in.rightTrigger=0;update(1200,680);in.rightTrigger=.8f;update(1200,680);assert(!s.open&&s.blocked);
-    in.a=true;in.rightTrigger=0;update(1200,680);assert(s.blocked);in.a=false;update(1200,680);assert(!s.blocked);
-    in.rightTrigger=.8f;s.Update(false,false,false,0,0,in,game);assert(!s.visible&&!s.open);
-    // Held trigger at focus regain must not open the menu.
-    update(1200,450);assert(!s.open);in.rightTrigger=0;update(1200,450);in.rightTrigger=.8f;update(1200,450);assert(s.open);
-    s.Update(false,true,false,0,0,in,game);assert(!s.open&&s.blocked);
-    in={};s.Update(false,false,false,0,0,in,game);assert(s.blocked); // inactive is not observed release
-    in.active=true;s.Update(false,true,false,0,0,in,game);assert(!s.blocked);
-    s={};s.open=true;game.acknowledged=0;game.degrees=30;
-    update(1250,450);in.rightX=.8f;update(1250,450);assert(s.request==1&&s.requested==45);
-    game.acknowledged=1;game.degrees=45;update(1250,450);assert(s.request==1);
-    in.rightX=0;update(1250,450);in.rightX=-.8f;update(1250,450);assert(s.request==2&&s.requested==30);
+    for(int n=0;n<4;++n)click(1450,465);
+    assert(s.draft==90&&s.request==0&&game.degrees==30);
+    click(1200,730);assert(!s.open&&s.request==0); // discard
+    click(1200,450);assert(s.open&&s.draft==30);
+    click(1450,465);click(1200,650);
+    assert(s.open&&s.saving&&s.request==1&&s.requested==45);
+    click(1450,465);assert(s.request==1&&s.draft==45); // pending blocks edits
+    game.acknowledged=game.saved=1;game.result=0;game.degrees=45;
+    in.rightTrigger=0;update(1200,650);assert(!s.open&&!s.saving);
+    click(1200,450);click(1450,465);click(1200,650);
+    game.acknowledged=2;game.result=3;update(1200,650);
+    assert(s.open&&!s.saving&&s.committed); // failure stays open, no false success
+    click(1200,650);assert(s.request==3&&s.saving); // explicit retry
+    game.acknowledged=game.saved=3;game.result=0;game.degrees=60;
+    in.rightTrigger=0;update(1200,650);assert(!s.open);
+    click(1200,450);click(1450,465);
+    s.Update(false,false,false,0,0,in,game);assert(!s.open&&s.draft==s.original&&s.request==3);
+    update(1200,450);assert(!s.open); // held trigger on refocus
+    click(1200,450);assert(s.open&&s.draft==60);
+    in.rightTrigger=0;update(1250,450);in.rightX=.8f;update(1250,450);
+    assert(s.draft==75&&s.request==3);update(1250,450);assert(s.draft==75);
+    in.rightX=0;update(1250,450);in.rightX=-.8f;update(1250,450);assert(s.draft==60);
     // Native-menu hover and click route independently of the VR panel.
     s={};in={};in.active=true;update(800,450);assert(s.nativePointer&&!s.nativeDown&&!s.blocked);
     in.rightTrigger=.1f;update(800,450);assert(s.blocked&&!s.nativeDown);
@@ -93,7 +101,7 @@ int wmain(int argc,wchar_t** argv) {
     assert(writer.completed.load()==101&&writer.failed.load()!=101);
     assert(GetPrivateProfileIntW(L"VR",L"SnapTurnDegrees",0,ini.c_str())==60);
     assert(GetPrivateProfileIntW(L"VR",L"SnapTurnMouseCounts",0,ini.c_str())==600);
-    SettingsMenuDraw draw;s={};s.visible=true;game={};game.snapEnabled=1;game.degrees=30;
+    SettingsMenuDraw draw;s={};s.visible=true;s.draft=s.original=30;game={};game.snapEnabled=1;game.degrees=30;
     assert(draw.Save((out/L"menu-entry.bmp").c_str(),s,game));s.open=true;s.pointer=true;s.x=1450;s.y=465;
     assert(draw.Save((out/L"menu-panel.bmp").c_str(),s,game));
     auto pixels=static_cast<const uint32_t*>(draw.Draw(s,game));
@@ -122,5 +130,8 @@ int wmain(int argc,wchar_t** argv) {
         }else assert(bright(SettingsMenu::Entry)>500);
     }
     s.open=true;assert(draw.Save((out/L"menu-panel.bmp").c_str(),s,game));
+    s.draft=90;pixels=static_cast<const uint32_t*>(draw.Draw(s,game));assert(pixels);
+    assert(bright(SettingsMenu::Save)>500&&bright(SettingsMenu::Discard)>500);
+    assert(draw.Save((out/L"menu-dirty.bmp").c_str(),s,game));
     printf("PASS %zu-bit: ABI, stale channel, pointer geometry, click/release/focus, pending requests, bounds, existing chords, persistence and native UI previews\n",sizeof(void*)*8);
 }
