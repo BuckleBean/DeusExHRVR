@@ -1179,7 +1179,8 @@ void WriteHandsStatus() {
         controllerHandsHideFrom,controllerHandsHideTo,handHiddenSlots.load());
     fclose(f);
 }
-DirectionConfig::Source interactionAim{},movementDirection{};
+DirectionConfig::Source interactionAim{};
+std::atomic<DirectionConfig::Source> movementDirection{DirectionConfig::Source::Mouse};
 thread_local bool senseQueries{};
 std::atomic<uint64_t> interactionQueries{},movementAxes{};
 std::atomic<void*> walkAction{},strafeAction{};
@@ -1704,9 +1705,10 @@ bool DirectionWorld(DirectionConfig::Source source,CameraMath::Matrix& result,Ca
        (manager && manager!=current.managerAddress) || now<current.tracking.tick || now-current.tracking.tick>=250)return false;
     if(native)*native=current.originalWorld;
     if(source==DirectionConfig::Source::Headset){result=current.world;return true;}
-    if(!motionControls || !current.tracking.rightController.valid)return false;
+    auto aim=DirectionConfig::Aim(source,current.tracking);
+    if(!motionControls || !aim)return false;
     auto baseWorld=current.nativeHeading?current.controllerBase:RenderBase(current.originalWorld);
-    result=CameraMath::HeadWorld(baseWorld,reference,current.tracking.rightController.aim,worldScale);
+    result=CameraMath::HeadWorld(baseWorld,reference,aim->aim,worldScale);
     return true;
 }
 void __fastcall SenseUpdateHook(void* self,void*,float dt) {
@@ -1727,10 +1729,11 @@ void* __fastcall PlayerWorldHook(void* self,void*) {
 float __fastcall InputAxisHook(void* self,void*,uint32_t index,bool requireActive) {
     float value=originalInputAxis(self,index,requireActive);
     auto walk=walkAction.load(),strafe=strafeAction.load();
-    if(movementDirection==DirectionConfig::Source::Mouse || !walk || !strafe || (self!=walk && self!=strafe))return value;
+    const auto source=movementDirection.load();
+    if(source==DirectionConfig::Source::Mouse || !walk || !strafe || (self!=walk && self!=strafe))return value;
     {std::lock_guard lock(stateMutex);if(index!=current.inputIndex)return value;}
     CameraMath::Matrix target,native;
-    if(!DirectionWorld(movementDirection,target,&native))return value;
+    if(!DirectionWorld(source,target,&native))return value;
     // Both locomotion actions must be evaluated: W can become a strafe even
     // when the original strafe action is zero/inactive. Call the trampoline
     // for the partner axis so the pair is rotated exactly once.
@@ -4475,6 +4478,8 @@ void SetChannel(Transport::Header* header){std::lock_guard lock(stateMutex);chan
 // Bits 32 (in-game menu) and 64 (e-reader, news reader) select [ScreenButtons] only;
 // the display stays tracked. Bit 128 is the opposite: a wheel screen pausing
 // gameplay, where [Buttons] must be kept.
+unsigned MovementDirection(){return unsigned(movementDirection.load());}
+void SetMovementDirection(unsigned value){if(value<=3)movementDirection.store(static_cast<DirectionConfig::Source>(value));}
 unsigned CurrentScreenReasons(){std::lock_guard lock(stateMutex);return screenReasons|(gameMenuOpen?32u:0u)|(readerOpen?64u:0u)|(wheelOpen?128u:0u);}
 bool SnapTurnView(float& yaw) {
     std::lock_guard lock(stateMutex);

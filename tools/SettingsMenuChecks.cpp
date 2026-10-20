@@ -9,7 +9,7 @@
 
 int wmain(int argc,wchar_t** argv) {
     assert(argc==2);std::filesystem::path out=argv[1];std::filesystem::create_directories(out);
-    Transport::Header h{};h.magic=Transport::Magic;h.version=8;h.pid=42;
+    Transport::Header h{};h.magic=Transport::Magic;h.version=9;h.pid=42;
     assert(!Transport::Compatible(&h,42));h.version=Transport::Version;assert(Transport::Compatible(&h,42));
     assert(Transport::LockMenu(&h));Transport::MenuState read{};assert(!Transport::ReadMenu(&h,read));Transport::UnlockMenu(&h);
     assert(Transport::ReadMenu(&h,read));assert(Transport::Fresh(100,599));assert(!Transport::Fresh(100,600));assert(!Transport::Fresh(100,99));
@@ -67,6 +67,20 @@ int wmain(int argc,wchar_t** argv) {
     game.acknowledged=game.saved=1;game.snapEnabled=0;in.rightTrigger=0;update(1200,650);
     click(1200,450);assert(!s.draftSnap);click(1200,350);click(1450,465);
     assert(s.draftSnap&&s.draft==45);click(1200,650);assert(s.requestedSnap&&s.requested==45);
+    // Movement choices never offer native mode; discard and save remain explicit.
+    s={};in={};in.active=true;game={};game.snapEnabled=1;game.degrees=30;game.movement=1;
+    click(1200,450);click(1200,540);assert(s.draftMovement==3&&s.request==0);
+    click(1200,730);click(1200,450);assert(s.draftMovement==1);
+    click(1200,540);click(1200,650);assert(s.requestedMovement==3&&s.saving);
+    game.acknowledged=game.saved=s.request;game.movement=3;in.rightTrigger=0;update(1200,650);
+    click(1200,450);click(1200,540);assert(s.draftMovement==2);click(1200,540);assert(s.draftMovement==1);
+    Transport::Tracking directions{};directions.leftController.valid=1;directions.leftController.aim.position.x=-1;
+    directions.rightController.valid=1;directions.rightController.aim.position.x=1;
+    assert(DirectionConfig::Aim(DirectionConfig::Source::LeftController,directions)->aim.position.x==-1);
+    assert(DirectionConfig::Aim(DirectionConfig::Source::Controller,directions)->aim.position.x==1);
+    directions.leftController.valid=0;assert(!DirectionConfig::Aim(DirectionConfig::Source::LeftController,directions));
+    assert(DirectionConfig::Aim(DirectionConfig::Source::Controller,directions));
+    assert(DirectionConfig::Parse(L"LeftController",DirectionConfig::Source::Mouse)==DirectionConfig::Source::LeftController);
     // Native-menu hover and click route independently of the VR panel.
     s={};in={};in.active=true;update(800,450);assert(s.nativePointer&&!s.nativeDown&&!s.blocked);
     in.rightTrigger=.1f;update(800,450);assert(s.blocked&&!s.nativeDown);
@@ -117,7 +131,7 @@ int wmain(int argc,wchar_t** argv) {
     assert(writer.completed.load()==101&&writer.failed.load()!=101);
     assert(GetPrivateProfileIntW(L"VR",L"SnapTurnDegrees",0,ini.c_str())==60);
     assert(GetPrivateProfileIntW(L"VR",L"SnapTurnMouseCounts",0,ini.c_str())==600);
-    SettingsMenuDraw draw;s={};s.visible=true;s.draftSnap=s.originalSnap=true;s.draft=s.original=30;game={};game.snapEnabled=1;game.degrees=30;
+    SettingsMenuDraw draw;s={};s.visible=true;s.draftMovement=s.originalMovement=1;s.draftSnap=s.originalSnap=true;s.draft=s.original=30;game={};game.snapEnabled=1;game.degrees=30;
     assert(draw.Save((out/L"menu-entry.bmp").c_str(),s,game));s.open=true;s.pointer=true;s.x=1450;s.y=465;
     assert(draw.Save((out/L"menu-panel.bmp").c_str(),s,game));
     auto pixels=static_cast<const uint32_t*>(draw.Draw(s,game));
@@ -146,7 +160,7 @@ int wmain(int argc,wchar_t** argv) {
         }else assert(bright(SettingsMenu::Entry)>500);
     }
     s.open=true;assert(draw.Save((out/L"menu-panel.bmp").c_str(),s,game));
-    s.draft=90;pixels=static_cast<const uint32_t*>(draw.Draw(s,game));assert(pixels);
+    s.draft=90;s.draftMovement=3;pixels=static_cast<const uint32_t*>(draw.Draw(s,game));assert(pixels);
     assert(bright(SettingsMenu::Save)>500&&bright(SettingsMenu::Discard)>500);
     assert(draw.Save((out/L"menu-dirty.bmp").c_str(),s,game));
     printf("PASS %zu-bit: ABI, stale channel, pointer geometry, click/release/focus, pending requests, bounds, existing chords, persistence and native UI previews\n",sizeof(void*)*8);

@@ -51,6 +51,7 @@ Transport::Tracking Fixture(){
     Transport::Tracking t{};t.id=0x1020304050607080ull;t.tick=1000;t.valid=1;
     t.head.orientation.w=1;t.head.position={1,2,3};
     t.rightController={{{0,0,0,1},{.1f,.2f,.3f}},1};
+    t.leftController={{{0,0,0,1},{-7,2,1}},1};
     t.leftGrip={{{.1f,.2f,.3f,.9f},{-1,-2,-3}},1};
     t.rightGrip={{{-.1f,-.2f,-.3f,.9f},{4,5,6}},1};
     t.controllerButtons=3;t.gamepad.valid=1;t.gamepad.buttons=0x1234;return t;
@@ -59,12 +60,16 @@ int main(int argc,char** argv){try{
     ControllerInput input;
     Check(input.Init((XrInstance)(uintptr_t)1,(XrSession)(uintptr_t)1),"initialize actions");
     for(auto profile:{"/interaction_profiles/oculus/touch_controller","/interaction_profiles/khr/simple_controller"})
-        for(auto path:{"/user/hand/right/input/aim/pose","/user/hand/left/input/grip/pose","/user/hand/right/input/grip/pose"})
+        for(auto path:{"/user/hand/right/input/aim/pose","/user/hand/left/input/aim/pose","/user/hand/left/input/grip/pose","/user/hand/right/input/grip/pose"})
             Check(Mock::bindings.contains(std::string(profile)+":"+path),"profile missing pose binding");
     auto& left=Mock::states["left_hand_grip_pose"];auto& right=Mock::states["right_hand_grip_pose"];auto& aim=Mock::states["right_weapon_aim"];
     left.pose.position={-1,-2,-3};right.pose.position={4,5,6};aim.pose.position={7,8,9};
     Transport::Tracking t{};t.tick=1000;
     auto sample=[&](bool focus=true){input.Sample((XrSession)(uintptr_t)1,Mock::expectedBase,Mock::expectedTime,focus,t);};
+    auto& leftAim=Mock::states["left_movement_aim"];leftAim.pose.position={-7,2,1};
+    sample();Check(t.leftController.valid&&t.leftController.aim.position.x==-7,"left aim transported independently");
+    leftAim.flags=1;sample();Check(!t.leftController.valid&&t.rightController.valid,"invalid left aim does not disable right aim");
+    leftAim.flags=3;sample(false);Check(!t.leftController.valid,"left aim cleared on focus loss");
     sample();
     Check(t.leftGrip.valid && t.rightGrip.valid && t.rightController.valid,"all three poses valid");
     Check(t.leftGrip.pose.position.x==-1 && t.rightGrip.pose.position.x==4 && t.rightController.aim.position.x==7,"poses independently copied without offsets");
@@ -80,7 +85,7 @@ int main(int argc,char** argv){try{
     sample();Mock::sync=XR_SESSION_NOT_FOCUSED;sample();Check(!t.leftGrip.valid && !t.rightGrip.valid && !t.rightController.valid,"unfocused sync result clears poses");
     Mock::sync=XR_ERROR_RUNTIME_FAILURE;sample();Check(!t.leftGrip.valid && !t.rightGrip.valid,"sync failure clears poses");Mock::sync=XR_SUCCESS;
     sample();Check(t.leftGrip.valid && t.rightGrip.valid && t.rightController.valid,"tracking recovers");
-    input.Reset();input.Reset();Check(Mock::destroyedSpaces==3 && Mock::spaces.empty(),"all spaces cleaned up once");sample();Check(!t.leftGrip.valid && !t.rightGrip.valid,"reset clears sampling");
+    input.Reset();input.Reset();Check(Mock::destroyedSpaces==4 && Mock::spaces.empty(),"all spaces cleaned up once");sample();Check(!t.leftGrip.valid && !t.rightGrip.valid,"reset clears sampling");
     Transport::Header h{};h.magic=Transport::Magic;h.version=Transport::Version;h.pid=123;
     Check(Transport::Compatible(&h,123),"matching transport");h.version=5;Check(!Transport::Compatible(&h,123),"v5 must be rejected");h.version=Transport::Version;
     Check(!Transport::Compatible(&h,124) && !Transport::Compatible(nullptr,123),"wrong process/null rejected");

@@ -8,6 +8,7 @@ namespace SettingsMenu {
 constexpr int Width=1600,Height=900;
 struct Rect {int x,y,w,h; bool Has(float px,float py) const {return px>=x&&py>=y&&px<x+w&&py<y+h;}};
 inline constexpr Rect Entry{1080,420,410,70},Panel{1020,230,530,550};
+inline constexpr Rect Movement{1070,520,430,45};
 inline constexpr Rect TurnMode{1070,330,430,45};
 inline constexpr Rect Minus{1070,430,100,80},Plus{1400,430,100,80},Back{1070,650,430,70},Save{1070,625,430,60},Discard{1070,700,430,60};
 inline Transport::Vector Rotate(Transport::Quaternion q,Transport::Vector v) {
@@ -59,7 +60,8 @@ struct State {
     float x{},y{};uint32_t request{};float requested{};
     float draft{},original{};bool saving{},committed{};
     bool draftSnap{},originalSnap{},requestedSnap{};
-    bool Dirty() const {return draft!=original||draftSnap!=originalSnap||committed;}
+    uint32_t draftMovement{},originalMovement{},requestedMovement{};
+    bool Dirty() const {return draft!=original||draftSnap!=originalSnap||draftMovement!=originalMovement||committed;}
     void Update(bool eligible,bool focused,bool ray,float px,float py,const GamepadMapping::Input& in,const Transport::MenuState& game) {
         visible=eligible&&focused;pointer=visible&&ray;x=px;y=py;
         const bool wasOpen=open;
@@ -73,7 +75,7 @@ struct State {
             if(game.saved==request&&game.result==0){saving=false;open=false;armed=false;}
             else if(game.result==2||game.result==3)saving=false;
         }
-        if(!visible){open=false;draft=original;draftSnap=originalSnap;armed=false;nativeCapture=false;}
+        if(!visible){open=false;draft=original;draftSnap=originalSnap;draftMovement=originalMovement;armed=false;nativeCapture=false;}
         if(visible&&in.rightTrigger<.05f)armed=true;
         bool hit=pointer&&(open?Panel.Has(x,y):Entry.Has(x,y));
         // Capture from first trigger movement, before the game's low threshold.
@@ -86,9 +88,10 @@ struct State {
         nativeDown=nativeHit&&nativeCapture&&in.rightTrigger>.5f;
         const bool down=in.rightTrigger>.5f;
         if(visible&&armed&&down&&!triggerDown&&hit&&!nativeCapture) {
-            if(!open){open=true;releaseGate=true;draft=original=game.degrees;draftSnap=originalSnap=game.snapEnabled!=0;committed=false;}
+            if(!open){open=true;releaseGate=true;draft=original=game.degrees;draftSnap=originalSnap=game.snapEnabled!=0;draftMovement=originalMovement=game.movement;committed=false;}
             else if(!saving&&((!Dirty()&&Back.Has(x,y))||(Dirty()&&Discard.Has(x,y)))){open=false;armed=false;}
-            else if(!saving&&Dirty()&&Save.Has(x,y)){requested=draft;requestedSnap=draftSnap;++request;saving=true;committed=true;}
+            else if(!saving&&Dirty()&&Save.Has(x,y)){requested=draft;requestedSnap=draftSnap;requestedMovement=draftMovement;++request;saving=true;committed=true;}
+            else if(!saving&&Movement.Has(x,y)){draftMovement=draftMovement==1?3:draftMovement==3?2:1;}
             else if(!saving&&TurnMode.Has(x,y)){draftSnap=!draftSnap;}
             else if(!saving&&draftSnap) {
                 int delta=Minus.Has(x,y)?-15:Plus.Has(x,y)?15:0;

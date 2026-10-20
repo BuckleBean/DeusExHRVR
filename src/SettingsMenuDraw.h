@@ -51,7 +51,8 @@ public:
             Button(SettingsMenu::Minus,L"-",s.draftSnap&&!s.saving&&hovered(SettingsMenu::Minus));Button(SettingsMenu::Plus,L"+",s.draftSnap&&!s.saving&&hovered(SettingsMenu::Plus));
             const wchar_t* status=s.saving?L"Saving...":s.committed&&game.result==3?L"Applied - save failed; retry":
                 s.committed&&game.result==2?L"Change refused; retry":s.Dirty()?L"Unsaved changes":s.draftSnap?L"Current setting":L"Native smooth turn; angle retained";
-            Text(status,1040,525,490,40);Text(L"Trigger selects / stick adjusts",1040,570,490,40);
+            Button(SettingsMenu::Movement,s.draftMovement==1?L"MOVEMENT: HEAD":s.draftMovement==3?L"MOVEMENT: LEFT HAND":s.draftMovement==2?L"MOVEMENT: RIGHT HAND":L"MOVEMENT: FROM CONFIG",!s.saving&&hovered(SettingsMenu::Movement));
+            Text(status,1040,575,490,40);
             if(s.Dirty()){
                 Button(SettingsMenu::Save,s.saving?L"SAVING...":L"SAVE & BACK",!s.saving&&hovered(SettingsMenu::Save));
                 Button(SettingsMenu::Discard,s.committed?L"BACK":L"DISCARD & BACK",!s.saving&&hovered(SettingsMenu::Discard));

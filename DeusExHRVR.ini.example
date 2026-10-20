@@ -61,6 +61,9 @@ LeftStickClickDelayMs=150
 ; Interaction selects doors/items; it does not change weapon aiming.
 InteractionAim=Mouse
 ; Walking uses horizontal heading only, including W/A/S/D and gamepad movement.
+; MovementDirection also accepts LeftController (left-hand aim). Controller
+; retains its existing right-hand meaning; RightController is an alias.
+; The VR menu offers Head, Left hand and Right hand with Save / Discard.
 MovementDirection=Mouse
 ; Screen modes and missing tracking fall back to Mouse. Controller choices
 ; also work with ExperimentalMotionControls=0 and with the gun holstered,

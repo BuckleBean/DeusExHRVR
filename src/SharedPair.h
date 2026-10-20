@@ -4,7 +4,7 @@
 #include <cwchar>
 #include <cstddef>
 namespace Transport {
-inline constexpr uint32_t Magic=0x52485844, Version=9;
+inline constexpr uint32_t Magic=0x52485844, Version=10;
 struct alignas(8) MenuState {
     uint64_t gameTick,hostTick;
     uint32_t eligible,blocked,snapEnabled,request;
@@ -12,8 +12,9 @@ struct alignas(8) MenuState {
     float degrees,requestedDegrees;
     float pointerX,pointerY;
     uint32_t pointerActive,pointerDown;
+    uint32_t movement,requestedMovement;
 };
-static_assert(sizeof(MenuState)==72);
+static_assert(sizeof(MenuState)==80);
 struct Quaternion {float x,y,z,w;};
 struct Vector {float x,y,z;};
 struct Pose {Quaternion orientation;Vector position;};
@@ -36,12 +37,13 @@ struct alignas(8) Tracking {
     Gamepad gamepad;
     uint32_t controllerButtons; // Raw stick clicks: bit 0 left, bit 1 right (focused input only).
     uint32_t reserved;
+    Controller leftController; // Left aim pose, independent of grip/weapon alignment.
     GripPose leftGrip,rightGrip; // Unmodified OpenXR grip poses, same space/time as aim.
 };
 struct RenderInfo {Tracking tracking;uint32_t mode,eyeMask;};
-static_assert(sizeof(Tracking)==256 && sizeof(RenderInfo)==264);
+static_assert(sizeof(Tracking)==288 && sizeof(RenderInfo)==296);
 static_assert(offsetof(Tracking,rightController)==136 && offsetof(Tracking,gamepad)==168);
-static_assert(offsetof(Tracking,leftGrip)==192 && offsetof(Tracking,rightGrip)==224);
+static_assert(offsetof(Tracking,leftController)==192 && offsetof(Tracking,leftGrip)==224 && offsetof(Tracking,rightGrip)==256);
 // Identical ABI in the x86 game and x64 companion. GPU keyed mutex protects
 // texture contents + frameId; generation publishes a new texture description.
 struct alignas(8) Header {
@@ -60,8 +62,8 @@ struct alignas(8) Header {
     uint32_t menuPadding;
     MenuState menu;
 };
-static_assert(sizeof(Header)==672);
-static_assert(offsetof(Header,tracking)==72 && offsetof(Header,rendered)==328);
+static_assert(sizeof(Header)==744);
+static_assert(offsetof(Header,tracking)==72 && offsetof(Header,rendered)==360);
 inline bool Compatible(const Header* h,DWORD pid) {
     return h && h->magic==Magic && h->version==Version && h->pid==pid;
 }

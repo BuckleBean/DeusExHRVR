@@ -11,16 +11,17 @@
 #include <cstring>
 #include <cstdlib>
 #include <chrono>
+#include "DirectionConfig.h"
 
 // One worker owns all snap-setting writes, including learned calibration.
 // Single-key profile writes preserve unrelated settings and existing comments.
 class SettingsPersistence {
     std::mutex mutex;std::condition_variable wake;
     std::chrono::steady_clock::time_point saveAfter{};
-    std::wstring path;bool pending{},anglePending{};float angle{};double counts{};uint32_t sequence{};int snapMode{-1};
+    std::wstring path;bool pending{},anglePending{};float angle{};double counts{};uint32_t sequence{};int snapMode{-1},movementMode{-1};
 public:
     std::atomic<uint32_t> completed{},failed{};
-    static bool Save(const std::wstring& path,bool angle,float degrees,double count,int snap=-1) {
+    static bool Save(const std::wstring& path,bool angle,float degrees,double count,int snap=-1,int movement=-1) {
         FILE* f{};if(_wfopen_s(&f,path.c_str(),L"rb"))return false;
         unsigned char start[4]{};auto n=fread(start,1,4,f);fclose(f);
         // Existing project INIs are BOM-free and start with [VR]. Refuse other
@@ -30,7 +31,9 @@ public:
         if(!WritePrivateProfileStringW(L"VR",L"SnapTurnMouseCounts",text,path.c_str()))return false;
         if(angle){swprintf_s(text,L"%.6g",double(degrees));if(!WritePrivateProfileStringW(L"VR",L"SnapTurnDegrees",text,path.c_str()))return false;}
         if(angle&&snap>=0&&!WritePrivateProfileStringW(L"VR",L"SnapTurn",snap?L"1":L"0",path.c_str()))return false;
+        if(angle&&movement>=0&&!WritePrivateProfileStringW(L"VR",L"MovementDirection",DirectionConfig::Value(unsigned(movement)),path.c_str()))return false;
         WritePrivateProfileStringW(nullptr,nullptr,nullptr,path.c_str());
+        if(angle&&movement>=0&&unsigned(DirectionConfig::Read(path.c_str(),L"MovementDirection"))!=unsigned(movement))return false;
         if(angle&&snap>=0&&GetPrivateProfileIntW(L"VR",L"SnapTurn",2,path.c_str())!=unsigned(snap))return false;
         if(angle){GetPrivateProfileStringW(L"VR",L"SnapTurnDegrees",L"",text,40,path.c_str());if(std::abs(_wtof(text)-degrees)>.01)return false;}
         GetPrivateProfileStringW(L"VR",L"SnapTurnMouseCounts",L"",text,40,path.c_str());
@@ -42,15 +45,15 @@ public:
             std::unique_lock lock(mutex);wake.wait(lock,[&]{return pending;});
             // Coalesce rapid adjustments without holding the producer lock during IO.
             while(std::chrono::steady_clock::now()<saveAfter){auto deadline=saveAfter;wake.wait_until(lock,deadline);}
-            auto file=path;auto a=angle;auto c=counts;auto seq=sequence;bool saveAngle=anglePending;auto snap=snapMode;
+            auto file=path;auto a=angle;auto c=counts;auto seq=sequence;bool saveAngle=anglePending;auto snap=snapMode;auto movement=movementMode;
             pending=anglePending=false;lock.unlock();
-            bool ok=Save(file,saveAngle,a,c,snap);
+            bool ok=Save(file,saveAngle,a,c,snap,movement);
             if(saveAngle){if(!ok)failed=seq;completed=seq;}
         }}).detach();
     }
-    void Queue(const wchar_t* file,double count,uint32_t seq=0,float degrees=0,int snap=-1) {
+    void Queue(const wchar_t* file,double count,uint32_t seq=0,float degrees=0,int snap=-1,int movement=-1) {
         std::lock_guard lock(mutex);path=file;counts=count;pending=true;
-        if(seq){sequence=seq;angle=degrees;anglePending=true;snapMode=snap;}
+        if(seq){sequence=seq;angle=degrees;anglePending=true;snapMode=snap;movementMode=movement;}
         saveAfter=std::chrono::steady_clock::now()+std::chrono::milliseconds(500);
         wake.notify_one();
     }

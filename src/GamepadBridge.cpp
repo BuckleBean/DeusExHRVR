@@ -436,14 +436,15 @@ void MenuTick(unsigned screenReasons) {
     auto& m=channel->menu;auto now=GetTickCount64();
     // Bit 2 is ScreenMode::Menu (TitleMenu/PauseMenu), not the inventory bit 32.
     m.eligible=SettingsMenu::Eligible(screenReasons);m.gameTick=now;
-    m.snapEnabled=snapEnabled;m.degrees=snapDegrees;
+    m.snapEnabled=snapEnabled;m.degrees=snapDegrees;m.movement=EngineCamera::MovementDirection();
     if(m.request!=m.acknowledged && Transport::Fresh(m.hostTick,now)) {
         m.acknowledged=m.request;
-        if(m.eligible&&m.blocked&&m.requestedSnap<=1&&SettingsMenu::ApplyAngle(m.requestedDegrees,snapDegrees,snapCounts)) {
+        if(m.eligible&&m.blocked&&m.requestedSnap<=1&&m.requestedMovement<=3&&(m.requestedMovement!=0||m.movement==0)&&SettingsMenu::ApplyAngle(m.requestedDegrees,snapDegrees,snapCounts)) {
             snapPending=snapMoving=snapArmed=false;snapHoldUntil=0;
             snapEnabled=m.requestedSnap!=0;m.snapEnabled=snapEnabled;
+            EngineCamera::SetMovementDirection(m.requestedMovement);m.movement=m.requestedMovement;
             m.degrees=snapDegrees;m.result=1;
-            SettingsWriter().Queue(configPath,snapCounts,m.request,snapDegrees,int(snapEnabled));
+            SettingsWriter().Queue(configPath,snapCounts,m.request,snapDegrees,int(snapEnabled),int(m.movement));
         } else m.result=2;
     }
     auto& writer=SettingsWriter();

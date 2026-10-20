@@ -5,6 +5,9 @@
 #include <fstream>
 #include <limits>
 namespace EngineCamera {
+unsigned movement{};
+unsigned MovementDirection(){return movement;}
+void SetMovementDirection(unsigned value){movement=value;}
 unsigned CurrentScreenReasons(){return 2;}
 bool SnapTurnView(float&){return false;}
 int QuickBarAutoHide(bool){return 1;}
@@ -65,6 +68,15 @@ int wmain(int argc,wchar_t** argv) {
     GamepadBridge::LoadSnap();assert(GamepadBridge::snapEnabled&&GamepadBridge::snapDegrees==oldAngle);
     h.menu.request=8;h.menu.requestedSnap=2;h.menu.hostTick=GetTickCount64();GamepadBridge::MenuTick(2);
     assert(h.menu.result==2&&h.menu.snapEnabled&&GamepadBridge::snapCounts==oldCounts);
+    h.menu.requestedSnap=1;
+    for(unsigned mode : {1u,3u,2u}){
+        auto id=10+mode;h.menu.hostTick=GetTickCount64();h.menu.request=id;h.menu.requestedMovement=mode;
+        GamepadBridge::MenuTick(2);assert(h.menu.movement==mode&&EngineCamera::movement==mode);
+        for(int n=0;n<200&&h.menu.saved!=id;++n){Sleep(10);GamepadBridge::MenuTick(2);}
+        assert(h.menu.saved==id&&unsigned(DirectionConfig::Read(path.c_str(),L"MovementDirection"))==mode);
+    }
+    h.menu.request=20;h.menu.requestedMovement=4;h.menu.hostTick=GetTickCount64();GamepadBridge::MenuTick(2);
+    assert(h.menu.result==2&&EngineCamera::movement==2);
     GamepadBridge::SetChannel(nullptr);
     printf("PASS %zu-bit actual bridge: request/ack/save/error, duplicate/stale/refused edits, calibration scaling, virtual/physical input and focus recovery\n",sizeof(void*)*8);
 }

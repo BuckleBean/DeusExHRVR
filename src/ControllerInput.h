@@ -6,10 +6,10 @@
 #include <vector>
 
 class ControllerInput {
-    enum Id {Aim,LeftStick,RightStick,LeftTrigger,RightTrigger,LeftGrip,RightGrip,A,B,X,Y,LeftClick,RightClick,Menu,LeftGripPose,RightGripPose,Count};
+    enum Id {Aim,LeftStick,RightStick,LeftTrigger,RightTrigger,LeftGrip,RightGrip,A,B,X,Y,LeftClick,RightClick,Menu,LeftGripPose,RightGripPose,LeftAim,Count};
     XrActionSet actions{};
     XrAction action[Count]{};
-    XrSpace aimSpace{};
+    XrSpace aimSpace{},leftAimSpace{};
     XrSpace leftGripSpace{},rightGripSpace{};
     GamepadMapping::Mapper mapper;
 public:
@@ -17,10 +17,11 @@ public:
     void SuppressMapping(){mapper.Reset();}
     void Reset() {
         if(aimSpace)xrDestroySpace(aimSpace);
+        if(leftAimSpace)xrDestroySpace(leftAimSpace);
         if(leftGripSpace)xrDestroySpace(leftGripSpace);
         if(rightGripSpace)xrDestroySpace(rightGripSpace);
         if(actions)xrDestroyActionSet(actions);
-        aimSpace=XR_NULL_HANDLE;actions=XR_NULL_HANDLE;
+        aimSpace=leftAimSpace=XR_NULL_HANDLE;actions=XR_NULL_HANDLE;
         leftGripSpace=rightGripSpace=XR_NULL_HANDLE;
         for(auto& a:action)a=XR_NULL_HANDLE;
         mapper.Reset();
@@ -47,7 +48,8 @@ public:
             {"right_click",XR_ACTION_TYPE_BOOLEAN_INPUT,"/user/hand/right/input/thumbstick/click"},
             {"menu",XR_ACTION_TYPE_BOOLEAN_INPUT,"/user/hand/left/input/menu/click"},
             {"left_hand_grip_pose",XR_ACTION_TYPE_POSE_INPUT,"/user/hand/left/input/grip/pose"},
-            {"right_hand_grip_pose",XR_ACTION_TYPE_POSE_INPUT,"/user/hand/right/input/grip/pose"}
+            {"right_hand_grip_pose",XR_ACTION_TYPE_POSE_INPUT,"/user/hand/right/input/grip/pose"},
+            {"left_movement_aim",XR_ACTION_TYPE_POSE_INPUT,"/user/hand/left/input/aim/pose"}
         };
         std::vector<XrActionSuggestedBinding> suggested;
         for(int i=0;i<Count;i++) {
@@ -64,8 +66,8 @@ public:
         if(XR_FAILED(xrSuggestInteractionProfileBindings(instance,&suggestion)))return false;
         // Retain basic aim/menu support for runtimes exposing the simple profile.
         if(XR_SUCCEEDED(xrStringToPath(instance,"/interaction_profiles/khr/simple_controller",&profile))) {
-            XrActionSuggestedBinding simple[]{suggested[Aim],suggested[Menu],suggested[LeftGripPose],suggested[RightGripPose]};
-            suggestion.interactionProfile=profile;suggestion.countSuggestedBindings=4;suggestion.suggestedBindings=simple;
+            XrActionSuggestedBinding simple[]{suggested[Aim],suggested[Menu],suggested[LeftGripPose],suggested[RightGripPose],suggested[LeftAim]};
+            suggestion.interactionProfile=profile;suggestion.countSuggestedBindings=5;suggestion.suggestedBindings=simple;
             xrSuggestInteractionProfileBindings(instance,&suggestion);
         }
         XrSessionActionSetsAttachInfo attach{XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO};
@@ -73,6 +75,8 @@ public:
         if(XR_FAILED(xrAttachSessionActionSets(session,&attach)))return false;
         XrActionSpaceCreateInfo space{XR_TYPE_ACTION_SPACE_CREATE_INFO};space.action=action[Aim];space.poseInActionSpace.orientation.w=1;
         if(XR_FAILED(xrCreateActionSpace(session,&space,&aimSpace)))return false;
+        space.action=action[LeftAim];
+        if(XR_FAILED(xrCreateActionSpace(session,&space,&leftAimSpace)))return false;
         space.action=action[LeftGripPose];
         if(XR_FAILED(xrCreateActionSpace(session,&space,&leftGripSpace)))return false;
         space.action=action[RightGripPose];
@@ -80,7 +84,7 @@ public:
     }
     void Sample(XrSession session,XrSpace local,XrTime time,bool focused,Transport::Tracking& tracking) {
         raw={};
-        tracking.rightController={};tracking.gamepad={};tracking.controllerButtons=0;
+        tracking.leftController={};tracking.rightController={};tracking.gamepad={};tracking.controllerButtons=0;
         tracking.leftGrip={};tracking.rightGrip={};
         if(!aimSpace || !focused){mapper.Reset();return;}
         XrActiveActionSet active{actions,XR_NULL_PATH};
@@ -105,6 +109,8 @@ public:
             static_assert(sizeof(location.pose)==sizeof(out.pose));
             memcpy(&out.pose,&location.pose,sizeof(out.pose));out.valid=1;
         };
+        Transport::GripPose leftAim{};grip(LeftAim,leftAimSpace,leftAim);
+        tracking.leftController={leftAim.pose,leftAim.valid};
         grip(LeftGripPose,leftGripSpace,tracking.leftGrip);
         grip(RightGripPose,rightGripSpace,tracking.rightGrip);
         GamepadMapping::Input input;

@@ -18,6 +18,8 @@ void ArmHandCalibration();
 // snap turn still works over a reader. 128 a wheel screen pausing gameplay: keep
 // [Buttons], and the display is left as it is).
 unsigned CurrentScreenReasons();
+unsigned MovementDirection();
+void SetMovementDirection(unsigned value);
 // Luma port: forward the engine's D3D11 device to ShaderSwap so it can build
 // replacement shaders and issue PSSetShader overrides. Called from
 // NativeTransport::Producer::Init once the device is first available.
