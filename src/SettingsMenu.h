@@ -9,6 +9,9 @@ constexpr int Width=1600,Height=900;
 struct Rect {int x,y,w,h; bool Has(float px,float py) const {return px>=x&&py>=y&&px<x+w&&py<y+h;}};
 inline constexpr Rect Entry{1080,420,410,70},Panel{1020,230,530,550};
 inline constexpr Rect Movement{1070,520,430,45};
+inline constexpr Rect Remap{1070,575,430,40};
+inline constexpr Rect SourcePrev{1070,330,70,60},SourceNext{1430,330,70,60};
+inline constexpr Rect TargetPrev{1070,440,70,60},TargetNext{1430,440,70,60};
 inline constexpr Rect TurnMode{1070,330,430,45};
 inline constexpr Rect Minus{1070,430,100,80},Plus{1400,430,100,80},Back{1070,650,430,70},Save{1070,625,430,60},Discard{1070,700,430,60};
 inline Transport::Vector Rotate(Transport::Quaternion q,Transport::Vector v) {
@@ -61,7 +64,10 @@ struct State {
     float draft{},original{};bool saving{},committed{};
     bool draftSnap{},originalSnap{},requestedSnap{};
     uint32_t draftMovement{},originalMovement{},requestedMovement{};
-    bool Dirty() const {return draft!=original||draftSnap!=originalSnap||draftMovement!=originalMovement||committed;}
+    bool remapping{};size_t selected{};
+    ButtonBindings::Layout draftBindings{},originalBindings{},requestedBindings{};
+    uint32_t requestedBindingMask{};
+    bool Dirty() const {return draft!=original||draftSnap!=originalSnap||draftMovement!=originalMovement||draftBindings!=originalBindings||committed;}
     void Update(bool eligible,bool focused,bool ray,float px,float py,const GamepadMapping::Input& in,const Transport::MenuState& game) {
         visible=eligible&&focused;pointer=visible&&ray;x=px;y=py;
         const bool wasOpen=open;
@@ -75,7 +81,7 @@ struct State {
             if(game.saved==request&&game.result==0){saving=false;open=false;armed=false;}
             else if(game.result==2||game.result==3)saving=false;
         }
-        if(!visible){open=false;draft=original;draftSnap=originalSnap;draftMovement=originalMovement;armed=false;nativeCapture=false;}
+        if(!visible){open=false;remapping=false;draft=original;draftSnap=originalSnap;draftMovement=originalMovement;draftBindings=originalBindings;armed=false;nativeCapture=false;}
         if(visible&&in.rightTrigger<.05f)armed=true;
         bool hit=pointer&&(open?Panel.Has(x,y):Entry.Has(x,y));
         // Capture from first trigger movement, before the game's low threshold.
@@ -88,9 +94,17 @@ struct State {
         nativeDown=nativeHit&&nativeCapture&&in.rightTrigger>.5f;
         const bool down=in.rightTrigger>.5f;
         if(visible&&armed&&down&&!triggerDown&&hit&&!nativeCapture) {
-            if(!open){open=true;releaseGate=true;draft=original=game.degrees;draftSnap=originalSnap=game.snapEnabled!=0;draftMovement=originalMovement=game.movement;committed=false;}
+            if(!open){open=true;remapping=false;selected=0;requestedBindingMask=0;releaseGate=true;draft=original=game.degrees;draftSnap=originalSnap=game.snapEnabled!=0;draftMovement=originalMovement=game.movement;draftBindings=originalBindings=game.bindings;committed=false;}
+            else if(remapping&&!saving){
+                if(Back.Has(x,y))remapping=false;
+                else if(SourcePrev.Has(x,y))selected=(selected+ButtonBindings::Count-1)%ButtonBindings::Count;
+                else if(SourceNext.Has(x,y))selected=(selected+1)%ButtonBindings::Count;
+                else if(TargetPrev.Has(x,y))draftBindings[selected]=ButtonBindings::Cycle(draftBindings[selected],-1);
+                else if(TargetNext.Has(x,y))draftBindings[selected]=ButtonBindings::Cycle(draftBindings[selected],1);
+            }
             else if(!saving&&((!Dirty()&&Back.Has(x,y))||(Dirty()&&Discard.Has(x,y)))){open=false;armed=false;}
-            else if(!saving&&Dirty()&&Save.Has(x,y)){requested=draft;requestedSnap=draftSnap;requestedMovement=draftMovement;++request;saving=true;committed=true;}
+            else if(!saving&&Dirty()&&Save.Has(x,y)){requested=draft;requestedSnap=draftSnap;requestedMovement=draftMovement;requestedBindings=draftBindings;requestedBindingMask|=ButtonBindings::Changes(draftBindings,originalBindings);++request;saving=true;committed=true;}
+            else if(!saving&&Remap.Has(x,y)){remapping=true;}
             else if(!saving&&Movement.Has(x,y)){draftMovement=draftMovement==1?3:draftMovement==3?2:1;}
             else if(!saving&&TurnMode.Has(x,y)){draftSnap=!draftSnap;}
             else if(!saving&&draftSnap) {
@@ -103,7 +117,7 @@ struct State {
         if(std::abs(in.rightX)<.2f)stickArmed=true;
         if(open&&pointer&&Panel.Has(x,y)&&stickArmed&&std::abs(in.rightX)>.6f&&
            std::abs(in.rightX)>std::abs(in.rightY)&&in.rightTrigger<.05f&&
-           !saving&&draftSnap) {
+           !saving&&!remapping&&draftSnap) {
             draft=std::clamp(draft+(in.rightX>0?15.f:-15.f),5.f,180.f);
             stickArmed=false;
         }

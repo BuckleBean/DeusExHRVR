@@ -43,16 +43,33 @@ public:
         RECT r{area.x,area.y,area.x+area.w,area.y+area.h};auto b=CreateSolidBrush(RGB(16,17,14));FillRect(dc,&r,b);DeleteObject(b);
         auto hovered=[&](SettingsMenu::Rect rect){return s.pointer&&rect.Has(s.x,s.y);};
         if(!s.open)Button(SettingsMenu::Entry,L"VR SETTINGS",hovered(SettingsMenu::Entry));
+        else if(s.remapping) {
+            Text(L"GAMEPLAY BUTTONS",1040,255,490,60,true);
+            Button(SettingsMenu::SourcePrev,L"<",hovered(SettingsMenu::SourcePrev));
+            Button(SettingsMenu::SourceNext,L">",hovered(SettingsMenu::SourceNext));
+            Text(ButtonBindings::Labels[s.selected],1140,330,290,60);
+            const bool held=s.selected<8&&game.holdMs[s.selected]>0;
+            Text(held?L"Hold assignment":L"Assignment",1070,395,430,40);
+            Button(SettingsMenu::TargetPrev,L"<",hovered(SettingsMenu::TargetPrev));
+            Button(SettingsMenu::TargetNext,L">",hovered(SettingsMenu::TargetNext));
+            Text(ButtonBindings::Label(s.draftBindings[s.selected]),1140,440,290,60);
+            wchar_t note[100];
+            if(held){
+                swprintf_s(note,L"Hold delay: %u ms (retained)",game.holdMs[s.selected]);Text(note,1040,520,490,40);
+                swprintf_s(note,L"Tap: %ls (retained)",ButtonBindings::Label(game.tapTargets[s.selected]));Text(note,1040,560,490,40);
+            }else Text(L"Menu controls and shortcuts retained",1040,530,490,40);
+            Text(L"Save or discard on the previous page",1040,605,490,35);
+            Button(SettingsMenu::Back,L"BACK TO SETTINGS",hovered(SettingsMenu::Back));
+        }
         else {
-            Text(L"DEUS EX / VR SETTINGS",1040,255,490,60,true);
+            const wchar_t* heading=s.saving?L"SAVING...":s.committed&&game.result==3?L"SAVE FAILED - RETRY":s.committed&&game.result==2?L"CHANGE REFUSED":L"DEUS EX / VR SETTINGS";
+            Text(heading,1040,255,490,60,true);
             Button(SettingsMenu::TurnMode,s.draftSnap?L"TURNING: SNAP":L"TURNING: SMOOTH",!s.saving&&hovered(SettingsMenu::TurnMode));
             Text(s.draftSnap?L"Snap-turn angle":L"Snap angle (inactive)",1070,380,430,40);
             wchar_t value[40];swprintf_s(value,L"%.6g\u00b0",double(s.draft));Text(value,1180,430,210,80,true);
             Button(SettingsMenu::Minus,L"-",s.draftSnap&&!s.saving&&hovered(SettingsMenu::Minus));Button(SettingsMenu::Plus,L"+",s.draftSnap&&!s.saving&&hovered(SettingsMenu::Plus));
-            const wchar_t* status=s.saving?L"Saving...":s.committed&&game.result==3?L"Applied - save failed; retry":
-                s.committed&&game.result==2?L"Change refused; retry":s.Dirty()?L"Unsaved changes":s.draftSnap?L"Current setting":L"Native smooth turn; angle retained";
             Button(SettingsMenu::Movement,s.draftMovement==1?L"MOVEMENT: HEAD":s.draftMovement==3?L"MOVEMENT: LEFT HAND":s.draftMovement==2?L"MOVEMENT: RIGHT HAND":L"MOVEMENT: FROM CONFIG",!s.saving&&hovered(SettingsMenu::Movement));
-            Text(status,1040,575,490,40);
+            Button(SettingsMenu::Remap,L"BUTTON REMAPPING",!s.saving&&hovered(SettingsMenu::Remap));
             if(s.Dirty()){
                 Button(SettingsMenu::Save,s.saving?L"SAVING...":L"SAVE & BACK",!s.saving&&hovered(SettingsMenu::Save));
                 Button(SettingsMenu::Discard,s.committed?L"BACK":L"DISCARD & BACK",!s.saving&&hovered(SettingsMenu::Discard));

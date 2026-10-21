@@ -8,8 +8,9 @@ namespace EngineCamera {
 unsigned movement{};
 unsigned MovementDirection(){return movement;}
 void SetMovementDirection(unsigned value){movement=value;}
-unsigned CurrentScreenReasons(){return 2;}
-bool SnapTurnView(float&){return false;}
+unsigned reasons=2;
+unsigned CurrentScreenReasons(){return reasons;}
+bool SnapTurnView(float&){return reasons==0;}
 int QuickBarAutoHide(bool){return 1;}
 bool ImmersiveScopeButton(){return false;}
 void ArmHandCalibration(){}
@@ -77,6 +78,42 @@ int wmain(int argc,wchar_t** argv) {
     }
     h.menu.request=20;h.menu.requestedMovement=4;h.menu.hostTick=GetTickCount64();GamepadBridge::MenuTick(2);
     assert(h.menu.result==2&&EngineCamera::movement==2);
+    // Real config loader, live remapper and persistence: preserve tap/hold,
+    // screen layout and right-stick directions while changing selected inputs.
+    WritePrivateProfileStringW(L"Buttons",L"RightAHoldMs",L"300",path.c_str());
+    WritePrivateProfileStringW(L"Buttons",L"RightATap",L"QuickSave",path.c_str());
+    WritePrivateProfileStringW(L"Buttons",L"RightStickUp",L"A",path.c_str());
+    WritePrivateProfileStringW(L"ScreenButtons",L"RightA",L"X",path.c_str());
+    GamepadBridge::LoadButtons();GamepadBridge::MenuTick(2);
+    assert(h.menu.bindings[2]==XINPUT_GAMEPAD_START&&h.menu.holdMs[0]==300&&h.menu.tapTargets[0]==(1u<<18));
+    h.menu.requestedMovement=2;h.menu.requestedBindings=h.menu.bindings;
+    h.menu.requestedBindings[2]=XINPUT_GAMEPAD_A;h.menu.requestedBindings[9]=GamepadBridge::TargetLT;
+    h.menu.bindingMask=(1u<<2)|(1u<<9);h.menu.request=21;h.menu.hostTick=GetTickCount64();
+    GamepadBridge::buttonWasDown[2]=true;GamepadBridge::buttonTapUntil[2]=GetTickCount64()+1000;
+    GamepadBridge::MenuTick(2);
+    assert(h.menu.result==1&&!GamepadBridge::buttonWasDown[2]&&!GamepadBridge::buttonTapUntil[2]);
+    assert(GamepadBridge::buttonHoldMs[0]==300&&GamepadBridge::buttonTapTarget[0]==(1u<<18));
+    EngineCamera::reasons=0;XINPUT_GAMEPAD mapped{};mapped.wButtons=XINPUT_GAMEPAD_X;mapped.bRightTrigger=200;
+    GamepadBridge::ApplyButtons(mapped);assert(mapped.wButtons==XINPUT_GAMEPAD_A&&mapped.bLeftTrigger==200&&!mapped.bRightTrigger);
+    EngineCamera::reasons=2;mapped={};mapped.wButtons=XINPUT_GAMEPAD_A;GamepadBridge::ApplyButtons(mapped);
+    assert(mapped.wButtons==XINPUT_GAMEPAD_X); // independent screen mapping
+    for(int n=0;n<200&&h.menu.saved!=21;++n){Sleep(10);GamepadBridge::MenuTick(2);}
+    assert(h.menu.saved==21);GamepadBridge::LoadButtons();
+    assert(GamepadBridge::buttonTarget[2]==XINPUT_GAMEPAD_A&&GamepadBridge::rightTriggerTarget==GamepadBridge::TargetLT);
+    assert(GamepadBridge::buttonHoldMs[0]==300&&GamepadBridge::buttonTapTarget[0]==(1u<<18)&&GamepadBridge::stickUpTarget==XINPUT_GAMEPAD_A);
+    assert(GamepadBridge::screenTarget[0]==XINPUT_GAMEPAD_X);
+    // Trigger-to-button and unassigned targets use the existing threshold;
+    // returning to default targets recomputes remap activation on reload.
+    EngineCamera::reasons=0;
+    GamepadBridge::rightTriggerTarget=XINPUT_GAMEPAD_A;
+    mapped={};mapped.bRightTrigger=127;GamepadBridge::ApplyButtons(mapped);assert(!mapped.wButtons&&!mapped.bRightTrigger);
+    mapped={};mapped.bRightTrigger=128;GamepadBridge::ApplyButtons(mapped);assert(mapped.wButtons==XINPUT_GAMEPAD_A);
+    GamepadBridge::rightTriggerTarget=0;mapped={};mapped.bRightTrigger=255;GamepadBridge::ApplyButtons(mapped);assert(!mapped.wButtons&&!mapped.bRightTrigger);
+    EngineCamera::reasons=2;GamepadBridge::LoadButtons();
+    // Invalid binding requests must not partially change the angle or layout.
+    h.menu.request=22;h.menu.hostTick=GetTickCount64();h.menu.requestedBindings[2]=0xffffffff;h.menu.requestedDegrees=90;
+    GamepadBridge::MenuTick(2);assert(h.menu.result==2&&GamepadBridge::snapDegrees==oldAngle&&GamepadBridge::buttonTarget[2]==XINPUT_GAMEPAD_A);
+    h.menu.request=23;h.menu.bindingMask=1u<<10;h.menu.hostTick=GetTickCount64();GamepadBridge::MenuTick(2);assert(h.menu.result==2);
     GamepadBridge::SetChannel(nullptr);
     printf("PASS %zu-bit actual bridge: request/ack/save/error, duplicate/stale/refused edits, calibration scaling, virtual/physical input and focus recovery\n",sizeof(void*)*8);
 }

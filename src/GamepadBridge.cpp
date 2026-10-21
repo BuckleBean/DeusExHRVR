@@ -85,6 +85,7 @@ uint32_t ParseTarget(const wchar_t* key,uint32_t fallback,const wchar_t* section
     return fallback;
 }
 void LoadButtons() {
+    remapActive=screenRemapActive=false;
     for(size_t i=0;i<buttonCount;i++) {
         buttonTarget[i]=ParseTarget(buttonSources[i].key,buttonSources[i].bit);
         if(buttonTarget[i]!=buttonSources[i].bit)remapActive=true;
@@ -437,14 +438,27 @@ void MenuTick(unsigned screenReasons) {
     // Bit 2 is ScreenMode::Menu (TitleMenu/PauseMenu), not the inventory bit 32.
     m.eligible=SettingsMenu::Eligible(screenReasons);m.gameTick=now;
     m.snapEnabled=snapEnabled;m.degrees=snapDegrees;m.movement=EngineCamera::MovementDirection();
+    for(size_t i=0;i<buttonCount;++i){m.bindings[i]=buttonTarget[i];m.holdMs[i]=uint32_t(buttonHoldMs[i]);m.tapTargets[i]=buttonTapTarget[i];}
+    m.bindings[8]=leftTriggerTarget;m.bindings[9]=rightTriggerTarget;
     if(m.request!=m.acknowledged && Transport::Fresh(m.hostTick,now)) {
         m.acknowledged=m.request;
-        if(m.eligible&&m.blocked&&m.requestedSnap<=1&&m.requestedMovement<=3&&(m.requestedMovement!=0||m.movement==0)&&SettingsMenu::ApplyAngle(m.requestedDegrees,snapDegrees,snapCounts)) {
+        if(m.eligible&&m.blocked&&m.requestedSnap<=1&&m.requestedMovement<=3&&(m.requestedMovement!=0||m.movement==0)&&ButtonBindings::Valid(m.requestedBindings,m.bindingMask)&&SettingsMenu::ApplyAngle(m.requestedDegrees,snapDegrees,snapCounts)) {
             snapPending=snapMoving=snapArmed=false;snapHoldUntil=0;
             snapEnabled=m.requestedSnap!=0;m.snapEnabled=snapEnabled;
             EngineCamera::SetMovementDirection(m.requestedMovement);m.movement=m.requestedMovement;
+            for(size_t i=0;i<ButtonBindings::Count;++i)if(m.bindingMask&(1u<<i))m.bindings[i]=m.requestedBindings[i];
+            if(m.bindingMask){
+                remapActive=false;
+                for(size_t i=0;i<buttonCount;++i){
+                    buttonTarget[i]=m.bindings[i];buttonWasDown[i]=false;buttonTapUntil[i]=buttonDownAt[i]=0;
+                    if(buttonTarget[i]!=buttonSources[i].bit||buttonHoldMs[i]>0)remapActive=true;
+                }
+                leftTriggerTarget=m.bindings[8];rightTriggerTarget=m.bindings[9];
+                if(leftTriggerTarget!=TargetLT||rightTriggerTarget!=TargetRT)remapActive=true;
+                quickSaveWanted=false;SyncQuickSave();
+            }
             m.degrees=snapDegrees;m.result=1;
-            SettingsWriter().Queue(configPath,snapCounts,m.request,snapDegrees,int(snapEnabled),int(m.movement));
+            SettingsWriter().Queue(configPath,snapCounts,m.request,snapDegrees,int(snapEnabled),int(m.movement),m.bindings,m.bindingMask);
         } else m.result=2;
     }
     auto& writer=SettingsWriter();

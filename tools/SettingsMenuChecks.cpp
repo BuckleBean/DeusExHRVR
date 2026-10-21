@@ -81,6 +81,24 @@ int wmain(int argc,wchar_t** argv) {
     directions.leftController.valid=0;assert(!DirectionConfig::Aim(DirectionConfig::Source::LeftController,directions));
     assert(DirectionConfig::Aim(DirectionConfig::Source::Controller,directions));
     assert(DirectionConfig::Parse(L"LeftController",DirectionConfig::Source::Mouse)==DirectionConfig::Source::LeftController);
+    // Remapping remains a local draft, preserves timing metadata, and uses the
+    // same explicit save. Returning after a failed save can undo an applied edit.
+    s={};in={};in.active=true;game={};game.degrees=30;game.snapEnabled=1;
+    game.bindings[0]=XINPUT_GAMEPAD_RIGHT_SHOULDER;game.holdMs[0]=300;game.tapTargets[0]=1u<<19;
+    click(1200,450);click(1200,590);assert(s.remapping);
+    click(1460,465);assert(s.draftBindings[0]!=game.bindings[0]&&!s.request&&s.blocked&&!s.nativeDown);
+    in.rightTrigger=0;in.rightX=.8f;update(1200,450);assert(s.draft==30);in.rightX=0;
+    click(1200,680);assert(!s.remapping&&s.open);click(1200,730);assert(!s.open&&!s.request);
+    click(1200,450);click(1200,590);assert(s.draftBindings==game.bindings);
+    click(1460,465);click(1200,680);click(1200,650);
+    assert(s.saving&&s.requestedBindingMask==1&&s.requestedBindings[0]!=game.bindings[0]);
+    game.acknowledged=s.request;game.result=3;in.rightTrigger=0;update(1200,650);
+    click(1200,590);click(1100,465);click(1200,680);click(1200,650);
+    assert(s.requestedBindingMask==1&&s.requestedBindings[0]==game.bindings[0]);
+    game.acknowledged=game.saved=s.request;game.result=0;in.rightTrigger=0;update(1200,650);
+    click(1200,450);click(1200,590);click(1100,360);assert(s.selected==9);
+    click(1460,465);assert(s.draftBindings[9]!=game.bindings[9]);
+    s.Update(false,false,false,0,0,in,game);assert(!s.open&&!s.remapping&&s.draftBindings==s.originalBindings);
     // Native-menu hover and click route independently of the VR panel.
     s={};in={};in.active=true;update(800,450);assert(s.nativePointer&&!s.nativeDown&&!s.blocked);
     in.rightTrigger=.1f;update(800,450);assert(s.blocked&&!s.nativeDown);
@@ -131,6 +149,13 @@ int wmain(int argc,wchar_t** argv) {
     assert(writer.completed.load()==101&&writer.failed.load()!=101);
     assert(GetPrivateProfileIntW(L"VR",L"SnapTurnDegrees",0,ini.c_str())==60);
     assert(GetPrivateProfileIntW(L"VR",L"SnapTurnMouseCounts",0,ini.c_str())==600);
+    ButtonBindings::Layout bindings{};bindings[2]=XINPUT_GAMEPAD_A;
+    writer.Queue(ini.c_str(),600,102,60,1,1,bindings,1u<<2);
+    writer.Queue(ini.c_str(),601); // calibration cannot drop the pending layout
+    for(int n=0;n<200&&writer.completed.load()!=102;++n)Sleep(10);
+    assert(writer.completed.load()==102&&writer.failed.load()!=102);
+    wchar_t target[32];GetPrivateProfileStringW(L"Buttons",L"LeftX",L"",target,32,ini.c_str());assert(!wcscmp(target,L"A"));
+    assert(GetPrivateProfileIntW(L"VR",L"SnapTurnMouseCounts",0,ini.c_str())==601);
     SettingsMenuDraw draw;s={};s.visible=true;s.draftMovement=s.originalMovement=1;s.draftSnap=s.originalSnap=true;s.draft=s.original=30;game={};game.snapEnabled=1;game.degrees=30;
     assert(draw.Save((out/L"menu-entry.bmp").c_str(),s,game));s.open=true;s.pointer=true;s.x=1450;s.y=465;
     assert(draw.Save((out/L"menu-panel.bmp").c_str(),s,game));
@@ -163,5 +188,8 @@ int wmain(int argc,wchar_t** argv) {
     s.draft=90;s.draftMovement=3;pixels=static_cast<const uint32_t*>(draw.Draw(s,game));assert(pixels);
     assert(bright(SettingsMenu::Save)>500&&bright(SettingsMenu::Discard)>500);
     assert(draw.Save((out/L"menu-dirty.bmp").c_str(),s,game));
+    s.remapping=true;s.selected=0;s.draftBindings[0]=XINPUT_GAMEPAD_RIGHT_SHOULDER;
+    game.holdMs[0]=300;game.tapTargets[0]=1u<<19;
+    assert(draw.Save((out/L"menu-remap.bmp").c_str(),s,game));
     printf("PASS %zu-bit: ABI, stale channel, pointer geometry, click/release/focus, pending requests, bounds, existing chords, persistence and native UI previews\n",sizeof(void*)*8);
 }
