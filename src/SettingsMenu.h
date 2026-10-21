@@ -3,6 +3,7 @@
 #include "GamepadMapping.h"
 #include <cmath>
 #include <algorithm>
+#include <string>
 
 namespace SettingsMenu {
 constexpr int Width=1600,Height=900;
@@ -10,8 +11,38 @@ struct Rect {int x,y,w,h; bool Has(float px,float py) const {return px>=x&&py>=y
 inline constexpr Rect Entry{1080,420,410,70},Panel{1020,230,530,550};
 inline constexpr Rect Movement{1070,520,430,45};
 inline constexpr Rect Remap{1070,575,430,40};
-inline constexpr Rect SourcePrev{1070,330,70,60},SourceNext{1430,330,70,60};
-inline constexpr Rect TargetPrev{1070,440,70,60},TargetNext{1430,440,70,60};
+inline constexpr Rect ListPanel{180,90,1240,740};
+inline constexpr Rect ListSave{940,740,420,60},ListDiscard{490,740,420,60},ListBack{220,740,240,60};
+inline constexpr Rect PageUp{1320,220,60,60},PageDown{1320,620,60,60};
+inline constexpr Rect Confirm{810,610,420,65},Cancel{370,610,420,65};
+inline constexpr int Rows=8,Actions=18;
+inline Rect Row(int index){return {760,220+index*57,530,49};}
+inline std::wstring ControlName(size_t slot,const Transport::MenuState& game){
+    if(slot>=18)return slot==18?L"Right stick up":L"Right stick down";
+    if(slot>=10)return std::wstring(ButtonBindings::Labels[slot-10])+L" (tap)";
+    return std::wstring(ButtonBindings::Labels[slot])+(slot<8&&game.holdMs[slot]?L" (hold)":L"");
+}
+inline std::wstring Assigned(uint32_t target,const ButtonBindings::Layout& layout,const Transport::MenuState& game){
+    std::wstring text;
+    for(size_t i=0;i<ButtonBindings::Count;++i)if(layout[i]==target){
+        if(!text.empty())text+=L", ";text+=ControlName(i,game);
+    }
+    if(!text.empty())return text;
+    if(target==XINPUT_GAMEPAD_BACK)return L"Left menu tap (fixed)";
+    if(target==XINPUT_GAMEPAD_START)return L"Left menu hold (fixed)";
+    if(target==XINPUT_GAMEPAD_DPAD_UP)return L"Right click + left stick up (fixed)";
+    if(target==XINPUT_GAMEPAD_DPAD_DOWN)return L"Right click + left stick down (fixed)";
+    if(target==XINPUT_GAMEPAD_DPAD_LEFT)return L"Right click + left stick left (fixed)";
+    if(target==XINPUT_GAMEPAD_DPAD_RIGHT)return L"Right click + left stick right (fixed)";
+    return L"Unassigned";
+}
+// Raw controller inputs, before gameplay mapping or menu suppression.
+inline uint32_t Presses(const GamepadMapping::Input& in){
+    uint32_t mask=0;const bool on[]={in.a,in.b,in.x,in.y,in.leftGrip>.5f,in.rightGrip>.5f,in.leftClick,in.rightClick,in.leftTrigger>.5f,in.rightTrigger>.5f};
+    for(int i=0;i<10;++i)if(on[i])mask|=1u<<i;
+    if(std::abs(in.rightX)<.3f){if(in.rightY>.6f)mask|=1u<<18;if(in.rightY<-.6f)mask|=1u<<19;}
+    return mask;
+}
 inline constexpr Rect TurnMode{1070,330,430,45};
 inline constexpr Rect Minus{1070,430,100,80},Plus{1400,430,100,80},Back{1070,650,430,70},Save{1070,625,430,60},Discard{1070,700,430,60};
 inline Transport::Vector Rotate(Transport::Quaternion q,Transport::Vector v) {
@@ -64,11 +95,20 @@ struct State {
     float draft{},original{};bool saving{},committed{};
     bool draftSnap{},originalSnap{},requestedSnap{};
     uint32_t draftMovement{},originalMovement{},requestedMovement{};
-    bool remapping{};size_t selected{};
+    bool remapping{};size_t selected{};int page{};
+    bool listening{},captureReady{},confirming{},captureRelease{},scrollArmed{};
+    int candidate{-1},pressedSlot{-1};uint64_t pressAt{};
+    Rect Area() const {return open?(remapping?ListPanel:Panel):Entry;}
+    void Submit(){requested=draft;requestedSnap=draftSnap;requestedMovement=draftMovement;requestedBindings=draftBindings;requestedBindingMask|=ButtonBindings::Changes(draftBindings,originalBindings);++request;saving=true;committed=true;}
+    void Assign(){
+        const auto target=ButtonBindings::Targets[selected].value;
+        for(auto& value:draftBindings)if(value==target)value=0;
+        draftBindings[size_t(candidate)]=target;confirming=false;candidate=-1;
+    }
     ButtonBindings::Layout draftBindings{},originalBindings{},requestedBindings{};
     uint32_t requestedBindingMask{};
     bool Dirty() const {return draft!=original||draftSnap!=originalSnap||draftMovement!=originalMovement||draftBindings!=originalBindings||committed;}
-    void Update(bool eligible,bool focused,bool ray,float px,float py,const GamepadMapping::Input& in,const Transport::MenuState& game) {
+    void Update(bool eligible,bool focused,bool ray,float px,float py,const GamepadMapping::Input& in,const Transport::MenuState& game,uint64_t now=GetTickCount64()) {
         visible=eligible&&focused;pointer=visible&&ray;x=px;y=py;
         const bool wasOpen=open;
         // Stick navigation owns focus until deliberate aim movement or a trigger.
@@ -81,9 +121,9 @@ struct State {
             if(game.saved==request&&game.result==0){saving=false;open=false;armed=false;}
             else if(game.result==2||game.result==3)saving=false;
         }
-        if(!visible){open=false;remapping=false;draft=original;draftSnap=originalSnap;draftMovement=originalMovement;draftBindings=originalBindings;armed=false;nativeCapture=false;}
+        if(!visible){open=false;remapping=false;listening=confirming=captureReady=false;candidate=pressedSlot=-1;draft=original;draftSnap=originalSnap;draftMovement=originalMovement;draftBindings=originalBindings;armed=false;nativeCapture=false;}
         if(visible&&in.rightTrigger<.05f)armed=true;
-        bool hit=pointer&&(open?Panel.Has(x,y):Entry.Has(x,y));
+        bool hit=pointer&&Area().Has(x,y);
         // Capture from first trigger movement, before the game's low threshold.
         if(visible&&hit&&in.rightTrigger>.05f)releaseGate=true;
         // Lock a press to the native menu or the VR panel until trigger release.
@@ -93,17 +133,46 @@ struct State {
         if(nativeHit&&armed&&in.rightTrigger>.05f)nativeCapture=true;
         nativeDown=nativeHit&&nativeCapture&&in.rightTrigger>.5f;
         const bool down=in.rightTrigger>.5f;
-        if(visible&&armed&&down&&!triggerDown&&hit&&!nativeCapture) {
-            if(!open){open=true;remapping=false;selected=0;requestedBindingMask=0;releaseGate=true;draft=original=game.degrees;draftSnap=originalSnap=game.snapEnabled!=0;draftMovement=originalMovement=game.movement;draftBindings=originalBindings=game.bindings;committed=false;}
+        // A capture consumes the whole press/release, including the pointer trigger.
+        // Wait for neutral after opening so the click that chose the row cannot bind itself.
+        bool capturing=listening||captureRelease;
+        if(captureRelease&&Neutral(in))captureRelease=false;
+        if(listening&&!in.active){listening=false;captureReady=false;pressedSlot=-1;captureRelease=true;}
+        if(listening&&visible){
+            if(in.menu||(captureReady&&pointer&&Cancel.Has(x,y)&&down&&!triggerDown)){
+                listening=false;captureRelease=true;
+            }else if(!captureReady){if(Neutral(in))captureReady=true;}
+            else {
+                const auto presses=Presses(in);
+                if(presses&&(presses&(presses-1))){pressedSlot=-1;captureReady=false;}
+                else if(pressedSlot<0&&presses){
+                    for(int i=0;i<20;++i)if(presses&(1u<<i)){pressedSlot=i;pressAt=now;break;}
+                }else if(pressedSlot>=0&&presses&&presses!=(1u<<pressedSlot)){
+                    pressedSlot=-1;captureReady=false;
+                }else if(pressedSlot>=0&&!presses){
+                    candidate=pressedSlot;
+                    if(candidate<8&&game.holdMs[candidate]&&now-pressAt<game.holdMs[candidate])candidate+=10;
+                    pressedSlot=-1;listening=false;confirming=true;captureRelease=true;
+                }
+            }
+        }
+        if(visible&&armed&&down&&!triggerDown&&hit&&!nativeCapture&&!capturing) {
+            if(!open){open=true;remapping=false;listening=confirming=captureRelease=false;page=0;selected=0;requestedBindingMask=0;releaseGate=true;draft=original=game.degrees;draftSnap=originalSnap=game.snapEnabled!=0;draftMovement=originalMovement=game.movement;draftBindings=originalBindings=game.bindings;committed=false;}
             else if(remapping&&!saving){
-                if(Back.Has(x,y))remapping=false;
-                else if(SourcePrev.Has(x,y))selected=(selected+ButtonBindings::Count-1)%ButtonBindings::Count;
-                else if(SourceNext.Has(x,y))selected=(selected+1)%ButtonBindings::Count;
-                else if(TargetPrev.Has(x,y))draftBindings[selected]=ButtonBindings::Cycle(draftBindings[selected],-1);
-                else if(TargetNext.Has(x,y))draftBindings[selected]=ButtonBindings::Cycle(draftBindings[selected],1);
+                if(confirming){
+                    if(Confirm.Has(x,y))Assign();
+                    else if(Cancel.Has(x,y)){confirming=false;candidate=-1;}
+                }else if(ListSave.Has(x,y)&&Dirty())Submit();
+                else if(ListDiscard.Has(x,y)){open=false;armed=false;}
+                else if(ListBack.Has(x,y))remapping=false;
+                else if(PageUp.Has(x,y))page=std::max(0,page-1);
+                else if(PageDown.Has(x,y))page=std::min(Actions-Rows,page+1);
+                else for(int row=0;row<Rows;++row)if(Row(row).Has(x,y)){
+                    selected=size_t(page+row);listening=true;captureReady=false;pressedSlot=-1;break;
+                }
             }
             else if(!saving&&((!Dirty()&&Back.Has(x,y))||(Dirty()&&Discard.Has(x,y)))){open=false;armed=false;}
-            else if(!saving&&Dirty()&&Save.Has(x,y)){requested=draft;requestedSnap=draftSnap;requestedMovement=draftMovement;requestedBindings=draftBindings;requestedBindingMask|=ButtonBindings::Changes(draftBindings,originalBindings);++request;saving=true;committed=true;}
+            else if(!saving&&Dirty()&&Save.Has(x,y))Submit();
             else if(!saving&&Remap.Has(x,y)){remapping=true;}
             else if(!saving&&Movement.Has(x,y)){draftMovement=draftMovement==1?3:draftMovement==3?2:1;}
             else if(!saving&&TurnMode.Has(x,y)){draftSnap=!draftSnap;}
@@ -113,7 +182,10 @@ struct State {
             }
         }
         // One step per stick deflection; no frame-rate-dependent repeats.
-        // The first slice fits on one page, so no scrolling is needed yet.
+        if(std::abs(in.leftY)<.2f)scrollArmed=true;
+        if(remapping&&!listening&&!confirming&&!saving&&scrollArmed&&std::abs(in.leftY)>.6f){
+            page=std::clamp(page+(in.leftY<0?1:-1),0,Actions-Rows);scrollArmed=false;
+        }
         if(std::abs(in.rightX)<.2f)stickArmed=true;
         if(open&&pointer&&Panel.Has(x,y)&&stickArmed&&std::abs(in.rightX)>.6f&&
            std::abs(in.rightX)>std::abs(in.rightY)&&in.rightTrigger<.05f&&

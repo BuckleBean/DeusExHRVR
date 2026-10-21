@@ -440,6 +440,8 @@ void MenuTick(unsigned screenReasons) {
     m.snapEnabled=snapEnabled;m.degrees=snapDegrees;m.movement=EngineCamera::MovementDirection();
     for(size_t i=0;i<buttonCount;++i){m.bindings[i]=buttonTarget[i];m.holdMs[i]=uint32_t(buttonHoldMs[i]);m.tapTargets[i]=buttonTapTarget[i];}
     m.bindings[8]=leftTriggerTarget;m.bindings[9]=rightTriggerTarget;
+    for(size_t i=0;i<buttonCount;++i)m.bindings[10+i]=buttonTapTarget[i];
+    m.bindings[18]=stickUpTarget;m.bindings[19]=stickDownTarget;
     if(m.request!=m.acknowledged && Transport::Fresh(m.hostTick,now)) {
         m.acknowledged=m.request;
         if(m.eligible&&m.blocked&&m.requestedSnap<=1&&m.requestedMovement<=3&&(m.requestedMovement!=0||m.movement==0)&&ButtonBindings::Valid(m.requestedBindings,m.bindingMask)&&SettingsMenu::ApplyAngle(m.requestedDegrees,snapDegrees,snapCounts)) {
@@ -450,10 +452,10 @@ void MenuTick(unsigned screenReasons) {
             if(m.bindingMask){
                 remapActive=false;
                 for(size_t i=0;i<buttonCount;++i){
-                    buttonTarget[i]=m.bindings[i];buttonWasDown[i]=false;buttonTapUntil[i]=buttonDownAt[i]=0;
+                    buttonTarget[i]=m.bindings[i];buttonTapTarget[i]=m.bindings[10+i];buttonWasDown[i]=false;buttonTapUntil[i]=buttonDownAt[i]=0;
                     if(buttonTarget[i]!=buttonSources[i].bit||buttonHoldMs[i]>0)remapActive=true;
                 }
-                leftTriggerTarget=m.bindings[8];rightTriggerTarget=m.bindings[9];
+                leftTriggerTarget=m.bindings[8];rightTriggerTarget=m.bindings[9];stickUpTarget=m.bindings[18];stickDownTarget=m.bindings[19];
                 if(leftTriggerTarget!=TargetLT||rightTriggerTarget!=TargetRT)remapActive=true;
                 quickSaveWanted=false;SyncQuickSave();
             }

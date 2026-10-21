@@ -113,7 +113,15 @@ int wmain(int argc,wchar_t** argv) {
     // Invalid binding requests must not partially change the angle or layout.
     h.menu.request=22;h.menu.hostTick=GetTickCount64();h.menu.requestedBindings[2]=0xffffffff;h.menu.requestedDegrees=90;
     GamepadBridge::MenuTick(2);assert(h.menu.result==2&&GamepadBridge::snapDegrees==oldAngle&&GamepadBridge::buttonTarget[2]==XINPUT_GAMEPAD_A);
-    h.menu.request=23;h.menu.bindingMask=1u<<10;h.menu.hostTick=GetTickCount64();GamepadBridge::MenuTick(2);assert(h.menu.result==2);
+    h.menu.request=23;h.menu.bindingMask=1u<<20;h.menu.hostTick=GetTickCount64();GamepadBridge::MenuTick(2);assert(h.menu.result==2);
+    // Tap and right-stick mappings round-trip through the real consumer.
+    h.menu.requestedDegrees=oldAngle;h.menu.requestedBindings=h.menu.bindings;
+    h.menu.requestedBindings[10]=XINPUT_GAMEPAD_X;h.menu.requestedBindings[18]=XINPUT_GAMEPAD_B;
+    h.menu.bindingMask=(1u<<10)|(1u<<18);h.menu.request=24;h.menu.hostTick=GetTickCount64();
+    GamepadBridge::MenuTick(2);assert(GamepadBridge::buttonTapTarget[0]==XINPUT_GAMEPAD_X&&GamepadBridge::stickUpTarget==XINPUT_GAMEPAD_B);
+    for(int n=0;n<200&&h.menu.saved!=24;++n){Sleep(10);GamepadBridge::MenuTick(2);}
+    assert(h.menu.saved==24);GamepadBridge::LoadButtons();
+    assert(GamepadBridge::buttonTapTarget[0]==XINPUT_GAMEPAD_X&&GamepadBridge::stickUpTarget==XINPUT_GAMEPAD_B&&GamepadBridge::buttonHoldMs[0]==300);
     GamepadBridge::SetChannel(nullptr);
     printf("PASS %zu-bit actual bridge: request/ack/save/error, duplicate/stale/refused edits, calibration scaling, virtual/physical input and focus recovery\n",sizeof(void*)*8);
 }

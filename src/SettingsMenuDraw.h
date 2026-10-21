@@ -21,9 +21,9 @@ public:
         title=CreateFontW(-34,0,0,0,FW_SEMIBOLD,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,ANTIALIASED_QUALITY,DEFAULT_PITCH,L"Segoe UI");
         if(!font||!title){Reset();return false;}return true;
     }
-    void Text(const wchar_t* text,int x,int y,int w,int h,bool heading=false) {
+    void Text(const wchar_t* text,int x,int y,int w,int h,bool heading=false,bool left=false) {
         auto old=SelectObject(dc,heading?title:font);SetBkMode(dc,TRANSPARENT);SetTextColor(dc,heading?RGB(255,190,55):RGB(244,227,191));
-        RECT r{x,y,x+w,y+h};if(!DrawTextW(dc,text,-1,&r,DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_NOPREFIX))drawError=true;SelectObject(dc,old);
+        RECT r{x,y,x+w,y+h};if(!DrawTextW(dc,text,-1,&r,(left?DT_LEFT:DT_CENTER)|DT_VCENTER|DT_SINGLELINE|DT_NOPREFIX|DT_END_ELLIPSIS))drawError=true;SelectObject(dc,old);
     }
     void Button(SettingsMenu::Rect r,const wchar_t* label,bool hover) {
         auto brush=CreateSolidBrush(hover?RGB(119,78,12):RGB(35,28,16));auto pen=CreatePen(PS_SOLID,2,RGB(210,150,30));
@@ -39,27 +39,45 @@ public:
         if(!GdiFlush())return nullptr;
         memset(pixels,0,SettingsMenu::Width*SettingsMenu::Height*4);
         if(!s.visible)return pixels;
-        auto area=s.open?SettingsMenu::Panel:SettingsMenu::Entry;
+        auto area=s.Area();
         RECT r{area.x,area.y,area.x+area.w,area.y+area.h};auto b=CreateSolidBrush(RGB(16,17,14));FillRect(dc,&r,b);DeleteObject(b);
         auto hovered=[&](SettingsMenu::Rect rect){return s.pointer&&rect.Has(s.x,s.y);};
         if(!s.open)Button(SettingsMenu::Entry,L"VR SETTINGS",hovered(SettingsMenu::Entry));
         else if(s.remapping) {
-            Text(L"GAMEPLAY BUTTONS",1040,255,490,60,true);
-            Button(SettingsMenu::SourcePrev,L"<",hovered(SettingsMenu::SourcePrev));
-            Button(SettingsMenu::SourceNext,L">",hovered(SettingsMenu::SourceNext));
-            Text(ButtonBindings::Labels[s.selected],1140,330,290,60);
-            const bool held=s.selected<8&&game.holdMs[s.selected]>0;
-            Text(held?L"Hold assignment":L"Assignment",1070,395,430,40);
-            Button(SettingsMenu::TargetPrev,L"<",hovered(SettingsMenu::TargetPrev));
-            Button(SettingsMenu::TargetNext,L">",hovered(SettingsMenu::TargetNext));
-            Text(ButtonBindings::Label(s.draftBindings[s.selected]),1140,440,290,60);
-            wchar_t note[100];
-            if(held){
-                swprintf_s(note,L"Hold delay: %u ms (retained)",game.holdMs[s.selected]);Text(note,1040,520,490,40);
-                swprintf_s(note,L"Tap: %ls (retained)",ButtonBindings::Label(game.tapTargets[s.selected]));Text(note,1040,560,490,40);
-            }else Text(L"Menu controls and shortcuts retained",1040,530,490,40);
-            Text(L"Save or discard on the previous page",1040,605,490,35);
-            Button(SettingsMenu::Back,L"BACK TO SETTINGS",hovered(SettingsMenu::Back));
+            Text(L"GAMEPLAY BUTTON MAPPING",240,105,1120,55,true);
+            Text(L"ACTION",240,170,470,40,true,true);Text(L"ASSIGNED CONTROL",760,170,530,40,true);
+            for(int row=0;row<SettingsMenu::Rows;++row){
+                auto target=ButtonBindings::Targets[s.page+row];
+                Text(target.label,240,220+row*57,470,49,false,true);
+                auto label=SettingsMenu::Assigned(target.value,s.draftBindings,game);
+                Button(SettingsMenu::Row(row),label.c_str(),!s.saving&&!s.listening&&!s.confirming&&hovered(SettingsMenu::Row(row)));
+            }
+            Button(SettingsMenu::PageUp,L"^",hovered(SettingsMenu::PageUp));Button(SettingsMenu::PageDown,L"v",hovered(SettingsMenu::PageDown));
+            const wchar_t* status=s.saving?L"Saving...":s.committed&&game.result==3?L"Applied; save failed. Select Save to retry.":s.committed&&game.result==2?L"Change refused. Select Save to retry.":L"Select an assignment, then press and release the control you want.";
+            Text(status,220,685,1160,40);
+            Button(SettingsMenu::ListBack,L"SETTINGS",hovered(SettingsMenu::ListBack));
+            Button(SettingsMenu::ListDiscard,s.committed?L"BACK":L"DISCARD & BACK",!s.saving&&hovered(SettingsMenu::ListDiscard));
+            Button(SettingsMenu::ListSave,s.saving?L"SAVING...":s.Dirty()?L"SAVE & BACK":L"NO CHANGES",!s.saving&&s.Dirty()&&hovered(SettingsMenu::ListSave));
+            if(s.listening||s.confirming){
+                RECT dialog{210,215,1390,685};auto brush=CreateSolidBrush(RGB(16,17,14));FillRect(dc,&dialog,brush);DeleteObject(brush);
+                brush=CreateSolidBrush(RGB(210,150,30));FrameRect(dc,&dialog,brush);DeleteObject(brush);
+                Text(ButtonBindings::Targets[s.selected].label,340,290,920,60,true);
+                if(s.listening){
+                    Text(s.captureReady?L"Press and release a button or trigger":L"Release controls to begin",340,375,920,50,true);
+                    Text(L"For an existing tap / hold control, use the gesture you want.",340,445,920,45);
+                    Text(L"Left menu button cancels. Right stick up / down also supported.",340,505,920,45);
+                }else{
+                    auto name=SettingsMenu::ControlName(size_t(s.candidate),game);
+                    auto assign=std::wstring(L"Assign to ")+name+L"?";Text(assign.c_str(),340,365,920,50,true);
+                    auto old=s.draftBindings[size_t(s.candidate)];
+                    auto displaced=std::wstring(L"Replaces: ")+ButtonBindings::Label(old);Text(displaced.c_str(),340,440,920,45);
+                    auto previous=std::wstring(L"Previous: ")+SettingsMenu::Assigned(ButtonBindings::Targets[s.selected].value,s.draftBindings,game);
+                    Text(previous.c_str(),240,490,1120,45);
+                    Text(L"Other custom assignments for this action will be replaced.",340,545,920,40);
+                    Button(SettingsMenu::Confirm,L"ASSIGN",hovered(SettingsMenu::Confirm));
+                }
+                Button(SettingsMenu::Cancel,L"CANCEL",hovered(SettingsMenu::Cancel));
+            }
         }
         else {
             const wchar_t* heading=s.saving?L"SAVING...":s.committed&&game.result==3?L"SAVE FAILED - RETRY":s.committed&&game.result==2?L"CHANGE REFUSED":L"DEUS EX / VR SETTINGS";

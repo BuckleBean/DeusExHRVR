@@ -81,24 +81,49 @@ int wmain(int argc,wchar_t** argv) {
     directions.leftController.valid=0;assert(!DirectionConfig::Aim(DirectionConfig::Source::LeftController,directions));
     assert(DirectionConfig::Aim(DirectionConfig::Source::Controller,directions));
     assert(DirectionConfig::Parse(L"LeftController",DirectionConfig::Source::Mouse)==DirectionConfig::Source::LeftController);
-    // Remapping remains a local draft, preserves timing metadata, and uses the
-    // same explicit save. Returning after a failed save can undo an applied edit.
+    // Action list: selection click is not captured; capture requires release,
+    // confirmation is a draft, and occupied controls report the displaced action.
     s={};in={};in.active=true;game={};game.degrees=30;game.snapEnabled=1;
-    game.bindings[0]=XINPUT_GAMEPAD_RIGHT_SHOULDER;game.holdMs[0]=300;game.tapTargets[0]=1u<<19;
-    click(1200,450);click(1200,590);assert(s.remapping);
-    click(1460,465);assert(s.draftBindings[0]!=game.bindings[0]&&!s.request&&s.blocked&&!s.nativeDown);
-    in.rightTrigger=0;in.rightX=.8f;update(1200,450);assert(s.draft==30);in.rightX=0;
-    click(1200,680);assert(!s.remapping&&s.open);click(1200,730);assert(!s.open&&!s.request);
+    game.bindings[0]=XINPUT_GAMEPAD_RIGHT_SHOULDER;game.holdMs[0]=300;game.bindings[10]=1u<<19;
+    game.bindings[2]=XINPUT_GAMEPAD_START;game.holdMs[2]=500;game.bindings[12]=1u<<18;
+    game.bindings[4]=game.bindings[3]=XINPUT_GAMEPAD_Y;game.bindings[18]=XINPUT_GAMEPAD_A;
+    click(1200,450);click(1200,590);assert(s.remapping&&s.Area().x==180);
+    click(1000,240);assert(s.listening&&!s.captureReady&&!s.confirming); // Jump row
+    update(1000,240);assert(s.listening);in.rightTrigger=0;update(1000,240);assert(s.captureReady);
+    in.b=true;update(1000,240);assert(s.pressedSlot==1);in.b=false;update(1000,240);
+    assert(s.confirming&&s.candidate==1&&s.draftBindings==game.bindings&&!s.request);
+    click(1000,640);assert(!s.confirming&&s.draftBindings[1]==XINPUT_GAMEPAD_A&&!s.draftBindings[18]);
+    assert(!s.nativeDown&&s.blocked);click(700,770);assert(!s.open&&!s.request); // discard
     click(1200,450);click(1200,590);assert(s.draftBindings==game.bindings);
-    click(1460,465);click(1200,680);click(1200,650);
-    assert(s.saving&&s.requestedBindingMask==1&&s.requestedBindings[0]!=game.bindings[0]);
-    game.acknowledged=s.request;game.result=3;in.rightTrigger=0;update(1200,650);
-    click(1200,590);click(1100,465);click(1200,680);click(1200,650);
-    assert(s.requestedBindingMask==1&&s.requestedBindings[0]==game.bindings[0]);
-    game.acknowledged=game.saved=s.request;game.result=0;in.rightTrigger=0;update(1200,650);
-    click(1200,450);click(1200,590);click(1100,360);assert(s.selected==9);
-    click(1460,465);assert(s.draftBindings[9]!=game.bindings[9]);
-    s.Update(false,false,false,0,0,in,game);assert(!s.open&&!s.remapping&&s.draftBindings==s.originalBindings);
+    // Capturing a configured tap preserves its hold assignment.
+    click(1000,240);in.rightTrigger=0;s.Update(true,true,true,1000,240,in,game,1000);
+    in.x=true;s.Update(true,true,true,1000,240,in,game,1100);
+    in.x=false;s.Update(true,true,true,1000,240,in,game,1200);
+    assert(s.confirming&&s.candidate==12);click(1000,640);
+    assert(s.draftBindings[12]==XINPUT_GAMEPAD_A&&s.draftBindings[2]==XINPUT_GAMEPAD_START);
+    click(1100,770);assert(s.saving&&(s.requestedBindingMask&(1u<<12))&&(s.requestedBindingMask&(1u<<18)));
+    game.acknowledged=game.saved=s.request;in.rightTrigger=0;update(1100,770);assert(!s.open);
+    // Existing duplicate assignments are visible and unchanged until confirmed.
+    s={};in={};in.active=true;click(1200,450);click(1200,590);
+    auto duplicates=SettingsMenu::Assigned(XINPUT_GAMEPAD_Y,s.draftBindings,game);
+    assert(duplicates.find(L"LEFT Y")!=std::wstring::npos&&duplicates.find(L"LEFT GRIP")!=std::wstring::npos);
+    click(1000,240);in.rightTrigger=0;update(1000,240);in.a=true;
+    s.Update(true,true,true,1000,240,in,game,1000);in.a=false;s.Update(true,true,true,1000,240,in,game,1400);
+    assert(s.confirming&&s.candidate==0);click(500,640);assert(!s.confirming&&s.draftBindings==game.bindings);
+    // The pointer trigger can itself be captured, but cannot click through.
+    click(1000,240);in.rightTrigger=0;update(1000,240);in.rightTrigger=.8f;update(1000,240);
+    in.rightTrigger=0;update(1000,240);assert(s.confirming&&s.candidate==9&&!s.nativeDown);
+    click(500,640);click(1000,240);in.rightTrigger=0;update(1000,240);
+    in.leftClick=in.rightClick=true;update(1000,240);assert(!s.captureReady&&!s.confirming);
+    in.leftClick=in.rightClick=false;update(1000,240);in.menu=true;update(1000,240);assert(!s.listening&&!s.confirming);
+    in.menu=false;update(1000,240);
+    click(1000,240);in.rightTrigger=0;update(1000,240);in.a=true;update(1000,240);
+    in.a=false;in.active=false;update(1000,240);assert(!s.listening&&!s.confirming); // tracking/input loss cannot bind
+    in.active=true;update(1000,240);
+    click(1000,240);in.rightTrigger=0;update(1000,240);in.rightY=.8f;update(1000,240);
+    in.rightY=0;update(1000,240);assert(s.confirming&&s.candidate==18);click(500,640);
+    for(int i=0;i<20;++i)click(1350,650);assert(s.page==SettingsMenu::Actions-SettingsMenu::Rows);
+    click(1000,240);s.Update(false,false,false,0,0,in,game);assert(!s.open&&!s.listening&&!s.confirming);
     // Native-menu hover and click route independently of the VR panel.
     s={};in={};in.active=true;update(800,450);assert(s.nativePointer&&!s.nativeDown&&!s.blocked);
     in.rightTrigger=.1f;update(800,450);assert(s.blocked&&!s.nativeDown);
@@ -188,8 +213,17 @@ int wmain(int argc,wchar_t** argv) {
     s.draft=90;s.draftMovement=3;pixels=static_cast<const uint32_t*>(draw.Draw(s,game));assert(pixels);
     assert(bright(SettingsMenu::Save)>500&&bright(SettingsMenu::Discard)>500);
     assert(draw.Save((out/L"menu-dirty.bmp").c_str(),s,game));
-    s.remapping=true;s.selected=0;s.draftBindings[0]=XINPUT_GAMEPAD_RIGHT_SHOULDER;
-    game.holdMs[0]=300;game.tapTargets[0]=1u<<19;
+    s.remapping=true;s.selected=0;s.draftBindings=game.bindings;s.draftBindings[0]=XINPUT_GAMEPAD_RIGHT_SHOULDER;
+    game.holdMs[0]=300;game.holdMs[2]=500;
+    s.draftBindings[1]=XINPUT_GAMEPAD_B;s.draftBindings[2]=XINPUT_GAMEPAD_START;
+    s.draftBindings[3]=s.draftBindings[4]=XINPUT_GAMEPAD_Y;s.draftBindings[5]=XINPUT_GAMEPAD_X;
+    s.draftBindings[6]=XINPUT_GAMEPAD_LEFT_SHOULDER;s.draftBindings[7]=XINPUT_GAMEPAD_RIGHT_THUMB;
+    s.draftBindings[8]=1u<<16;s.draftBindings[9]=1u<<17;s.draftBindings[10]=1u<<19;s.draftBindings[12]=1u<<18;
+    s.draftBindings[18]=XINPUT_GAMEPAD_A;s.draftBindings[19]=XINPUT_GAMEPAD_LEFT_THUMB;
     assert(draw.Save((out/L"menu-remap.bmp").c_str(),s,game));
+    s.page=10;assert(draw.Save((out/L"menu-remap-bottom.bmp").c_str(),s,game));s.page=0;
+    s.listening=true;assert(draw.Save((out/L"menu-listen.bmp").c_str(),s,game));
+    s.listening=false;s.confirming=true;s.candidate=0;
+    assert(draw.Save((out/L"menu-confirm.bmp").c_str(),s,game));
     printf("PASS %zu-bit: ABI, stale channel, pointer geometry, click/release/focus, pending requests, bounds, existing chords, persistence and native UI previews\n",sizeof(void*)*8);
 }
