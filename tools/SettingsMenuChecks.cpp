@@ -1,5 +1,6 @@
 #include "SettingsMenuDraw.h"
 #include "CameraMath.h"
+#include "InteractionDiagnostics.h"
 #include "SettingsPersistence.h"
 #include "NativeMenuPointer.h"
 #include <cassert>
@@ -51,6 +52,21 @@ int wmain(int argc,wchar_t** argv) {
      ui.Submit();assert(ui.requestedResponse==1);
     }
     float degrees=30;double counts=300;
+    // Validate the diagnostic's native frame offsets and failed-read handling.
+    {
+        alignas(16) unsigned char frame[0xe0]{};
+        struct Descriptor {uint32_t type;float reach;} descriptor{9,2.f};
+        float origin[3]{1,2,3},hit[3]{1,2,303},extra=40000;
+        memcpy(frame+0x60,origin,12);memcpy(frame+0xd0,hit,12);
+        memcpy(frame+0x28,&extra,4);frame[0x13]=1;
+        InteractionDiagnostics::Hit sample;
+        assert(InteractionDiagnostics::ReadHit(&sample,frame,&descriptor));
+        assert(sample.type==9&&sample.extended&&sample.origin[2]==3&&sample.point[2]==303);
+        assert(std::abs(sample.range-632.10004f)<.001f&&sample.extraRangeSquared==extra);
+        descriptor.reach=std::numeric_limits<float>::quiet_NaN();
+        assert(!InteractionDiagnostics::ReadHit(&sample,frame,&descriptor));
+        assert(!InteractionDiagnostics::ReadHit(&sample,frame,nullptr)&&!sample.readable);
+    }
     assert(SettingsMenu::ApplyAngle(45,degrees,counts)&&degrees==45&&counts==450);
     assert(SettingsMenu::ApplyAngle(30,degrees,counts)&&counts==300);
     assert(!SettingsMenu::ApplyAngle(181,degrees,counts));assert(!SettingsMenu::ApplyAngle(std::numeric_limits<float>::quiet_NaN(),degrees,counts));

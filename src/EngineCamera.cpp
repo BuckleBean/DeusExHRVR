@@ -1,5 +1,6 @@
 #include "EngineCamera.h"
 #include "CameraMath.h"
+#include "InteractionDiagnostics.h"
 #include "NativeHeading.h"
 #include "CameraPosition.h"
 #include "DirectionConfig.h"
@@ -1718,18 +1719,111 @@ bool DirectionWorld(DirectionConfig::Source source,CameraMath::Matrix& result,Ca
     result=CameraMath::HeadWorld(baseWorld,reference,aim->aim,worldScale);
     return true;
 }
+
+// Optional, read-only DXSense diagnostics for the supported executable. Never
+// change native results; unknown layouts disable only these extra probes.
+using InteractionHit=InteractionDiagnostics::Hit;
+struct InteractionSample {
+    uint64_t tick{};bool active{},substituted{},selected{};unsigned count{};
+    CameraMath::Matrix native{},aim{};InteractionHit hits[4]{};
+    uintptr_t selectedObject{};float scale{};unsigned source{};
+};
+thread_local InteractionSample interactionSample;
+std::atomic<uint64_t> interactionNextSample{};
+std::atomic<unsigned> interactionSampleCount{};
+bool interactionProbesReady{};
+using InteractionResolve=void*(__cdecl*)(void*,void**);
+using InteractionEvent=void*(__thiscall*)(void*,void*,void*,void*,void*,void*);
+InteractionResolve originalInteractionResolve{};
+InteractionEvent originalInteractionEvent{};
+void* __cdecl InteractionResolveHook(void* object,void** descriptor){
+    auto caller=reinterpret_cast<uintptr_t>(_ReturnAddress());
+    auto frame=static_cast<const unsigned char*>(_AddressOfReturnAddress())+3*sizeof(void*);
+    auto result=originalInteractionResolve(object,descriptor);
+    if(interactionSample.active&&interactionSample.count<4&&
+       (caller==base+0x68a100-0x400000||caller==base+0x68a2b5-0x400000)){
+        auto& hit=interactionSample.hits[interactionSample.count++];
+        hit.site=caller-base+0x400000;hit.object=reinterpret_cast<uintptr_t>(result);
+        if(result&&descriptor&&*descriptor){hit.descriptor=reinterpret_cast<uintptr_t>(*descriptor);InteractionDiagnostics::ReadHit(&hit,frame,*descriptor);}
+    }
+    return result;
+}
+void* __fastcall InteractionEventHook(void* out,void*,void* object,void* descriptor,void* point,void* player,void* manager){
+    auto caller=reinterpret_cast<uintptr_t>(_ReturnAddress());
+    auto result=originalInteractionEvent(out,object,descriptor,point,player,manager);
+    if(interactionSample.active&&(caller==base+0x68a180-0x400000||caller==base+0x68a783-0x400000)){
+        interactionSample.selected=true;interactionSample.selectedObject=reinterpret_cast<uintptr_t>(object);
+    }
+    return result;
+}
+void InstallInteractionProbes(){
+    auto resolve=reinterpret_cast<void*>(base+0x688ed0-0x400000);
+    auto event=reinterpret_cast<void*>(base+0x688e80-0x400000);
+    bool match=!memcmp(resolve,"\x8b\x4c\x24\x04\x57",5)&&!memcmp(event,"\x8b\x54\x24\x08\x8b\xc1",6);
+    // Guard the native caller stack layout as well as callee entry points.
+    auto checkCall=[&](uintptr_t preferred){
+        auto at=reinterpret_cast<const unsigned char*>(base+preferred-0x400000);
+        int32_t relative{};memcpy(&relative,at+1,4);
+        return at[0]==0xe8&&reinterpret_cast<uintptr_t>(at+5)+relative==reinterpret_cast<uintptr_t>(resolve);
+    };
+    match=match&&checkCall(0x68a0fb)&&checkCall(0x68a2b0);
+    bool madeResolve=false,madeEvent=false;
+    if(match){
+        madeResolve=MH_CreateHook(resolve,(void*)&InteractionResolveHook,(void**)&originalInteractionResolve)==MH_OK;
+        if(madeResolve)madeEvent=MH_CreateHook(event,(void*)&InteractionEventHook,(void**)&originalInteractionEvent)==MH_OK;
+        if(madeResolve&&madeEvent)interactionProbesReady=MH_EnableHook(resolve)==MH_OK&&MH_EnableHook(event)==MH_OK;
+    }
+    if(!interactionProbesReady){
+        if(madeResolve){MH_DisableHook(resolve);MH_RemoveHook(resolve);}
+        if(madeEvent){MH_DisableHook(event);MH_RemoveHook(event);}
+    }
+    FILE* f{};if(!fopen_s(&f,"DeusExHRVR-interaction.log","a")){
+        fprintf(f,"Interaction diagnostics ready=%d layoutMatch=%d maxSamples=300 intervalMs=2000\n",int(interactionProbesReady),int(match));fclose(f);
+    }
+}
+void RecordInteractionTransform(const CameraMath::Matrix& aim){
+    if(interactionSample.active){interactionSample.aim=aim;interactionSample.substituted=true;}
+}
+void WriteInteractionSample(){
+    auto& s=interactionSample;FILE* f{};
+    if(fopen_s(&f,"DeusExHRVR-interaction.log","a"))return;
+    fprintf(f,"sample tick=%llu source=%u substituted=%d selectedEvent=%d selectedObject=%p candidates=%u scale=%g nativeOrigin=%g,%g,%g aimOrigin=%g,%g,%g aimForward=%g,%g,%g\n",
+        s.tick,s.source,int(s.substituted),int(s.selected),reinterpret_cast<void*>(s.selectedObject),s.count,s.scale,
+        s.native.m[12],s.native.m[13],s.native.m[14],s.aim.m[12],s.aim.m[13],s.aim.m[14],s.aim.m[8],s.aim.m[9],s.aim.m[10]);
+    for(unsigned i=0;i<s.count;++i){
+        const auto& h=s.hits[i];float dx=h.point[0]-h.origin[0],dy=h.point[1]-h.origin[1],dz=h.point[2]-h.origin[2];
+        float distance=std::sqrt(dx*dx+dy*dy+dz*dz);
+        fprintf(f," candidate site=%x object=%p descriptor=%p readable=%d type=%u origin=%g,%g,%g hit=%g,%g,%g distanceUnits=%g reachUnits=%g exceedsReach=%d extended=%d extraRangeSquared=%g\n",
+            unsigned(h.site),reinterpret_cast<void*>(h.object),reinterpret_cast<void*>(h.descriptor),int(h.readable),h.type,
+            h.origin[0],h.origin[1],h.origin[2],h.point[0],h.point[1],h.point[2],distance,h.range,int(h.readable&&distance>h.range),int(h.extended),h.extraRangeSquared);
+    }
+    fclose(f);
+}
+
 void __fastcall SenseUpdateHook(void* self,void*,float dt) {
     auto previous=senseQueries;
     {std::lock_guard lock(stateMutex);
         senseQueries=current.active && current.playerInstance &&
             *reinterpret_cast<void**>(static_cast<unsigned char*>(self)+8)==current.playerInstance;
     }
+    bool sample=false;
+    auto now=GetTickCount64();
+    if(!previous&&senseQueries&&interactionProbesReady&&dt>0&&interactionSampleCount.load()<300){
+        auto next=interactionNextSample.load();
+        sample=now>=next&&interactionNextSample.compare_exchange_strong(next,now+2000);
+    }
+    if(sample){
+        interactionSample={};interactionSample.active=true;interactionSample.tick=now;
+        std::lock_guard lock(stateMutex);interactionSample.native=current.originalWorld;
+        interactionSample.scale=worldScale;interactionSample.source=unsigned(interactionAim);
+    }
     originalSenseUpdate(self,dt);senseQueries=previous;
+    if(sample){interactionSample.active=false;++interactionSampleCount;WriteInteractionSample();}
 }
 void* __fastcall PlayerWorldHook(void* self,void*) {
     if(senseQueries) {
         thread_local CameraMath::Matrix target;
-        if(DirectionWorld(interactionAim,target)){++interactionQueries;return target.m;}
+        if(DirectionWorld(interactionAim,target)){RecordInteractionTransform(target);++interactionQueries;return target.m;}
     }
     return originalPlayerWorld(self);
 }
@@ -2038,7 +2132,7 @@ CameraMath::Matrix* __fastcall WeaponAimHook(void* self,void*,CameraMath::Matrix
     // must use its own setting even when the gun follows the controller.
     if(senseQueries) {
         CameraMath::Matrix target;
-        if(out && DirectionWorld(interactionAim,target)){*out=target;++interactionQueries;}
+        if(out && DirectionWorld(interactionAim,target)){RecordInteractionTransform(target);*out=target;++interactionQueries;}
         return result;
     }
     if(experimentalMotionControls && out) {
@@ -3807,6 +3901,7 @@ void* Get(void* self,Getter original,int kind,uintptr_t caller) {
         CameraMath::Matrix target;
         thread_local CameraMath::Matrix targetMatrices[2];
         if(DirectionWorld(interactionAim,target,nullptr,reinterpret_cast<uintptr_t>(self))) {
+            RecordInteractionTransform(target);
             targetMatrices[kind]=kind?CameraMath::InverseRigid(target):target;
             ++interactionQueries;return targetMatrices[kind].m;
         }
@@ -4139,6 +4234,7 @@ void Install() {
     }
     if(!enabled)for(auto& h:hooks){MH_DisableHook((void*)VA(h.address));MH_RemoveHook((void*)VA(h.address));}
 #if defined(_M_IX86)
+    if(enabled)InstallInteractionProbes();
     if(enabled)InstallScreenHooks(); // after, and independent of, the camera hooks
 #endif
     wchar_t config[MAX_PATH]{};GetFullPathNameW(L"DeusExHRVR.ini",MAX_PATH,config,nullptr);
