@@ -1185,6 +1185,12 @@ thread_local bool senseQueries{};
 std::atomic<uint64_t> interactionQueries{},movementAxes{};
 std::atomic<void*> walkAction{},strafeAction{};
 std::atomic<unsigned> movementResponse{};
+// Bounded ordinary-session diagnostics. Counts prove the action hook is reached;
+// samples report its returned input, not the character's physical velocity.
+std::atomic<uint64_t> responseHookCalls{},responseActionCalls{},responsePassed{},responseReduced{};
+std::atomic<float> responseInputMagnitude{},responseOutputMagnitude{};
+std::atomic<uint64_t> responseSampleTick{};
+unsigned responseSampleMode{}; // paired with magnitudes under stateMutex
 float lastMoveInput[2]{},lastMoveOutput[2]{},lastMoveHeading{};
 float controllerMuzzleForward=.25f;
 uint64_t removedFlareSprites{};
@@ -1728,8 +1734,10 @@ void* __fastcall PlayerWorldHook(void* self,void*) {
     return originalPlayerWorld(self);
 }
 float __fastcall InputAxisHook(void* self,void*,uint32_t index,bool requireActive) {
+    ++responseHookCalls;
     float value=originalInputAxis(self,index,requireActive);
     auto walk=walkAction.load(),strafe=strafeAction.load();
+    if(walk&&strafe&&(self==walk||self==strafe))++responseActionCalls;
     const auto source=movementDirection.load();
     bool gentle=motionControls&&movementResponse.load()==1;
     if((source==DirectionConfig::Source::Mouse&&!gentle) || !walk || !strafe || (self!=walk && self!=strafe))return value;
@@ -1744,6 +1752,14 @@ float __fastcall InputAxisHook(void* self,void*,uint32_t index,bool requireActiv
     if(!std::isfinite(x) || !std::isfinite(y))return value;
     auto shaped=CameraMath::MovementResponse(x,y,gentle);
     auto axes=source==DirectionConfig::Source::Mouse?shaped:CameraMath::ReorientMovement(shaped.strafe,shaped.walk,native,target);
+    ++responsePassed;
+    float inputMagnitude=std::hypot(x,y),outputMagnitude=std::hypot(axes.strafe,axes.walk);
+    if(inputMagnitude>.001f){
+        std::lock_guard lock(stateMutex);
+        responseSampleMode=gentle?1u:0u;
+        responseInputMagnitude=inputMagnitude;responseOutputMagnitude=outputMagnitude;responseSampleTick=GetTickCount64();
+        if(outputMagnitude<inputMagnitude-.0001f)++responseReduced;
+    }
     ++movementAxes;
     if(std::abs(x)+std::abs(y)>.01f) {
         std::lock_guard lock(stateMutex);
@@ -4293,6 +4309,9 @@ void Install() {
     interactionAim=DirectionConfig::Read(config,L"InteractionAim");
     movementDirection=DirectionConfig::Read(config,L"MovementDirection");
     movementResponse=GetPrivateProfileIntW(L"VR",L"MovementResponse",0,config)==1?1u:0u;
+    {FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")){
+        fprintf(f,"MovementResponse startup mode=%u motionControls=%d movement=%s\n",movementResponse.load(),int(motionControls),DirectionConfig::Name(movementDirection));fclose(f);
+    }}
     immersiveScope=GetPrivateProfileIntW(L"VR",L"ImmersiveScope",0,config)!=0;
     GetPrivateProfileStringW(L"VR",L"ScopeMagnification",L"4",scaleText,32,config);
     {float value=static_cast<float>(_wtof(scaleText));if(std::isfinite(value)&&value>=1&&value<=12)scopeMagnification=value;}
@@ -4392,6 +4411,19 @@ Transport::RenderInfo OnPresent(uint64_t frame,bool capture) {
     if(screenReasons || gameMenuOpen || !requested || recenterRequested)calibration.Cancel();
     LevelFrozenView(frame);
     if(effectsCapture){SaveEffects(frame);effectCount=0;shaderTrace.End();}effectsCapture=capture;
+    // At most 60 summary lines per game process; no per-frame disk writes.
+    static uint64_t responseLogTick{};static unsigned responseLogCount{};
+    auto responseNow=GetTickCount64();
+    if(responseLogCount<60&&(!responseLogTick||responseNow-responseLogTick>=10000)){
+        responseLogTick=responseNow;++responseLogCount;
+        FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")){
+            fprintf(f,"MovementResponse runtime tick=%llu mode=%u motionControls=%d direction=%s hookCalls=%llu actionCalls=%llu passed=%llu reduced=%llu lastNonzeroInput=%g lastReturnedMagnitude=%g sampleTick=%llu sampleMode=%u screenReasons=%u\n",
+                responseNow,movementResponse.load(),int(motionControls),DirectionConfig::Name(movementDirection),
+                responseHookCalls.load(),responseActionCalls.load(),responsePassed.load(),responseReduced.load(),
+                responseInputMagnitude.load(),responseOutputMagnitude.load(),responseSampleTick.load(),responseSampleMode,screenReasons);
+            fclose(f);
+        }
+    }
     if(capture)shaderTrace.Begin(frame+1);
     auto completed=pairInfo;pairInfo={};
     scenes.Complete(frame);
@@ -4483,7 +4515,13 @@ void SetChannel(Transport::Header* header){std::lock_guard lock(stateMutex);chan
 // the display stays tracked. Bit 128 is the opposite: a wheel screen pausing
 // gameplay, where [Buttons] must be kept.
 unsigned MovementResponse(){return movementResponse.load();}
-void SetMovementResponse(unsigned value){if(value<=1)movementResponse=value;}
+void SetMovementResponse(unsigned value){
+    if(value>1)return;
+    auto previous=movementResponse.exchange(value);
+    FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")){
+        fprintf(f,"MovementResponse menu previous=%u effective=%u tick=%llu\n",previous,value,GetTickCount64());fclose(f);
+    }
+}
 unsigned MovementDirection(){return unsigned(movementDirection.load());}
 void Recenter(){recenterRequested=true;conversationCamera=nullptr;}
 void SetMovementDirection(unsigned value){if(value<=3)movementDirection.store(static_cast<DirectionConfig::Source>(value));}
