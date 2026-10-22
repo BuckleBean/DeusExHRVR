@@ -89,7 +89,8 @@ public:
         }
         else {
             const wchar_t* heading=s.saving?L"SAVING...":s.committed&&game.result==3?L"SAVE FAILED - RETRY":s.committed&&game.result==2?L"CHANGE REFUSED":L"DEUS EX / VR SETTINGS";
-            Text(heading,1040,255,490,60,true);
+            Text(heading,1040,185,490,60,true);
+            Button(SettingsMenu::Response,s.draftResponse?L"WALK RESPONSE: GENTLE":L"WALK RESPONSE: NORMAL",!s.saving&&hovered(SettingsMenu::Response));
             Button(SettingsMenu::TurnMode,s.draftSnap?L"TURNING: SNAP":L"TURNING: SMOOTH",!s.saving&&hovered(SettingsMenu::TurnMode));
             Text(s.draftSnap?L"Snap-turn angle":L"Snap angle (inactive)",1070,380,430,40);
             wchar_t value[40];swprintf_s(value,L"%.6g\u00b0",double(s.draft));Text(value,1180,430,210,80,true);

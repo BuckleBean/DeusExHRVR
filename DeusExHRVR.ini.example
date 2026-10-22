@@ -1,4 +1,9 @@
 [VR]
+; Walking input response: 0 = Normal (default), 1 = Gentle.
+; Gentle reduces partial locomotion input after native deadzone processing,
+; preserving direction and full-deflection input. Requires MotionControls.
+; Also adjustable in VR Settings with Save & Back; menus remain unchanged.
+MovementResponse=0
 ; Copy this file to DeusExHRVR.ini beside DXHRDC.exe. Keep the [VR] section.
 ; Restart the game after editing; this setting applies to tracked VR.
 ; Higher values = smaller apparent world, stronger close-range stereo depth.

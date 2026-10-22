@@ -20,6 +20,8 @@ void Recenter();
 // [Buttons], and the display is left as it is).
 unsigned CurrentScreenReasons();
 unsigned MovementDirection();
+unsigned MovementResponse();
+void SetMovementResponse(unsigned value);
 void SetMovementDirection(unsigned value);
 // Luma port: forward the engine's D3D11 device to ShaderSwap so it can build
 // replacement shaders and issue PSSetShader overrides. Called from

@@ -5,6 +5,9 @@
 #include <fstream>
 #include <limits>
 namespace EngineCamera {
+unsigned response{};
+unsigned MovementResponse(){return response;}
+void SetMovementResponse(unsigned value){response=value;}
 unsigned movement{};
 unsigned MovementDirection(){return movement;}
 void SetMovementDirection(unsigned value){movement=value;}
@@ -129,6 +132,12 @@ int wmain(int argc,wchar_t** argv) {
     for(int n=0;n<200&&h.menu.saved!=24;++n){Sleep(10);GamepadBridge::MenuTick(2);}
     assert(h.menu.saved==24);GamepadBridge::LoadButtons();
     assert(GamepadBridge::buttonTapTarget[0]==XINPUT_GAMEPAD_X&&GamepadBridge::stickUpTarget==XINPUT_GAMEPAD_B&&GamepadBridge::buttonHoldMs[0]==300);
+    h.menu.bindingMask=0;h.menu.request=25;h.menu.hostTick=GetTickCount64();h.menu.requestedResponse=1;
+    GamepadBridge::MenuTick(2);assert(h.menu.response==1&&EngineCamera::response==1);
+    for(int n=0;n<200&&h.menu.saved!=25;++n){Sleep(10);GamepadBridge::MenuTick(2);}
+    assert(h.menu.saved==25&&GetPrivateProfileIntW(L"VR",L"MovementResponse",0,path.c_str())==1);
+    h.menu.request=26;h.menu.hostTick=GetTickCount64();h.menu.requestedResponse=2;
+    GamepadBridge::MenuTick(2);assert(h.menu.result==2&&EngineCamera::response==1);
     GamepadBridge::SetChannel(nullptr);
     printf("PASS %zu-bit actual bridge: request/ack/save/error, duplicate/stale/refused edits, calibration scaling, virtual/physical input and focus recovery\n",sizeof(void*)*8);
 }

@@ -59,6 +59,13 @@ inline float HeadingDelta(const Matrix& from,const Matrix& to) {
     return std::atan2(a.m[8]*b.m[9]-a.m[9]*b.m[8],a.m[8]*b.m[8]+a.m[9]*b.m[9]);
 }
 struct MovementAxes {float strafe,walk;};
+// Shape processed locomotion, after native deadzone handling. Preserve direction,
+// full deflection, and out-of-range combined inputs. No temporal smoothing.
+inline MovementAxes MovementResponse(float x,float y,bool gentle){
+    float r=std::hypot(x,y);
+    if(!gentle||!std::isfinite(r)||r>=1.f)return {x,y};
+    float scale=.5f+.5f*r;return {x*scale,y*scale};
+}
 inline MovementAxes ReorientMovement(float strafe,float walk,const Matrix& native,const Matrix& target) {
     // Native locomotion actions use the opposite yaw sense to the camera's
     // right/forward basis. Direct world-vector projection mirrored the turn:

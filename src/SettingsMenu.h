@@ -8,7 +8,8 @@
 namespace SettingsMenu {
 constexpr int Width=1600,Height=900;
 struct Rect {int x,y,w,h; bool Has(float px,float py) const {return px>=x&&py>=y&&px<x+w&&py<y+h;}};
-inline constexpr Rect Entry{1080,420,410,70},Panel{1020,230,530,620};
+inline constexpr Rect Entry{1080,420,410,70},Panel{1020,170,530,680};
+inline constexpr Rect Response{1070,255,430,50};
 inline constexpr Rect Recenter{1070,790,430,45};
 inline constexpr Rect Movement{1070,520,430,45};
 inline constexpr Rect Remap{1070,575,430,40};
@@ -97,11 +98,12 @@ struct State {
     float draft{},original{};bool saving{},committed{};
     bool draftSnap{},originalSnap{},requestedSnap{};
     uint32_t draftMovement{},originalMovement{},requestedMovement{};
+    uint32_t draftResponse{},originalResponse{},requestedResponse{};
     bool remapping{};size_t selected{};int page{};
     bool listening{},captureReady{},confirming{},captureRelease{},scrollArmed{};
     int candidate{-1},pressedSlot{-1};uint64_t pressAt{};
     Rect Area() const {return open?(remapping?ListPanel:Panel):Entry;}
-    void Submit(){requested=draft;requestedSnap=draftSnap;requestedMovement=draftMovement;requestedBindings=draftBindings;requestedBindingMask|=ButtonBindings::Changes(draftBindings,originalBindings);++request;saving=true;committed=true;}
+    void Submit(){requestedResponse=draftResponse;requested=draft;requestedSnap=draftSnap;requestedMovement=draftMovement;requestedBindings=draftBindings;requestedBindingMask|=ButtonBindings::Changes(draftBindings,originalBindings);++request;saving=true;committed=true;}
     void Assign(){
         const auto target=ButtonBindings::Targets[selected].value;
         for(auto& value:draftBindings)if(value==target)value=0;
@@ -109,7 +111,7 @@ struct State {
     }
     ButtonBindings::Layout draftBindings{},originalBindings{},requestedBindings{};
     uint32_t requestedBindingMask{};
-    bool Dirty() const {return draft!=original||draftSnap!=originalSnap||draftMovement!=originalMovement||draftBindings!=originalBindings||committed;}
+    bool Dirty() const {return draftResponse!=originalResponse||draft!=original||draftSnap!=originalSnap||draftMovement!=originalMovement||draftBindings!=originalBindings||committed;}
     void Update(bool eligible,bool focused,bool ray,float px,float py,const GamepadMapping::Input& in,const Transport::MenuState& game,uint64_t now=GetTickCount64()) {
         recenterPulse=false;
         visible=eligible&&focused;pointer=visible&&ray;x=px;y=py;
@@ -125,7 +127,7 @@ struct State {
             if(game.saved==request&&game.result==0){saving=false;open=false;armed=false;}
             else if(game.result==2||game.result==3)saving=false;
         }
-        if(!visible){open=false;remapping=false;listening=confirming=captureReady=false;candidate=pressedSlot=-1;draft=original;draftSnap=originalSnap;draftMovement=originalMovement;draftBindings=originalBindings;armed=false;nativeCapture=false;}
+        if(!visible){open=false;remapping=false;listening=confirming=captureReady=false;candidate=pressedSlot=-1;draftResponse=originalResponse;draft=original;draftSnap=originalSnap;draftMovement=originalMovement;draftBindings=originalBindings;armed=false;nativeCapture=false;}
         if(visible&&in.rightTrigger<.05f)armed=true;
         bool hit=pointer&&Area().Has(x,y);
         // Capture from first trigger movement, before the game's low threshold.
@@ -167,7 +169,7 @@ struct State {
             recenterSeconds=recenterAt?int((recenterAt-now+999)/1000):0;
         }
         if(!counting&&visible&&armed&&down&&!triggerDown&&hit&&!nativeCapture&&!capturing) {
-            if(!open){open=true;remapping=false;listening=confirming=captureRelease=false;page=0;selected=0;requestedBindingMask=0;releaseGate=true;draft=original=game.degrees;draftSnap=originalSnap=game.snapEnabled!=0;draftMovement=originalMovement=game.movement;draftBindings=originalBindings=game.bindings;committed=false;}
+            if(!open){open=true;remapping=false;listening=confirming=captureRelease=false;page=0;selected=0;requestedBindingMask=0;releaseGate=true;draftResponse=originalResponse=game.response;draft=original=game.degrees;draftSnap=originalSnap=game.snapEnabled!=0;draftMovement=originalMovement=game.movement;draftBindings=originalBindings=game.bindings;committed=false;}
             else if(remapping&&!saving){
                 if(confirming){
                     if(Confirm.Has(x,y))Assign();
@@ -185,6 +187,7 @@ struct State {
             else if(!saving&&Dirty()&&Save.Has(x,y))Submit();
             else if(!saving&&Recenter.Has(x,y)){recenterAt=now+3000;recenterSeconds=3;}
             else if(!saving&&Remap.Has(x,y)){remapping=true;}
+            else if(!saving&&Response.Has(x,y)){draftResponse=draftResponse?0:1;}
             else if(!saving&&Movement.Has(x,y)){draftMovement=draftMovement==1?3:draftMovement==3?2:1;}
             else if(!saving&&TurnMode.Has(x,y)){draftSnap=!draftSnap;}
             else if(!saving&&draftSnap) {

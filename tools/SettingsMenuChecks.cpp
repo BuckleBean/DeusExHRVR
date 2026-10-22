@@ -1,4 +1,5 @@
 #include "SettingsMenuDraw.h"
+#include "CameraMath.h"
 #include "SettingsPersistence.h"
 #include "NativeMenuPointer.h"
 #include <cassert>
@@ -30,6 +31,24 @@ int wmain(int argc,wchar_t** argv) {
         assert(rc.recenterPulse==(cancel==0)&&!rc.recenterAt&&!rc.request);
         if(!cancel)assert(rc.draft==45&&rc.Dirty());
         rc.Update(true,true,false,0,0,input,gm,3300);assert(!rc.recenterPulse);
+    }
+    for(float heading : {0.f,.5f,1.5f,3.f}){
+        float previous=0;
+        for(int n=0;n<=1000;++n){
+            float mag=n/1000.f,x=mag*std::cos(heading),y=mag*std::sin(heading);
+            auto normal=CameraMath::MovementResponse(x,y,false);assert(normal.strafe==x&&normal.walk==y);
+            auto gentle=CameraMath::MovementResponse(x,y,true);float length=std::hypot(gentle.strafe,gentle.walk);
+            assert(length+1e-6f>=previous&&length<=mag+1e-6f);
+            assert(std::abs(x*gentle.walk-y*gentle.strafe)<1e-6f);
+            if(n==1000)assert(std::abs(length-1)<1e-6f);previous=length;
+        }
+    }
+    auto diagonal=CameraMath::MovementResponse(1,1,true);assert(diagonal.strafe==1&&diagonal.walk==1);
+    {SettingsMenu::State ui;Transport::MenuState gm{};gm.degrees=30;GamepadMapping::Input input{};input.active=true;
+     ui.Update(true,true,true,1200,450,input,gm);input.rightTrigger=1;ui.Update(true,true,true,1200,450,input,gm);
+     input.rightTrigger=0;ui.Update(true,true,true,1200,280,input,gm);input.rightTrigger=1;ui.Update(true,true,true,1200,280,input,gm);
+     assert(ui.draftResponse==1&&ui.Dirty()&&!ui.request);
+     ui.Submit();assert(ui.requestedResponse==1);
     }
     float degrees=30;double counts=300;
     assert(SettingsMenu::ApplyAngle(45,degrees,counts)&&degrees==45&&counts==450);
@@ -220,7 +239,7 @@ int wmain(int argc,wchar_t** argv) {
     for(int frame=0;frame<20;++frame){
         s.open=(frame%2)==0;pixels=static_cast<const uint32_t*>(draw.Draw(s,game));assert(pixels);
         if(s.open){
-            assert(bright({1040,255,490,60})>500); // title text
+            assert(bright({1040,185,490,60})>500); // title text
             assert(bright({1180,430,210,80})>100); // numeric value
             assert(bright(SettingsMenu::Back)>500); // visible button and label
         }else assert(bright(SettingsMenu::Entry)>500);

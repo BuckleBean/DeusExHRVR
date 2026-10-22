@@ -1184,6 +1184,7 @@ std::atomic<DirectionConfig::Source> movementDirection{DirectionConfig::Source::
 thread_local bool senseQueries{};
 std::atomic<uint64_t> interactionQueries{},movementAxes{};
 std::atomic<void*> walkAction{},strafeAction{};
+std::atomic<unsigned> movementResponse{};
 float lastMoveInput[2]{},lastMoveOutput[2]{},lastMoveHeading{};
 float controllerMuzzleForward=.25f;
 uint64_t removedFlareSprites{};
@@ -1730,17 +1731,19 @@ float __fastcall InputAxisHook(void* self,void*,uint32_t index,bool requireActiv
     float value=originalInputAxis(self,index,requireActive);
     auto walk=walkAction.load(),strafe=strafeAction.load();
     const auto source=movementDirection.load();
-    if(source==DirectionConfig::Source::Mouse || !walk || !strafe || (self!=walk && self!=strafe))return value;
+    bool gentle=motionControls&&movementResponse.load()==1;
+    if((source==DirectionConfig::Source::Mouse&&!gentle) || !walk || !strafe || (self!=walk && self!=strafe))return value;
     {std::lock_guard lock(stateMutex);if(index!=current.inputIndex)return value;}
     CameraMath::Matrix target,native;
-    if(!DirectionWorld(source,target,&native))return value;
+    if(!DirectionWorld(source==DirectionConfig::Source::Mouse?DirectionConfig::Source::Headset:source,target,&native))return value;
     // Both locomotion actions must be evaluated: W can become a strafe even
     // when the original strafe action is zero/inactive. Call the trampoline
     // for the partner axis so the pair is rotated exactly once.
     float x=self==strafe?value:originalInputAxis(strafe,index,requireActive);
     float y=self==walk?value:originalInputAxis(walk,index,requireActive);
     if(!std::isfinite(x) || !std::isfinite(y))return value;
-    auto axes=CameraMath::ReorientMovement(x,y,native,target);
+    auto shaped=CameraMath::MovementResponse(x,y,gentle);
+    auto axes=source==DirectionConfig::Source::Mouse?shaped:CameraMath::ReorientMovement(shaped.strafe,shaped.walk,native,target);
     ++movementAxes;
     if(std::abs(x)+std::abs(y)>.01f) {
         std::lock_guard lock(stateMutex);
@@ -3275,7 +3278,7 @@ void __fastcall UpdateHook(void* self,void*) {
     insideUpdate=true;
     originalUpdate(self);
     insideUpdate=false;
-    if(movementDirection!=DirectionConfig::Source::Mouse && (!walkAction.load() || !strafeAction.load())) {
+    if((movementDirection!=DirectionConfig::Source::Mouse || movementResponse.load()) && (!walkAction.load() || !strafeAction.load())) {
         using FindAction=void*(__cdecl*)(const char*);
         auto find=reinterpret_cast<FindAction>(base+0x4ae340-0x400000);
         walkAction=find("locomotionwalk");strafeAction=find("locomotionstrafe");
@@ -4289,6 +4292,7 @@ void Install() {
     if(!(controllerHandsRadius>0)||controllerHandsRadius>500)controllerHandsRadius=15.f;
     interactionAim=DirectionConfig::Read(config,L"InteractionAim");
     movementDirection=DirectionConfig::Read(config,L"MovementDirection");
+    movementResponse=GetPrivateProfileIntW(L"VR",L"MovementResponse",0,config)==1?1u:0u;
     immersiveScope=GetPrivateProfileIntW(L"VR",L"ImmersiveScope",0,config)!=0;
     GetPrivateProfileStringW(L"VR",L"ScopeMagnification",L"4",scaleText,32,config);
     {float value=static_cast<float>(_wtof(scaleText));if(std::isfinite(value)&&value>=1&&value<=12)scopeMagnification=value;}
@@ -4478,6 +4482,8 @@ void SetChannel(Transport::Header* header){std::lock_guard lock(stateMutex);chan
 // Bits 32 (in-game menu) and 64 (e-reader, news reader) select [ScreenButtons] only;
 // the display stays tracked. Bit 128 is the opposite: a wheel screen pausing
 // gameplay, where [Buttons] must be kept.
+unsigned MovementResponse(){return movementResponse.load();}
+void SetMovementResponse(unsigned value){if(value<=1)movementResponse=value;}
 unsigned MovementDirection(){return unsigned(movementDirection.load());}
 void Recenter(){recenterRequested=true;conversationCamera=nullptr;}
 void SetMovementDirection(unsigned value){if(value<=3)movementDirection.store(static_cast<DirectionConfig::Source>(value));}
