@@ -8,7 +8,8 @@
 namespace SettingsMenu {
 constexpr int Width=1600,Height=900;
 struct Rect {int x,y,w,h; bool Has(float px,float py) const {return px>=x&&py>=y&&px<x+w&&py<y+h;}};
-inline constexpr Rect Entry{1080,420,410,70},Panel{1020,230,530,550};
+inline constexpr Rect Entry{1080,420,410,70},Panel{1020,230,530,620};
+inline constexpr Rect Recenter{1070,790,430,45};
 inline constexpr Rect Movement{1070,520,430,45};
 inline constexpr Rect Remap{1070,575,430,40};
 inline constexpr Rect ListPanel{180,90,1240,740};
@@ -89,6 +90,7 @@ struct InputGate {
 };
 struct State {
     bool nativePointer{},nativeDown{},nativeCapture{};
+    uint64_t recenterAt{};int recenterSeconds{};bool recenterPulse{};
     bool stickNavigation{};float stickAnchorX{},stickAnchorY{};
     bool open{},blocked{},releaseGate{},triggerDown{},armed{},visible{},pointer{},stickArmed{};
     float x{},y{};uint32_t request{};float requested{};
@@ -109,7 +111,9 @@ struct State {
     uint32_t requestedBindingMask{};
     bool Dirty() const {return draft!=original||draftSnap!=originalSnap||draftMovement!=originalMovement||draftBindings!=originalBindings||committed;}
     void Update(bool eligible,bool focused,bool ray,float px,float py,const GamepadMapping::Input& in,const Transport::MenuState& game,uint64_t now=GetTickCount64()) {
+        recenterPulse=false;
         visible=eligible&&focused;pointer=visible&&ray;x=px;y=py;
+        if(!visible||!in.active||!open)recenterAt=0;
         const bool wasOpen=open;
         // Stick navigation owns focus until deliberate aim movement or a trigger.
         if(!open&&(std::abs(in.leftX)>.2f||std::abs(in.leftY)>.2f)){
@@ -156,7 +160,13 @@ struct State {
                 }
             }
         }
-        if(visible&&armed&&down&&!triggerDown&&hit&&!nativeCapture&&!capturing) {
+        const bool counting=recenterAt!=0;
+        if(counting){
+            if(in.menu||(armed&&down&&!triggerDown&&hit&&Back.Has(x,y)))recenterAt=0;
+            else if(now>=recenterAt){recenterAt=0;recenterPulse=true;armed=false;releaseGate=true;}
+            recenterSeconds=recenterAt?int((recenterAt-now+999)/1000):0;
+        }
+        if(!counting&&visible&&armed&&down&&!triggerDown&&hit&&!nativeCapture&&!capturing) {
             if(!open){open=true;remapping=false;listening=confirming=captureRelease=false;page=0;selected=0;requestedBindingMask=0;releaseGate=true;draft=original=game.degrees;draftSnap=originalSnap=game.snapEnabled!=0;draftMovement=originalMovement=game.movement;draftBindings=originalBindings=game.bindings;committed=false;}
             else if(remapping&&!saving){
                 if(confirming){
@@ -173,6 +183,7 @@ struct State {
             }
             else if(!saving&&((!Dirty()&&Back.Has(x,y))||(Dirty()&&Discard.Has(x,y)))){open=false;armed=false;}
             else if(!saving&&Dirty()&&Save.Has(x,y))Submit();
+            else if(!saving&&Recenter.Has(x,y)){recenterAt=now+3000;recenterSeconds=3;}
             else if(!saving&&Remap.Has(x,y)){remapping=true;}
             else if(!saving&&Movement.Has(x,y)){draftMovement=draftMovement==1?3:draftMovement==3?2:1;}
             else if(!saving&&TurnMode.Has(x,y)){draftSnap=!draftSnap;}
@@ -189,7 +200,7 @@ struct State {
         if(std::abs(in.rightX)<.2f)stickArmed=true;
         if(open&&pointer&&Panel.Has(x,y)&&stickArmed&&std::abs(in.rightX)>.6f&&
            std::abs(in.rightX)>std::abs(in.rightY)&&in.rightTrigger<.05f&&
-           !saving&&!remapping&&draftSnap) {
+           !saving&&!remapping&&!counting&&draftSnap) {
             draft=std::clamp(draft+(in.rightX>0?15.f:-15.f),5.f,180.f);
             stickArmed=false;
         }

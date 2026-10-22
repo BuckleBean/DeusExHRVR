@@ -13,6 +13,7 @@ bool ImmersiveScopeButton();
 // Arms hands calibration. Called from GamepadBridge so the trigger can be a
 // bindable [Buttons] target instead of a pose gesture or an INI edit.
 void ArmHandCalibration();
+void Recenter();
 // Local patch: bit mask of active virtual-screen reasons (1 interaction, 2 menu, 4 video, 8 game over, 16 scope,
 // 32 in-game menu, 64 e-reader/news reader: buttons only, the display stays tracked;
 // snap turn still works over a reader. 128 a wheel screen pausing gameplay: keep

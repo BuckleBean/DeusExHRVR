@@ -14,6 +14,7 @@ bool SnapTurnView(float&){return reasons==0;}
 int QuickBarAutoHide(bool){return 1;}
 bool ImmersiveScopeButton(){return false;}
 void ArmHandCalibration(){}
+unsigned recenterCount{};void Recenter(){++recenterCount;}
 }
 XINPUT_GAMEPAD physical{};
 DWORD WINAPI RealGet(DWORD,XINPUT_STATE* s){*s={};s->Gamepad=physical;return ERROR_SUCCESS;}
@@ -25,6 +26,12 @@ int wmain(int argc,wchar_t** argv) {
     wcscpy_s(GamepadBridge::configPath,path.c_str());GamepadBridge::LoadSnap();
     GamepadBridge::originalGet=RealGet;
     GamepadBridge::MenuTick(2);assert(h.menu.eligible&&h.menu.snapEnabled&&h.menu.degrees==30);
+    h.menu.hostTick=GetTickCount64();h.menu.blocked=1;h.menu.recenterRequest=1;
+    GamepadBridge::MenuTick(2);assert(EngineCamera::recenterCount==1&&h.menu.recenterAck==1);
+    GamepadBridge::MenuTick(2);assert(EngineCamera::recenterCount==1);
+    h.menu.recenterRequest=2;GamepadBridge::MenuTick(0);assert(EngineCamera::recenterCount==1&&h.menu.recenterAck==2);
+    h.menu.recenterRequest=3;h.menu.hostTick=1;GamepadBridge::MenuTick(2);assert(h.menu.recenterAck==2);
+    h.menu.recenterRequest=2;
     auto request=[&](uint32_t id,float angle,unsigned reasons=2){
         h.menu.hostTick=GetTickCount64();h.menu.blocked=1;h.menu.request=id;h.menu.requestedDegrees=angle;h.menu.requestedSnap=1;GamepadBridge::MenuTick(reasons);
     };

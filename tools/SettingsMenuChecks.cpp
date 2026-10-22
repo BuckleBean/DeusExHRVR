@@ -15,6 +15,22 @@ int wmain(int argc,wchar_t** argv) {
     assert(Transport::ReadMenu(&h,read));assert(Transport::Fresh(100,599));assert(!Transport::Fresh(100,600));assert(!Transport::Fresh(100,99));
     assert(SettingsMenu::Eligible(2));assert(SettingsMenu::Eligible(2|32));
     for(unsigned reason:{0u,1u,4u,8u,16u,32u,64u,128u,2u|4u,2u|16u})assert(!SettingsMenu::Eligible(reason));
+    // Countdown preserves drafts, fires once, and cancels on focus/screen loss.
+    for(int cancel=0;cancel<4;++cancel){
+        SettingsMenu::State rc;Transport::MenuState gm{};GamepadMapping::Input input{};input.active=true;
+        rc.open=true;rc.draft=45;rc.original=30;
+        rc.Update(true,true,true,1200,810,input,gm,100);
+        input.rightTrigger=1;rc.Update(true,true,true,1200,810,input,gm,200);
+        assert(rc.recenterAt==3200&&rc.recenterSeconds==3&&!rc.request);
+        input.rightTrigger=0;rc.Update(true,true,false,0,0,input,gm,1200);
+        assert(rc.recenterSeconds==2&&!rc.recenterPulse);
+        if(cancel==1)input.menu=true;
+        rc.Update(cancel!=2,cancel!=3,false,0,0,input,gm,2200);
+        rc.Update(cancel!=2,cancel!=3,false,0,0,input,gm,3200);
+        assert(rc.recenterPulse==(cancel==0)&&!rc.recenterAt&&!rc.request);
+        if(!cancel)assert(rc.draft==45&&rc.Dirty());
+        rc.Update(true,true,false,0,0,input,gm,3300);assert(!rc.recenterPulse);
+    }
     float degrees=30;double counts=300;
     assert(SettingsMenu::ApplyAngle(45,degrees,counts)&&degrees==45&&counts==450);
     assert(SettingsMenu::ApplyAngle(30,degrees,counts)&&counts==300);
@@ -213,6 +229,8 @@ int wmain(int argc,wchar_t** argv) {
     s.draft=90;s.draftMovement=3;pixels=static_cast<const uint32_t*>(draw.Draw(s,game));assert(pixels);
     assert(bright(SettingsMenu::Save)>500&&bright(SettingsMenu::Discard)>500);
     assert(draw.Save((out/L"menu-dirty.bmp").c_str(),s,game));
+    s.recenterAt=3000;s.recenterSeconds=3;
+    assert(draw.Save((out/L"menu-recenter.bmp").c_str(),s,game));s.recenterAt=0;
     s.remapping=true;s.selected=0;s.draftBindings=game.bindings;s.draftBindings[0]=XINPUT_GAMEPAD_RIGHT_SHOULDER;
     game.holdMs[0]=300;game.holdMs[2]=500;
     s.draftBindings[1]=XINPUT_GAMEPAD_B;s.draftBindings[2]=XINPUT_GAMEPAD_START;

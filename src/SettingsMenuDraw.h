@@ -43,6 +43,14 @@ public:
         RECT r{area.x,area.y,area.x+area.w,area.y+area.h};auto b=CreateSolidBrush(RGB(16,17,14));FillRect(dc,&r,b);DeleteObject(b);
         auto hovered=[&](SettingsMenu::Rect rect){return s.pointer&&rect.Has(s.x,s.y);};
         if(!s.open)Button(SettingsMenu::Entry,L"VR SETTINGS",hovered(SettingsMenu::Entry));
+        else if(s.recenterAt){
+            Text(L"RECENTER VIEW",1040,270,490,60,true);
+            Text(L"Face forward and get comfortable.",1040,365,490,50);
+            wchar_t seconds[8];swprintf_s(seconds,L"%d",s.recenterSeconds);
+            Text(seconds,1070,440,430,90,true);
+            Text(L"Your settings will not change.",1040,555,490,45);
+            Button(SettingsMenu::Back,L"CANCEL",hovered(SettingsMenu::Back));
+        }
         else if(s.remapping) {
             Text(L"GAMEPLAY BUTTON MAPPING",240,105,1120,55,true);
             Text(L"ACTION",240,170,470,40,true,true);Text(L"ASSIGNED CONTROL",760,170,530,40,true);
@@ -92,6 +100,7 @@ public:
                 Button(SettingsMenu::Save,s.saving?L"SAVING...":L"SAVE & BACK",!s.saving&&hovered(SettingsMenu::Save));
                 Button(SettingsMenu::Discard,s.committed?L"BACK":L"DISCARD & BACK",!s.saving&&hovered(SettingsMenu::Discard));
             }else Button(SettingsMenu::Back,L"BACK",hovered(SettingsMenu::Back));
+            Button(SettingsMenu::Recenter,L"RECENTER (3 SECONDS)",!s.saving&&hovered(SettingsMenu::Recenter));
         }
         if(!GdiFlush()||drawError)return nullptr;
         auto data=static_cast<uint32_t*>(pixels);

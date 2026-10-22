@@ -438,6 +438,10 @@ void MenuTick(unsigned screenReasons) {
     // Bit 2 is ScreenMode::Menu (TitleMenu/PauseMenu), not the inventory bit 32.
     m.eligible=SettingsMenu::Eligible(screenReasons);m.gameTick=now;
     m.snapEnabled=snapEnabled;m.degrees=snapDegrees;m.movement=EngineCamera::MovementDirection();
+    if(m.recenterRequest!=m.recenterAck&&Transport::Fresh(m.hostTick,now)){
+        m.recenterAck=m.recenterRequest;
+        if(m.eligible&&m.blocked)EngineCamera::Recenter();
+    }
     for(size_t i=0;i<buttonCount;++i){m.bindings[i]=buttonTarget[i];m.holdMs[i]=uint32_t(buttonHoldMs[i]);m.tapTargets[i]=buttonTapTarget[i];}
     m.bindings[8]=leftTriggerTarget;m.bindings[9]=rightTriggerTarget;
     for(size_t i=0;i<buttonCount;++i)m.bindings[10+i]=buttonTapTarget[i];

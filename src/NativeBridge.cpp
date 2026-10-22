@@ -54,6 +54,7 @@ struct Bridge {
     PairHistory history;
     ControllerInput controller;
     SettingsMenu::State menuUI;
+    uint32_t menuRecenterRequest{};
     SettingsMenuDraw menuDraw;
     Transport::MenuState menuGame{};
     XrSwapchain menuChain{};
@@ -91,6 +92,7 @@ struct Bridge {
         Transport::ReadMenu(trackingChannel,menuGame);
         bool eligible=Transport::Fresh(menuGame.gameTick,t.tick)&&menuGame.eligible&&renderInfo.mode==0&&anchorValid;
         if(!menuUI.request)menuUI.request=menuGame.acknowledged;
+        if(!menuRecenterRequest)menuRecenterRequest=menuGame.recenterAck;
         float x{},y{};Transport::Pose panel{};memcpy(&panel,&anchor,sizeof(panel));
         bool ray=t.rightController.valid&&SettingsMenu::Hit(t.rightController.aim,panel,x,y);
         menuUI.Update(eligible&&EnsureMenu(),state==XR_SESSION_STATE_FOCUSED,ray,x,y,controller.raw,menuGame);
@@ -102,9 +104,11 @@ struct Bridge {
             menuWasVisible=menuUI.visible;menuWasOpen=menuUI.open;menuLastRequest=menuUI.request;
             menuLastAck=menuGame.acknowledged;menuLastResult=menuGame.result;menuLastSaved=menuGame.saved;
         }
+        if(menuUI.recenterPulse)++menuRecenterRequest;
         if(menuUI.blocked){controller.SuppressMapping();t.gamepad={};t.gamepad.valid=1;t.controllerButtons=0;}
         if(Transport::LockMenu(trackingChannel)) {
             auto& m=trackingChannel->menu;m.hostTick=t.tick;m.blocked=menuUI.blocked;
+            m.recenterRequest=menuRecenterRequest;
             m.request=menuUI.request;m.requestedDegrees=menuUI.requested;m.requestedSnap=menuUI.requestedSnap;m.requestedMovement=menuUI.requestedMovement;
             m.requestedBindings=menuUI.requestedBindings;m.bindingMask=menuUI.requestedBindingMask;
             m.pointerX=menuUI.x/SettingsMenu::Width;m.pointerY=menuUI.y/SettingsMenu::Height;
@@ -191,7 +195,7 @@ struct Bridge {
         history.Reset();historyArmed=false;f10Down=false;
         DestroySwapchain();
         menuImages.clear();if(menuChain)xrDestroySwapchain(menuChain);menuChain=XR_NULL_HANDLE;
-        menuDraw.Reset();menuUI={};menuGame={};menuReady=menuFailed=false;
+        menuDraw.Reset();menuUI={};menuGame={};menuRecenterRequest=0;menuReady=menuFailed=false;
         menuFormat=DXGI_FORMAT_UNKNOWN;menuPixels.clear();menuWasVisible=menuWasOpen=false;
         menuLastRequest=menuLastAck=menuLastResult=menuLastSaved=0;
         controller.Reset();
@@ -416,6 +420,7 @@ struct Bridge {
         }
         controller.Sample(session,space,fs.predictedDisplayTime,state==XR_SESSION_STATE_FOCUSED,tracking);
         MenuInput(tracking);
+        if(menuUI.recenterPulse){recenter=true;Log("Menu recenter countdown completed");}
         Transport::WriteTracking(trackingChannel,tracking);
         // Low-rate status for an ordinary later session; no calibration gesture needed.
         static uint64_t gripLogTick{};

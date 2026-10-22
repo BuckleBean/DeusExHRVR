@@ -4479,6 +4479,7 @@ void SetChannel(Transport::Header* header){std::lock_guard lock(stateMutex);chan
 // the display stays tracked. Bit 128 is the opposite: a wheel screen pausing
 // gameplay, where [Buttons] must be kept.
 unsigned MovementDirection(){return unsigned(movementDirection.load());}
+void Recenter(){recenterRequested=true;conversationCamera=nullptr;}
 void SetMovementDirection(unsigned value){if(value<=3)movementDirection.store(static_cast<DirectionConfig::Source>(value));}
 unsigned CurrentScreenReasons(){std::lock_guard lock(stateMutex);return screenReasons|(gameMenuOpen?32u:0u)|(readerOpen?64u:0u)|(wheelOpen?128u:0u);}
 bool SnapTurnView(float& yaw) {
