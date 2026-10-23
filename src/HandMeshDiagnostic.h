@@ -1,4 +1,5 @@
 #pragma once
+#include "DiagnosticOptions.h"
 #include <windows.h>
 #include <array>
 #include <atomic>
@@ -53,6 +54,7 @@ inline bool Mesh(Snapshot& s,uintptr_t address) {
     return true;
 }
 inline void Capture(void* model,uint32_t paletteCount) {
+    if(!DiagnosticOptions::hands)return;
     if(full.load(std::memory_order_relaxed))return;
     seen.fetch_add(1,std::memory_order_relaxed);
     std::unique_lock lock(mutex,std::try_to_lock);
@@ -75,6 +77,7 @@ inline void Capture(void* model,uint32_t paletteCount) {
     if(s.mesh && s.groupsRead && s.batchesRead)targetRender.store(s.render);
 }
 inline void Flush() {
+    if(!DiagnosticOptions::hands)return;
     // Called only by the existing once-per-second config worker. Never retain
     // game pointers for later dereferencing: all reads occurred in Capture.
     static bool started{};

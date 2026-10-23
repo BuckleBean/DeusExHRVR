@@ -319,3 +319,17 @@ Component probes do not replace headset gameplay testing. Logs and F8 images are
 The stereo and adapter proxies derive from [effcol/wiz3D](https://github.com/effcol/wiz3D). Thanks also to the [cdcEngineDXHR](https://github.com/rrika/cdcEngineDXHR) reverse-engineering reference, Khronos OpenXR, and MinHook.
 
 Distributed under LGPL 2.1. See [LICENSE](LICENSE), [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), and `licenses/`. No game executable or game content is included.
+
+### Optional development diagnostics
+
+Normal play does not collect the retired walking-response diagnostics or run the
+hand-settings polling worker. Hand settings in the INI are read at startup;
+changes through the VR settings menu still apply live.
+
+For a specific investigation, enable the relevant `[VR]` key and restart:
+`InteractionDiagnosticLog=1` for targeting probes, `HandDiagnosticLog=1` for hand
+mesh/draw/muzzle observations, `RuntimeDiagnosticLog=1` for periodic runtime and
+controller status, or `HandConfigLiveReload=1` to poll hand INI settings while
+running. Each defaults to 0. `HandWeaponMotionLog` remains separately opt-in.
+`MovementResponseLog` is retired and has no effect. Rendering, hand validation,
+calibration, startup/error messages and explicitly requested captures remain.

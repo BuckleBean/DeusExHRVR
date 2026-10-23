@@ -176,10 +176,15 @@ BobTrace=0
 ; they were. At most 300 samples, no oftener than one every two seconds.
 ; Installs two extra native probes while on; leave at 0 for play.
 InteractionDiagnosticLog=0
-; Write the walking-response counters to DeusExHRVR-camera.log: the effective
-; Normal/Gentle mode and how much partial stick input was reduced. At most 60
-; summary lines per run; leave at 0 for play.
-MovementResponseLog=0
+; Optional hand mesh/draw/muzzle diagnostics. Collection and background flush
+; are disabled at 0. Rendering, validation and calibration remain functional.
+HandDiagnosticLog=0
+; Periodic controller status and native-pair transition observations.
+RuntimeDiagnosticLog=0
+; Developer-only live polling of hand INI settings. Normally read at startup.
+; Does not affect live changes made through the VR settings menu.
+HandConfigLiveReload=0
+; MovementResponseLog is retired; walking-response diagnostics were removed.
 
 ; Snap turn: a horizontal right-stick flick turns the view instantly during
 ; gameplay instead of the stick's accelerating smooth turn. Menus, terminals

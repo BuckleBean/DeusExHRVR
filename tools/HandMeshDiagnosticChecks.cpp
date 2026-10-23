@@ -3,6 +3,7 @@
 #include <cstdio>
 
 int main() {
+    DiagnosticOptions::hands=true;
     using namespace HandMeshDiagnostic;
     static_assert(sizeof(void*)==4,"Probe must match the game architecture");
     uint32_t model[32]{},render[16]{},header[4]{},mesh[32]{};

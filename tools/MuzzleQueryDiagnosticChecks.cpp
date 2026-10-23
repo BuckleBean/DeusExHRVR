@@ -3,7 +3,8 @@
 #include <limits>
 using namespace MuzzleQueryDiagnostic;
 void Check(bool b,const char* why){if(!b)throw std::runtime_error(why);}
-int main(){try{
+int main(){
+    DiagnosticOptions::hands=true;try{
     CameraMath::Matrix m{};Check(Fault(m)==2,"zero result classified as non-affine");
     m.m[0]=m.m[5]=m.m[10]=m.m[15]=1;Check(Fault(m)==0,"valid native pose");
     m.m[0]=2;Check(Fault(m)==3,"scaled pose");m.m[0]=-1;Check(Fault(m)==4,"reflected pose");

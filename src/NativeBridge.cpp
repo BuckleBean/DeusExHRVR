@@ -1,4 +1,5 @@
 #include "NativeBridge.h"
+#include "DiagnosticOptions.h"
 #include "PairHistory.h"
 #include "ControllerInput.h"
 #include "DirectionConfig.h"
@@ -273,6 +274,7 @@ struct Bridge {
         wchar_t config[MAX_PATH]{};GetFullPathNameW(L"DeusExHRVR.ini",MAX_PATH,config,nullptr);
         levelScreen=GetPrivateProfileIntW(L"VR",L"LevelScreen",1,config)!=0;
         Log("Virtual screen placement: %s",levelScreen?"level (LevelScreen=1)":"follows head tilt (LevelScreen=0)");
+        DiagnosticOptions::runtime=GetPrivateProfileIntW(L"VR",L"RuntimeDiagnosticLog",0,config)!=0;
         int leftClickDelay=std::clamp(static_cast<int>(GetPrivateProfileIntW(L"VR",L"LeftStickClickDelayMs",150,config)),0,1000);
         controller.SetLeftClickDelayMs(static_cast<uint64_t>(leftClickDelay));
         Log("Left stick click delay: %d ms (LeftStickClickDelayMs)",leftClickDelay);
@@ -427,7 +429,7 @@ struct Bridge {
         Transport::WriteTracking(trackingChannel,tracking);
         // Low-rate status for an ordinary later session; no calibration gesture needed.
         static uint64_t gripLogTick{};
-        if(!gripLogTick || tracking.tick-gripLogTick>=5000) {
+        if(DiagnosticOptions::runtime && (!gripLogTick || tracking.tick-gripLogTick>=5000)) {
             gripLogTick=tracking.tick;
             Log("Controller poses v%u: head=%u aim=%u leftGrip=%u rightGrip=%u focused=%d sample=%llu",
                 Transport::Version,tracking.valid,tracking.rightController.valid,
@@ -526,7 +528,7 @@ struct Bridge {
             if(layerCount) {
                 pairs++;
                 static uint32_t lastMode=99;
-                if(pairs==1 || capture || lastMode!=renderInfo.mode)Log("submittedPairs=%llu sourceFrame=%llu leftFrame=%llu rightFrame=%llu mode=%s pose=%llu eyeMask=%u",pairs,sourceFrame,sourceFrame,sourceFrame,renderInfo.mode?"native-tracked-projection":"native-stereo-screen",renderInfo.tracking.id,renderInfo.eyeMask);
+                if(pairs==1 || capture || (DiagnosticOptions::runtime && lastMode!=renderInfo.mode))Log("submittedPairs=%llu sourceFrame=%llu leftFrame=%llu rightFrame=%llu mode=%s pose=%llu eyeMask=%u",pairs,sourceFrame,sourceFrame,sourceFrame,renderInfo.mode?"native-tracked-projection":"native-stereo-screen",renderInfo.tracking.id,renderInfo.eyeMask);
                 lastMode=renderInfo.mode;
                 auto now=GetTickCount64();
                 if(!rateTick){rateTick=now;ratePairs=pairs;}

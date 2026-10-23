@@ -1,3 +1,4 @@
+#include "HandDrawDiagnostic.h"
 #include "WorldScaleConfig.h"
 #include "SceneCache.h"
 #include "SettingsMenuDraw.h"
@@ -12,6 +13,18 @@
 #include <limits>
 
 int wmain(int argc,wchar_t** argv) {
+    // Disabled diagnostics must return before pointer reads, counters or locks.
+    assert(!DiagnosticOptions::hands&&!DiagnosticOptions::runtime&&!DiagnosticOptions::liveHandConfig);
+    HandMeshDiagnostic::Capture(nullptr,0);
+    HandDrawDiagnostic::MarkPose(123,1);
+    HandDrawDiagnostic::Observe(nullptr,nullptr,false,1);
+    assert(HandMeshDiagnostic::seen.load()==0&&HandMeshDiagnostic::captured==0);
+    assert(HandDrawDiagnostic::calls.load()==0&&HandDrawDiagnostic::poseCursor==0);
+    // Opt-in still collects; ReadProcessMemory rejects null safely.
+    DiagnosticOptions::hands=true;HandMeshDiagnostic::Capture(nullptr,0);
+    HandDrawDiagnostic::MarkPose(123,1);
+    assert(HandMeshDiagnostic::seen.load()==1&&HandDrawDiagnostic::poseCursor==1);
+    DiagnosticOptions::hands=false;
     // Production scale handoff: requests never mutate an already-built view.
     // Cached eyes, head and controller must all retain the old units until
     // the camera builds a complete new snapshot, including multiple requests.

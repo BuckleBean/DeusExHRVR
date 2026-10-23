@@ -475,17 +475,18 @@ __declspec(noinline) void RefreshForcedHandFallback(const wchar_t* path) {
     }
 }
 void StartHandsConfigWatcher() {
+    if(!DiagnosticOptions::hands && !HandWeaponMotionDiagnostic::enabled && !DiagnosticOptions::liveHandConfig)return;
     static std::once_flag once;
     std::call_once(once,[]{
         std::thread([]{
             for(;;) {
                 std::this_thread::sleep_for(std::chrono::seconds(1));
                 if(handsConfigPath.empty())continue;
+                if(DiagnosticOptions::hands){
                 HandMeshDiagnostic::Flush();
                 HandDrawDiagnostic::Flush();
                 HandOnlyGeometry::Flush();
                 MuzzleQueryDiagnostic::Flush();
-                HandWeaponMotionDiagnostic::Flush();
                 {
                     static unsigned tick{};
                     if(++tick==1 || tick%5==0){
@@ -505,6 +506,10 @@ void StartHandsConfigWatcher() {
                         }
                     }
                 }
+                WriteHandsStatus();
+                }
+                if(HandWeaponMotionDiagnostic::enabled)HandWeaponMotionDiagnostic::Flush();
+                if(!DiagnosticOptions::liveHandConfig)continue;
                 auto path=handsConfigPath.c_str();
                 RefreshForcedHandFallback(path);
                 controllerHandsModelAlignment=GetPrivateProfileIntW(L"VR",L"ControllerHandsModelAlignment",0,path)!=0;
@@ -548,9 +553,6 @@ void StartHandsConfigWatcher() {
                 controllerHandBone2=int(GetPrivateProfileIntW(L"VR",L"ControllerHandBone2",999,path));
                 float r=float(GetPrivateProfileIntW(L"VR",L"ControllerHandsRadiusCm",15,path));
                 if(r>0&&r<=500)controllerHandsRadius=r;
-                // No keypress anywhere: the state Mark would have had to press
-                // F8 for writes itself, from this thread, on change only.
-                WriteHandsStatus();
                 controllerHandsDriveBone=int(GetPrivateProfileIntW(L"VR",L"ControllerHandsDriveBone",152,path));
                 {
                     // Edge-triggered, so the mod never writes the INI back the
@@ -1138,6 +1140,7 @@ void IdentifyHandBone(const CameraMath::Matrix* m,uint32_t n) {
 std::atomic<uint64_t> handDraws{},handSkeletons{},handSkeletonMiss{};
 std::atomic<uint32_t> handBoneCount{};
 void WriteHandsStatus() {
+    if(!DiagnosticOptions::hands)return;
     if(!controllerHands)return;
     // Change-only, so a quiet session does not bury the log.
     static int lastMode=-1,lastDrive=-1,lastCal=-1,lastArmed=-1;
@@ -1187,12 +1190,6 @@ thread_local bool senseQueries{};
 std::atomic<uint64_t> interactionQueries{},movementAxes{};
 std::atomic<void*> walkAction{},strafeAction{};
 std::atomic<unsigned> movementResponse{};
-// Bounded ordinary-session diagnostics. Counts prove the action hook is reached;
-// samples report its returned input, not the character's physical velocity.
-std::atomic<uint64_t> responseHookCalls{},responseActionCalls{},responsePassed{},responseReduced{};
-std::atomic<float> responseInputMagnitude{},responseOutputMagnitude{};
-std::atomic<uint64_t> responseSampleTick{};
-unsigned responseSampleMode{}; // paired with magnitudes under stateMutex
 float lastMoveInput[2]{},lastMoveOutput[2]{},lastMoveHeading{};
 float controllerMuzzleForward=.25f;
 uint64_t removedFlareSprites{};
@@ -1237,10 +1234,8 @@ thread_local float handDrawScale=LiveWorldScale::Default;
 // Local patch: optional per-frame camera trace for head-bob analysis.
 // Buffered in memory (4 MB stdio buffer) so it rarely touches the disk.
 bool bobTrace=false;FILE* bobFile{};uint32_t bobLines{};
-// Diagnostic logs, off unless asked for: InteractionDiagnosticLog installs
-// the native interaction probes, MovementResponseLog records the walking
-// response counters. Neither is on in a release build.
-bool interactionDiagLog=false,movementResponseLog=false;
+// Extra interaction probes are off unless requested at startup.
+bool interactionDiagLog=false;
 bool sleepFix=false; // [VR] SleepFix applied (see Install)
 void BobTrace(double ms,const CameraMath::Matrix& g,const float out[3],const Transport::Tracking& t) {
     if(bobLines>=36000)return;
@@ -1817,8 +1812,9 @@ void __fastcall SenseUpdateHook(void* self,void*,float dt) {
             *reinterpret_cast<void**>(static_cast<unsigned char*>(self)+8)==current.playerInstance;
     }
     bool sample=false;
-    auto now=GetTickCount64();
-    if(!previous&&senseQueries&&interactionProbesReady&&dt>0&&interactionSampleCount.load()<300){
+    uint64_t now{};
+    if(interactionProbesReady&&!previous&&senseQueries&&dt>0&&interactionSampleCount.load()<300){
+        now=GetTickCount64();
         auto next=interactionNextSample.load();
         sample=now>=next&&interactionNextSample.compare_exchange_strong(next,now+2000);
     }
@@ -1838,10 +1834,8 @@ void* __fastcall PlayerWorldHook(void* self,void*) {
     return originalPlayerWorld(self);
 }
 float __fastcall InputAxisHook(void* self,void*,uint32_t index,bool requireActive) {
-    ++responseHookCalls;
     float value=originalInputAxis(self,index,requireActive);
     auto walk=walkAction.load(),strafe=strafeAction.load();
-    if(walk&&strafe&&(self==walk||self==strafe))++responseActionCalls;
     const auto source=movementDirection.load();
     bool gentle=motionControls&&movementResponse.load()==1;
     if((source==DirectionConfig::Source::Mouse&&!gentle) || !walk || !strafe || (self!=walk && self!=strafe))return value;
@@ -1856,16 +1850,8 @@ float __fastcall InputAxisHook(void* self,void*,uint32_t index,bool requireActiv
     if(!std::isfinite(x) || !std::isfinite(y))return value;
     auto shaped=CameraMath::MovementResponse(x,y,gentle);
     auto axes=source==DirectionConfig::Source::Mouse?shaped:CameraMath::ReorientMovement(shaped.strafe,shaped.walk,native,target);
-    ++responsePassed;
-    float inputMagnitude=std::hypot(x,y),outputMagnitude=std::hypot(axes.strafe,axes.walk);
-    if(inputMagnitude>.001f){
-        std::lock_guard lock(stateMutex);
-        responseSampleMode=gentle?1u:0u;
-        responseInputMagnitude=inputMagnitude;responseOutputMagnitude=outputMagnitude;responseSampleTick=GetTickCount64();
-        if(outputMagnitude<inputMagnitude-.0001f)++responseReduced;
-    }
-    ++movementAxes;
-    if(std::abs(x)+std::abs(y)>.01f) {
+    if(DiagnosticOptions::runtime)++movementAxes;
+    if(DiagnosticOptions::runtime && std::abs(x)+std::abs(y)>.01f) {
         std::lock_guard lock(stateMutex);
         lastMoveInput[0]=x;lastMoveInput[1]=y;
         lastMoveOutput[0]=axes.strafe;lastMoveOutput[1]=axes.walk;
@@ -1994,18 +1980,18 @@ bool ReadNativePalm(WeaponPose& pose,CameraMath::Matrix& skin,CameraMath::Matrix
     if(!pose.owner || !pose.weapon)return false;
     uint32_t model{},bones{},owner{};
     if(!HandMeshDiagnostic::Read(uintptr_t(pose.weapon)+0x64,&owner,4) || owner!=uintptr_t(pose.owner) ||
-       !NativeHandWeapon::OwnerModel(uintptr_t(pose.owner),HandMeshDiagnostic::Read,model,bones)){++nativePairOwnerFailed;return false;}
+       !NativeHandWeapon::OwnerModel(uintptr_t(pose.owner),HandMeshDiagnostic::Read,model,bones)){if(DiagnosticOptions::hands)++nativePairOwnerFailed;return false;}
     auto plan=HandOnlyGeometry::Prepare(reinterpret_cast<void*>(uintptr_t(model)));
-    if(!plan){++nativePairModelFailed;return false;}
+    if(!plan){if(DiagnosticOptions::hands)++nativePairModelFailed;return false;}
     CameraMath::Matrix frame{},bone{};ModelHandAlignment::V pivot{};
-    if(!NativeModelFrame(reinterpret_cast<void*>(uintptr_t(model)),plan,frame,pivot)){++nativePairModelFailed;return false;}
+    if(!NativeModelFrame(reinterpret_cast<void*>(uintptr_t(model)),plan,frame,pivot)){if(DiagnosticOptions::hands)++nativePairModelFailed;return false;}
     if(!HandMeshDiagnostic::Read(uintptr_t(bones)+130*sizeof(bone),&bone,sizeof(bone)) ||
-       !NativeHandWeapon::Skin(bone,pivot,skin) || !NativeHandWeapon::Delta(skin,frame,pose.gripTarget,delta)){++nativePairBoneFailed;return false;}
+       !NativeHandWeapon::Skin(bone,pivot,skin) || !NativeHandWeapon::Delta(skin,frame,pose.gripTarget,delta)){if(DiagnosticOptions::hands)++nativePairBoneFailed;return false;}
     return true;
 }
 bool ResolveNativePair(WeaponPose& pose,MuzzleQueryDiagnostic::Site site,void* subject) {
     pose.nativeValid=false;
-    auto fail=[](){++nativePairFailed;return false;};
+    auto fail=[](){if(DiagnosticOptions::hands)++nativePairFailed;return false;};
     if(nativePairFault.load() || handsSuspendedByMode.load() || handsFarFromBody.load() ||
        !activeCameraIsPlayer.load())return fail();
     CameraMath::Matrix skin{},delta{},native{};
@@ -2014,7 +2000,8 @@ bool ResolveNativePair(WeaponPose& pose,MuzzleQueryDiagnostic::Site site,void* s
     bool relevant=site==MuzzleQueryDiagnostic::Camera ||
         ((site==MuzzleQueryDiagnostic::Attachment || site==MuzzleQueryDiagnostic::Draw)?subject==pose.instance:subject==pose.weapon);
     if(!NativeHandWeapon::Rigid(native)){
-        ++nativePairMuzzleFailed;
+        if(DiagnosticOptions::hands)++nativePairMuzzleFailed;
+        if(DiagnosticOptions::hands){
         MuzzleQueryDiagnostic::Sample sample{};sample.tick=GetTickCount64();sample.frame=frameId.load();
         sample.weapon=uintptr_t(pose.weapon);sample.instance=uintptr_t(pose.instance);sample.owner=uintptr_t(pose.owner);
         sample.nativeReturn=nativeResult;sample.matrix=native;sample.relevant=relevant;sample.safe=WeaponMuzzleSafe(pose.weapon);
@@ -2029,11 +2016,13 @@ bool ResolveNativePair(WeaponPose& pose,MuzzleQueryDiagnostic::Site site,void* s
         }
         if(read(sample.weapon+0x70,&firstPerson,4) && firstPerson && read(firstPerson+0x1b,&byte,1))sample.firstPersonFlag=byte;
         if(read(sample.weapon+0x7c,&definition,4) && definition && read(definition+0x520,&byte,1))sample.attachment=int(int8_t(byte));
-        MuzzleQueryDiagnostic::Failure(site,sample);return fail();
+        MuzzleQueryDiagnostic::Failure(site,sample);
+        }
+        return fail();
     }
-    MuzzleQueryDiagnostic::Success(site,relevant,uintptr_t(pose.weapon),GetTickCount64());
+    if(DiagnosticOptions::hands)MuzzleQueryDiagnostic::Success(site,relevant,uintptr_t(pose.weapon),GetTickCount64());
     pose.muzzle=CameraMath::Multiply(native,delta);pose.nativeSkin=skin;pose.delta=delta;
-    pose.nativeValid=true;++nativePairUsed;return true;
+    pose.nativeValid=true;if(DiagnosticOptions::hands)++nativePairUsed;return true;
 }
 // SEH, so an out-of-range index cannot take the process down. Deliberately no
 // locals that need unwinding, which MSVC forbids in a __try.
@@ -2217,17 +2206,19 @@ void __fastcall ActorDrawHook(void* self,void*,void* matrix,void* args) {
             // fallback is COUNTED, never silent, because it reintroduces exactly
             // the weapon dependence this change removed.
             auto rawFault=RigidFault(pose.controllerRaw);
+            if(DiagnosticOptions::hands){
             handRawFault.store(rawFault);
             handRawW15=pose.controllerRaw.m[15];
             handRawRow0=pose.controllerRaw.m[0]*pose.controllerRaw.m[0]
                        +pose.controllerRaw.m[1]*pose.controllerRaw.m[1]
                        +pose.controllerRaw.m[2]*pose.controllerRaw.m[2];
+            }
             handMuzzleValid=rawFault==0;
-            if(handMuzzleValid){handMuzzle=pose.controllerRaw;handRawUsed.fetch_add(1);}
+            if(handMuzzleValid){handMuzzle=pose.controllerRaw;if(DiagnosticOptions::hands)handRawUsed.fetch_add(1);}
             else {
-                handRawRejected.fetch_add(1);
+                if(DiagnosticOptions::hands)handRawRejected.fetch_add(1);
                 if(RigidWeaponMatrix(pose.muzzle)) {
-                    handMuzzle=pose.muzzle;handMuzzleValid=true;handFallbackUsed.fetch_add(1);
+                    handMuzzle=pose.muzzle;handMuzzleValid=true;if(DiagnosticOptions::hands)handFallbackUsed.fetch_add(1);
                 }
             }
             handNativeMuzzleValid=false;
@@ -2248,7 +2239,7 @@ void __fastcall ActorDrawHook(void* self,void*,void* matrix,void* args) {
                     handDeltaValid=true;
                 }
             }
-            if(!handNativeMuzzleValid)handUnarmedDraws.fetch_add(1);
+            if(!handNativeMuzzleValid)if(DiagnosticOptions::hands)handUnarmedDraws.fetch_add(1);
             handDrawScale=pose.scale;
             ++handDraws;handDrawing=true;handPrimIndex=0;
             originalActorDraw(self,matrix,args);
@@ -2256,7 +2247,7 @@ void __fastcall ActorDrawHook(void* self,void*,void* matrix,void* args) {
             handPrimPieces.store(handPrimIndex);
             // One write per draw for the first three draws, then never again:
             // the structure is what is wanted, not a per-frame stream.
-            if(handPrimLogged<3) {
+            if(DiagnosticOptions::hands && handPrimLogged<3) {
                 ++handPrimLogged;
                 FILE* f{};
                 if(!fopen_s(&f,"DeusExHRVR-camera.log","a") && f) {
@@ -2299,17 +2290,17 @@ bool TryModelHand(void* model,unsigned char* data,CameraMath::Matrix* palette,ui
         std::lock_guard lock(stateMutex);
         if(!requested || !current.active || !referenceValid || screenReasons || current.scale!=handDrawScale ||
            !ModelHandAlignment::GripTarget(current.tracking,GetTickCount64(),current.controllerBase,reference,current.scale,target)) {
-            ++modelHandNoGrip;return false;
+            if(DiagnosticOptions::hands)++modelHandNoGrip;return false;
         }
         if(controllerHandsLeft.load())leftValid=
             ModelHandAlignment::GripTarget(current.tracking,GetTickCount64(),current.controllerBase,reference,current.scale,leftTarget,true);
     }
     auto plan=(HandDrawDiagnostic::hookStatus.load()==1)?HandOnlyGeometry::Prepare(model):nullptr;
-    if(!plan || plan->boneCount!=n){++modelHandBadModel;return false;}
+    if(!plan || plan->boneCount!=n){if(DiagnosticOptions::hands)++modelHandBadModel;return false;}
     CameraMath::Matrix frame{};ModelHandAlignment::V pivot{};
-    if(!NativeModelFrame(model,plan,frame,pivot)){++modelHandBadModel;return false;}
+    if(!NativeModelFrame(model,plan,frame,pivot)){if(DiagnosticOptions::hands)++modelHandBadModel;return false;}
     auto pose=ReadWeaponPose(false);
-    bool capture=HandWeaponMotionDiagnostic::Wanted(0,frameId.load());
+    bool capture=HandWeaponMotionDiagnostic::enabled && HandWeaponMotionDiagnostic::Wanted(0,frameId.load());
     HandWeaponMotionDiagnostic::Sample motion{};
     if(capture){MotionContext(motion,pose,0);motion.count=2;motion.before[0]=palette[129];motion.before[1]=palette[130];}
     if(pose.nativeRequested){
@@ -2319,31 +2310,33 @@ bool TryModelHand(void* model,unsigned char* data,CameraMath::Matrix* palette,ui
         // Independent live check: simulation reconstruction must match the
         // original renderer output BEFORE either is modified. Fail closed.
         if(paired){
-            ++nativePairCompared;
+            if(DiagnosticOptions::hands)++nativePairCompared;
             float difference=NativeHandWeapon::Difference(ModelHandAlignment::Affine(palette[130]),skin);
-            auto maximum=nativePairMaxDifference.load();
-            while(maximum<difference && !nativePairMaxDifference.compare_exchange_weak(maximum,difference)){}
+            if(DiagnosticOptions::hands){
+                auto maximum=nativePairMaxDifference.load();
+                while(maximum<difference && !nativePairMaxDifference.compare_exchange_weak(maximum,difference)){}
+            }
             if(difference>.05f){
-                ++nativePairMismatch;nativePairFault=true;paired=false;
+                if(DiagnosticOptions::hands)++nativePairMismatch;nativePairFault=true;paired=false;
             }
         }
         // Preserve the approved unarmed hand even if a weapon query is unavailable.
         bool moved=paired?ModelHandAlignment::MoveWithDelta(palette,n,plan->bones,delta):
             ModelHandAlignment::Move(palette,n,plan->bones,frame,pose.gripTarget);
-        if(!moved){++modelHandBadTransform;return false;}
+        if(!moved){if(DiagnosticOptions::hands)++modelHandBadTransform;return false;}
     }else if(!ModelHandAlignment::Move(palette,n,plan->bones,frame,target)){
-        ++modelHandBadTransform;return false;
+        if(DiagnosticOptions::hands)++modelHandBadTransform;return false;
     }
     // Before the capture below, which records palette[129] as its "after".
     if(controllerHandsNeutralWrist.load() &&
-       !ModelHandAlignment::NeutralWrist(palette,n,plan->bones))++neutralWristFailed;
+       !ModelHandAlignment::NeutralWrist(palette,n,plan->bones)){if(DiagnosticOptions::hands)++neutralWristFailed;}
     if(capture){motion.after[0]=palette[129];motion.after[1]=palette[130];HandWeaponMotionDiagnostic::Push(motion);}
     CameraMath::Matrix leftFrame{};ModelHandAlignment::V unused{};
     bool leftMoved=leftValid && LeftModelFrame(model,plan,leftFrame,unused) &&
         ModelHandAlignment::RestLeft(palette,n,plan->leftBones,leftFrame,leftTarget);
     HandOnlyGeometry::Activate(uintptr_t(data),frameId.load(),plan,palette[130].m,leftMoved);
 
-    ++modelHandApplied;return true;
+    if(DiagnosticOptions::hands)++modelHandApplied;return true;
 }
 void __cdecl SkeletonHook(void* model,void* bones,uint32_t flags,uint32_t count,void* state) {
     const float worldScale=handDrawScale;
@@ -2362,7 +2355,7 @@ void __cdecl SkeletonHook(void* model,void* bones,uint32_t flags,uint32_t count,
     // ControllerHands: keep the hand bones, collapse the rest. Same validated
     // palette as the weapon path below, reached through the actor's own draw.
     if(handDrawing) {
-        HandMeshDiagnostic::Capture(model,count);
+        if(DiagnosticOptions::hands)HandMeshDiagnostic::Capture(model,count);
         bool ok=false;
         if(state) {
             auto s=static_cast<unsigned char*>(state);
@@ -2370,7 +2363,7 @@ void __cdecl SkeletonHook(void* model,void* bones,uint32_t flags,uint32_t count,
                 if(auto data=*reinterpret_cast<unsigned char**>(s+0x10)) {
                     auto n=*reinterpret_cast<uint32_t*>(data);
                     if(n && n<=512 && n==count) {
-                        HandDrawDiagnostic::MarkPose(uintptr_t(data),frameId.load());
+                        if(DiagnosticOptions::hands)HandDrawDiagnostic::MarkPose(uintptr_t(data),frameId.load());
                         handBoneCount=n;++handSkeletons;ok=true;
                         auto m=reinterpret_cast<CameraMath::Matrix*>(data+0x10);
                         // Separate experimental path: no handBind, no capture, no
@@ -3217,7 +3210,7 @@ void __cdecl SkeletonHook(void* model,void* bones,uint32_t flags,uint32_t count,
     auto data=*reinterpret_cast<unsigned char**>(s+0x10);if(!data)return;
     auto n=*reinterpret_cast<uint32_t*>(data);if(!n || n>512 || n!=count)return;
     auto matrices=reinterpret_cast<CameraMath::Matrix*>(data+0x10);
-    bool capture=HandWeaponMotionDiagnostic::Wanted(1,frameId.load());
+    bool capture=HandWeaponMotionDiagnostic::enabled && HandWeaponMotionDiagnostic::Wanted(1,frameId.load());
     HandWeaponMotionDiagnostic::Sample motion{};
     if(capture){MotionContext(motion,motionDrawPose,1);motion.delta=controllerDelta;motion.count=n;
         for(unsigned i=0;i<n && i<16;i++)motion.before[i]=matrices[i];}
@@ -3274,7 +3267,7 @@ void __fastcall RenderStateHook(void* self,void*) {
     lumaPasses.RestoreDrawOverrides();
     shaderSwap.RestoreDrawOverrides();
     auto state=static_cast<unsigned char*>(self);
-    {
+    if(DiagnosticOptions::hands){
         // Does a per-draw hook reach inside the actor's draw at all, and is its
         // pixel shader its own? PrimitiveHook never fired in there, which is
         // what makes this worth measuring rather than assuming either way.
@@ -3586,15 +3579,15 @@ void __fastcall UpdateHook(void* self,void*) {
                         // The camera is somewhere the aim does not explain: leave
                         // it alone. NativeCameraPosition keys off
                         // current.nativeHeading, so it stands down with us.
-                        if(std::isfinite(delta))
+                        if(DiagnosticOptions::runtime && std::isfinite(delta))
                             nativeHeadingRejectedPeak=std::max(nativeHeadingRejectedPeak,delta);
-                        ++nativeHeadingRejected;
+                        if(DiagnosticOptions::runtime)++nativeHeadingRejected;
                     } else {
-                        nativeHeadingPeakDelta=std::max(nativeHeadingPeakDelta,delta);
-                        renderBase=clean;current.nativeHeading=true;++nativeHeadingUsed;
+                        if(DiagnosticOptions::runtime)nativeHeadingPeakDelta=std::max(nativeHeadingPeakDelta,delta);
+                        renderBase=clean;current.nativeHeading=true;if(DiagnosticOptions::runtime)++nativeHeadingUsed;
                     }
-                } else ++nativeHeadingFallback;
-                if(now-nativeHeadingLogTick>=2000) {
+                } else if(DiagnosticOptions::runtime)++nativeHeadingFallback;
+                if(DiagnosticOptions::runtime && now-nativeHeadingLogTick>=2000) {
                     FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")) {
                         fprintf(f,"nativeLookHeading used=%llu fallback=%llu active=%d engineFrame=%u sampleFrame=%u maxRemovedDeg=%g rejected=%llu maxRejectedDeg=%g limitDeg=%g latched=%d\n",
                             nativeHeadingUsed,nativeHeadingFallback,int(current.nativeHeading),engineFrame,
@@ -3650,20 +3643,22 @@ void __fastcall UpdateHook(void* self,void*) {
                     float entY=entity?*reinterpret_cast<const float*>(entity+0x24):0.f;
                     bool anchored=false;
                     if(nativeCameraPosition && current.nativeHeading && entity) {
-                        const float distance=std::hypot(renderBase.m[12]-entX,renderBase.m[13]-entY);
+                        const float distance=DiagnosticOptions::runtime?std::hypot(renderBase.m[12]-entX,renderBase.m[13]-entY):0.f;
                         anchored=CameraPosition::UseBodyXY(renderBase,entX,entY);
+                        if(DiagnosticOptions::runtime){
                         if(anchored) {
                             ++nativePositionUsed;
                             nativePositionPeak=std::max(nativePositionPeak,distance);
                             const bool sprint=t.gamepad.valid && (uint32_t(t.gamepad.buttons)&controllerHandsSprintMask)!=0;
                             if(sprint)nativePositionSprintPeak=std::max(nativePositionSprintPeak,distance);
                         } else ++nativePositionFallback;
+                        }
                     }
                     if(anchored)swayHold.Reset();
                     else if(swayHold.windowMs>0 && entity && std::isfinite(entX) && std::isfinite(entY))
                         swayHold.Apply(renderBase.m[12],renderBase.m[13],entX,entY,ms);
                     else swayHold.Reset();
-                    if(nativeCameraPosition && now-nativePositionLogTick>=2000) {
+                    if(DiagnosticOptions::runtime && nativeCameraPosition && now-nativePositionLogTick>=2000) {
                         FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")) {
                             fprintf(f,"nativeCameraPosition used=%llu rejected=%llu active=%d maxOffsetIn=%g sprintMaxOffsetIn=%g\n",
                                 nativePositionUsed,nativePositionFallback,int(anchored),
@@ -4010,7 +4005,7 @@ void __fastcall ModelDrawHook(void* self,void*,void* device,void* state,void* st
     auto frame=frameId.load();
     if(!HandOnlyGeometry::DrawSelected(self,device,state,stream,twice,frame,originalModelDraw)) {
         originalModelDraw(self,device,state,stream,twice);
-        HandDrawDiagnostic::Observe(self,stream,twice,frame);
+        if(DiagnosticOptions::hands)HandDrawDiagnostic::Observe(self,stream,twice,frame);
     }
 }
 void InstallHandDrawDiagnostic() {
@@ -4074,7 +4069,7 @@ void __fastcall PrimitiveHook(void* self,void*,void* stream,bool backBeforeFront
     // Inside the player's own actor draw, each submitted piece gets an index.
     if(handDrawing) {
         auto idx=handPrimIndex++;
-        if(handPrimLogged<3 && handPrimTraceCount<64) {
+        if(DiagnosticOptions::hands && handPrimLogged<3 && handPrimTraceCount<64) {
             auto& t=handPrimTrace[handPrimTraceCount++];
             t.index=idx;t.primitive=reinterpret_cast<uintptr_t>(self);
             t.material=primitiveState?*reinterpret_cast<uintptr_t*>(primitiveState+0xc):0;
@@ -4338,6 +4333,9 @@ void Install() {
         float value=static_cast<float>(_wtof(headingLimit));
         if(std::isfinite(value) && value>=0 && value<=180)nativeHeadingMaxDeg=value;
     }
+    DiagnosticOptions::hands=GetPrivateProfileIntW(L"VR",L"HandDiagnosticLog",0,config)!=0;
+    DiagnosticOptions::runtime=GetPrivateProfileIntW(L"VR",L"RuntimeDiagnosticLog",0,config)!=0;
+    DiagnosticOptions::liveHandConfig=GetPrivateProfileIntW(L"VR",L"HandConfigLiveReload",0,config)!=0;
     HandWeaponMotionDiagnostic::enabled=GetPrivateProfileIntW(L"VR",L"HandWeaponMotionLog",0,config)!=0;
     if(enabled && (nativeLookPitchLock || nativeLookHeading)) {
         auto target=reinterpret_cast<void*>(VA(0x7ac8c0));
@@ -4437,10 +4435,6 @@ void Install() {
     interactionAim=DirectionConfig::Read(config,L"InteractionAim");
     movementDirection=DirectionConfig::Read(config,L"MovementDirection");
     movementResponse=GetPrivateProfileIntW(L"VR",L"MovementResponse",0,config)==1?1u:0u;
-    movementResponseLog=GetPrivateProfileIntW(L"VR",L"MovementResponseLog",0,config)!=0;
-    if(movementResponseLog){FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")){
-        fprintf(f,"MovementResponse startup mode=%u motionControls=%d movement=%s\n",movementResponse.load(),int(motionControls),DirectionConfig::Name(movementDirection));fclose(f);
-    }}
     immersiveScope=GetPrivateProfileIntW(L"VR",L"ImmersiveScope",0,config)!=0;
     GetPrivateProfileStringW(L"VR",L"ScopeMagnification",L"4",scaleText,32,config);
     {float value=static_cast<float>(_wtof(scaleText));if(std::isfinite(value)&&value>=1&&value<=12)scopeMagnification=value;}
@@ -4540,26 +4534,13 @@ Transport::RenderInfo OnPresent(uint64_t frame,bool capture) {
     if(screenReasons || gameMenuOpen || !requested || recenterRequested)calibration.Cancel();
     LevelFrozenView(frame);
     if(effectsCapture){SaveEffects(frame);effectCount=0;shaderTrace.End();}effectsCapture=capture;
-    // At most 60 summary lines per game process; no per-frame disk writes.
-    static uint64_t responseLogTick{};static unsigned responseLogCount{};
-    auto responseNow=GetTickCount64();
-    if(movementResponseLog&&responseLogCount<60&&(!responseLogTick||responseNow-responseLogTick>=10000)){
-        responseLogTick=responseNow;++responseLogCount;
-        FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")){
-            fprintf(f,"MovementResponse runtime tick=%llu mode=%u motionControls=%d direction=%s hookCalls=%llu actionCalls=%llu passed=%llu reduced=%llu lastNonzeroInput=%g lastReturnedMagnitude=%g sampleTick=%llu sampleMode=%u screenReasons=%u\n",
-                responseNow,movementResponse.load(),int(motionControls),DirectionConfig::Name(movementDirection),
-                responseHookCalls.load(),responseActionCalls.load(),responsePassed.load(),responseReduced.load(),
-                responseInputMagnitude.load(),responseOutputMagnitude.load(),responseSampleTick.load(),responseSampleMode,screenReasons);
-            fclose(f);
-        }
-    }
     if(capture)shaderTrace.Begin(frame+1);
     auto completed=pairInfo;pairInfo={};
     scenes.Complete(frame);
     lastWorld={};
     if(completed.mode==1 && completed.eyeMask!=3)completed.mode=2;
     static uint32_t lastMode=99;
-    if(completed.mode!=lastMode || capture) {
+    if((DiagnosticOptions::runtime && completed.mode!=lastMode) || capture) {
         FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")) {
             fprintf(f,"nativePair frame=%llu mode=%u eyeMask=%u pose=%llu active=%d taggedScenes=%llu stereoCalls=%llu\n",frame,completed.mode,completed.eyeMask,completed.tracking.id,current.active,taggedScenes,stereoCalls);fclose(f);
         }
@@ -4649,14 +4630,8 @@ void SetConfiguredWorldScale(float value){liveWorldScale.Request(value);}
 unsigned InteractionAim(){return unsigned(interactionAim.load());}
 void SetInteractionAim(unsigned value){if(value<=3)interactionAim.store(static_cast<DirectionConfig::Source>(value));}
 unsigned MovementResponse(){return movementResponse.load();}
-void SetMovementResponse(unsigned value){
-    if(value>1)return;
-    auto previous=movementResponse.exchange(value);
-    if(!movementResponseLog)return;
-    FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")){
-        fprintf(f,"MovementResponse menu previous=%u effective=%u tick=%llu\n",previous,value,GetTickCount64());fclose(f);
-    }
-}
+void SetMovementResponse(unsigned value){if(value<=1)movementResponse.store(value);}
+
 unsigned MovementDirection(){return unsigned(movementDirection.load());}
 void Recenter(){recenterRequested=true;conversationCamera=nullptr;}
 void SetMovementDirection(unsigned value){if(value<=3)movementDirection.store(static_cast<DirectionConfig::Source>(value));}

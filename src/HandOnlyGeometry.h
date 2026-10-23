@@ -117,10 +117,10 @@ inline std::shared_ptr<const Plan> Prepare(void* model) {
     old=cached.load();
     if(old && old->render==render && old->mesh==mesh)return old;
     if(GetTickCount64()<retryAfter)return {};
-    ++builds;
+    if(DiagnosticOptions::hands)++builds;
     unsigned stage=1;
     auto fail=[&]()->std::shared_ptr<const Plan>{
-        ++rejected;rejectionStage=stage;retryAfter=GetTickCount64()+1000;return {};
+        if(DiagnosticOptions::hands)++rejected;rejectionStage=stage;retryAfter=GetTickCount64()+1000;return {};
     };
     uint32_t h[32]{},g[25][16]{},b[24]{},fmt[4]{};
     if(!HandMeshDiagnostic::Read(mesh,h,sizeof(h)))return fail();
@@ -186,8 +186,8 @@ inline void Activate(uintptr_t pose,uint64_t frame,std::shared_ptr<const Plan> p
     std::lock_guard lock(tagMutex);
     for(auto& old:tags)if(old.pose==pose){old.pose=0;old.plan.reset();}
     auto& t=tags[cursor++%tags.size()];
-    t.hidden=false;t.witnessBone=130;t.render=plan->render;t.left=left;t.pose=pose;t.frame=frame;t.plan=std::move(plan);std::memcpy(t.wrist.data(),wrist,64);++posesMoved;
-    if(left)++leftPoses;
+    t.hidden=false;t.witnessBone=130;t.render=plan->render;t.left=left;t.pose=pose;t.frame=frame;t.plan=std::move(plan);std::memcpy(t.wrist.data(),wrist,64);if(DiagnosticOptions::hands)++posesMoved;
+    if(left)if(DiagnosticOptions::hands)++leftPoses;
 }
 // Suppress only this VR-generated player palette; native third-person draws
 // invalidate it through SkeletonHook. Keep the original palette untouched.
@@ -217,16 +217,16 @@ inline std::shared_ptr<const Plan> Match(uintptr_t pose,uint64_t frame,bool* lef
 }
 template<class Draw> inline bool DrawSelected(void* drawable,void* device,void* state,void* stream,bool twice,uint64_t frame,Draw original) {
     auto words=static_cast<const uint32_t*>(drawable);
-    if(Hidden(words[8],frame,words[3])){++hiddenDraws;return true;}
+    if(Hidden(words[8],frame,words[3])){if(DiagnosticOptions::hands)++hiddenDraws;return true;}
     if(!stream)return false;
     // Match the tagged plan, not the diagnostic capture (which stops after four models).
     if(!cached.load())return false;
     bool left=false;auto p=Match(words[8],frame,&left);
-    if(!p || words[3]!=p->render){++bypassed;return false;}
+    if(!p || words[3]!=p->render){if(DiagnosticOptions::hands)++bypassed;return false;}
     auto gp=uintptr_t(words[6]);
     if(gp<p->groups || (gp-p->groups)%64)return false;
     auto group=(gp-p->groups)/64;
-    if(group==p->hiddenGroups[0] || group==p->hiddenGroups[1]){++sleevesSkipped;return true;}
+    if(group==p->hiddenGroups[0] || group==p->hiddenGroups[1]){if(DiagnosticOptions::hands)++sleevesSkipped;return true;}
     unsigned slot=0;while(slot<p->partCount && p->groupIds[slot]!=group)++slot;
     if(slot==p->partCount || words[5]!=p->partBatches[slot])return false;
     if((words[13]>>8)!=p->triangleCounts[slot])return false;
@@ -239,10 +239,11 @@ template<class Draw> inline bool DrawSelected(void* drawable,void* device,void* 
         original(localDrawable,device,state,stream,twice);
     }
     };
-    drawRuns(p->runs[slot]);if(left){drawRuns(p->leftRuns[slot]);++leftDraws;}
-    ++filtered;return true;
+    drawRuns(p->runs[slot]);if(left){drawRuns(p->leftRuns[slot]);if(DiagnosticOptions::hands)++leftDraws;}
+    if(DiagnosticOptions::hands)++filtered;return true;
 }
 inline void Flush() {
+    if(!DiagnosticOptions::hands)return;
     static unsigned tick{};if(++tick!=1 && tick%5)return;
     FILE* f{};if(fopen_s(&f,"DeusExHRVR-hand-only.log","a") || !f)return;
     auto p=cached.load();

@@ -15,5 +15,5 @@ public:
     void Request(float value){if(Valid(value))requested.store(value);}
     float Configured() const{return requested.load();}
     float Active() const{return active.load();}
-    float BeginCamera(){const float value=requested.load();active.store(value);return value;}
+    float BeginCamera(){const float value=requested.load();if(active.load()!=value)active.store(value);return value;}
 };

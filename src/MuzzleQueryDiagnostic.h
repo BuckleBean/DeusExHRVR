@@ -1,4 +1,5 @@
 #pragma once
+#include "DiagnosticOptions.h"
 #include "NativeHandWeapon.h"
 #include <atomic>
 #include <mutex>
@@ -44,6 +45,7 @@ inline void Queue(unsigned site,unsigned reason,Burst& burst){
     burst={};
 }
 inline void Failure(Site site,const Sample& sample){
+    if(!DiagnosticOptions::hands)return;
     unsigned slot=unsigned(site)*2+unsigned(sample.relevant);auto fault=Fault(sample.matrix);
     std::lock_guard lock(mutex);auto& b=bursts[slot];
     if(b.active && (b.first.weapon!=sample.weapon || b.first.key!=sample.key || b.fault!=fault))Queue(site,1,b);
@@ -52,6 +54,7 @@ inline void Failure(Site site,const Sample& sample){
     b.last=sample;++b.calls;pending[slot]=true;
 }
 inline void Success(Site site,bool relevant,uintptr_t weapon,uint64_t tick){
+    if(!DiagnosticOptions::hands)return;
     unsigned slot=unsigned(site)*2+unsigned(relevant);
     if(!pending[slot].load(std::memory_order_relaxed))return;
     std::lock_guard lock(mutex);auto& b=bursts[slot];
@@ -59,6 +62,7 @@ inline void Success(Site site,bool relevant,uintptr_t weapon,uint64_t tick){
     pending[slot]=false;
 }
 inline void Flush(){
+    if(!DiagnosticOptions::hands)return;
     std::array<Entry,128> local{};unsigned n{};
     {std::lock_guard lock(mutex);n=count;for(unsigned i=0;i<n;i++)local[i]=queue[i];count=0;
         // Periodic active-window reporting makes a persistent failure visible.

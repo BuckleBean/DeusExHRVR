@@ -45,6 +45,7 @@ inline void Matrix(FILE* f,const char* name,const CameraMath::Matrix& m){
     fprintf(f," %s=",name);for(float v:m.m)fprintf(f," %.9g",double(v));
 }
 inline void Flush(){
+    if(!enabled)return;
     // Static storage: do not put this large batch on the x86 watcher stack.
     static std::array<Sample,128> batch;
     unsigned n{};uint64_t lost{};

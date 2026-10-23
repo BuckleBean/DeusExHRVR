@@ -18,6 +18,7 @@ inline std::atomic<unsigned> calls{},modelMatches{},nullStreams{},readFailures{}
 inline std::atomic<int> hookStatus{}; // 1 installed, -1 signature, -2 create, -3 enable
 
 inline void MarkPose(uintptr_t data,uint64_t frame) {
+    if(!DiagnosticOptions::hands)return;
     std::unique_lock lock(mutex,std::try_to_lock);
     if(!lock.owns_lock()){++lockMisses;return;}
     for(const auto& p:poses)if(p.data==data && p.frame==frame)return;
@@ -30,6 +31,7 @@ inline bool FindPose(uintptr_t data,uint64_t frame,uint64_t& foundFrame) {
     return found;
 }
 inline void Observe(void* drawable,void* stream,bool twice,uint64_t frame) {
+    if(!DiagnosticOptions::hands)return;
     ++calls;
     auto target=HandMeshDiagnostic::targetRender.load(std::memory_order_relaxed);
     if(!target)return;
@@ -71,6 +73,7 @@ inline void Observe(void* drawable,void* stream,bool twice,uint64_t frame) {
     events[eventCount++]=e;
 }
 inline void Flush() {
+    if(!DiagnosticOptions::hands)return;
     static unsigned ticks{};
     std::array<Event,512> copy{};unsigned begin{},end{};
     {std::lock_guard lock(mutex);copy=events;begin=written;end=eventCount;}
