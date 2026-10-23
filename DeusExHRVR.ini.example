@@ -169,6 +169,15 @@ HeadSwayYawLimit=1.5
 ; stick input, head pose) for measuring the walk animation. Costs frame time;
 ; leave at 0 for play.
 BobTrace=0
+; Write the interaction targeting samples to DeusExHRVR-interaction.log:
+; what the aim ray was, which candidates the game offered and how far away
+; they were. At most 300 samples, no oftener than one every two seconds.
+; Installs two extra native probes while on; leave at 0 for play.
+InteractionDiagnosticLog=0
+; Write the walking-response counters to DeusExHRVR-camera.log: the effective
+; Normal/Gentle mode and how much partial stick input was reduced. At most 60
+; summary lines per run; leave at 0 for play.
+MovementResponseLog=0
 
 ; Snap turn: a horizontal right-stick flick turns the view instantly during
 ; gameplay instead of the stick's accelerating smooth turn. Menus, terminals

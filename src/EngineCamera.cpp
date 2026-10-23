@@ -1237,6 +1237,10 @@ thread_local float handDrawScale=100.f;
 // Local patch: optional per-frame camera trace for head-bob analysis.
 // Buffered in memory (4 MB stdio buffer) so it rarely touches the disk.
 bool bobTrace=false;FILE* bobFile{};uint32_t bobLines{};
+// Diagnostic logs, off unless asked for: InteractionDiagnosticLog installs
+// the native interaction probes, MovementResponseLog records the walking
+// response counters. Neither is on in a release build.
+bool interactionDiagLog=false,movementResponseLog=false;
 bool sleepFix=false; // [VR] SleepFix applied (see Install)
 void BobTrace(double ms,const CameraMath::Matrix& g,const float out[3],const Transport::Tracking& t) {
     if(bobLines>=36000)return;
@@ -1760,6 +1764,9 @@ void* __fastcall InteractionEventHook(void* out,void*,void* object,void* descrip
     return result;
 }
 void InstallInteractionProbes(){
+    wchar_t diagConfig[MAX_PATH]{};GetFullPathNameW(L"DeusExHRVR.ini",MAX_PATH,diagConfig,nullptr);
+    interactionDiagLog=GetPrivateProfileIntW(L"VR",L"InteractionDiagnosticLog",0,diagConfig)!=0;
+    if(!interactionDiagLog)return;
     auto resolve=reinterpret_cast<void*>(base+0x688ed0-0x400000);
     auto event=reinterpret_cast<void*>(base+0x688e80-0x400000);
     bool match=!memcmp(resolve,"\x8b\x4c\x24\x04\x57",5)&&!memcmp(event,"\x8b\x54\x24\x08\x8b\xc1",6);
@@ -4430,7 +4437,8 @@ void Install() {
     interactionAim=DirectionConfig::Read(config,L"InteractionAim");
     movementDirection=DirectionConfig::Read(config,L"MovementDirection");
     movementResponse=GetPrivateProfileIntW(L"VR",L"MovementResponse",0,config)==1?1u:0u;
-    {FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")){
+    movementResponseLog=GetPrivateProfileIntW(L"VR",L"MovementResponseLog",0,config)!=0;
+    if(movementResponseLog){FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")){
         fprintf(f,"MovementResponse startup mode=%u motionControls=%d movement=%s\n",movementResponse.load(),int(motionControls),DirectionConfig::Name(movementDirection));fclose(f);
     }}
     immersiveScope=GetPrivateProfileIntW(L"VR",L"ImmersiveScope",0,config)!=0;
@@ -4535,7 +4543,7 @@ Transport::RenderInfo OnPresent(uint64_t frame,bool capture) {
     // At most 60 summary lines per game process; no per-frame disk writes.
     static uint64_t responseLogTick{};static unsigned responseLogCount{};
     auto responseNow=GetTickCount64();
-    if(responseLogCount<60&&(!responseLogTick||responseNow-responseLogTick>=10000)){
+    if(movementResponseLog&&responseLogCount<60&&(!responseLogTick||responseNow-responseLogTick>=10000)){
         responseLogTick=responseNow;++responseLogCount;
         FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")){
             fprintf(f,"MovementResponse runtime tick=%llu mode=%u motionControls=%d direction=%s hookCalls=%llu actionCalls=%llu passed=%llu reduced=%llu lastNonzeroInput=%g lastReturnedMagnitude=%g sampleTick=%llu sampleMode=%u screenReasons=%u\n",
@@ -4644,6 +4652,7 @@ unsigned MovementResponse(){return movementResponse.load();}
 void SetMovementResponse(unsigned value){
     if(value>1)return;
     auto previous=movementResponse.exchange(value);
+    if(!movementResponseLog)return;
     FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")){
         fprintf(f,"MovementResponse menu previous=%u effective=%u tick=%llu\n",previous,value,GetTickCount64());fclose(f);
     }
