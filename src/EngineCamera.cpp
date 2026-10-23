@@ -1232,6 +1232,7 @@ Transport::Pose LevelReference(Transport::Pose p) {
 // frozen at while the in-game menu (map/objectives/inventory) is open.
 bool levelMenu=true;
 float worldScale=100.f;
+std::atomic<float> configuredWorldScale{100.f};
 // Local patch: optional per-frame camera trace for head-bob analysis.
 // Buffered in memory (4 MB stdio buffer) so it rarely touches the disk.
 bool bobTrace=false;FILE* bobFile{};uint32_t bobLines{};
@@ -4240,6 +4241,7 @@ void Install() {
     wchar_t config[MAX_PATH]{};GetFullPathNameW(L"DeusExHRVR.ini",MAX_PATH,config,nullptr);
     wchar_t scaleText[32];GetPrivateProfileStringW(L"VR",L"WorldUnitsPerMetre",L"100",scaleText,32,config);
     float scale=static_cast<float>(_wtof(scaleText));if(std::isfinite(scale)&&scale>=10&&scale<=1000)worldScale=scale;
+    configuredWorldScale.store(worldScale);
     lockVerticalCamera=GetPrivateProfileIntW(L"VR",L"LockVerticalCamera",0,config)!=0;
     levelRecenter=GetPrivateProfileIntW(L"VR",L"LevelRecenter",1,config)!=0;
     levelMenu=GetPrivateProfileIntW(L"VR",L"LevelMenu",1,config)!=0;
@@ -4610,6 +4612,9 @@ void SetChannel(Transport::Header* header){std::lock_guard lock(stateMutex);chan
 // Bits 32 (in-game menu) and 64 (e-reader, news reader) select [ScreenButtons] only;
 // the display stays tracked. Bit 128 is the opposite: a wheel screen pausing
 // gameplay, where [Buttons] must be kept.
+float ConfiguredWorldScale(){return configuredWorldScale.load();}
+float ActiveWorldScale(){return worldScale;} // immutable after startup; no live rescaling
+void SetConfiguredWorldScale(float value){if(std::isfinite(value)&&value>=10&&value<=1000)configuredWorldScale.store(value);}
 unsigned InteractionAim(){return unsigned(interactionAim.load());}
 void SetInteractionAim(unsigned value){if(value<=3)interactionAim.store(static_cast<DirectionConfig::Source>(value));}
 unsigned MovementResponse(){return movementResponse.load();}

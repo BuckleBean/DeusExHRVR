@@ -5,7 +5,7 @@
 #include <cstddef>
 #include "ButtonBindings.h"
 namespace Transport {
-inline constexpr uint32_t Magic=0x52485844, Version=16;
+inline constexpr uint32_t Magic=0x52485844, Version=17;
 struct alignas(8) MenuState {
     uint64_t gameTick,hostTick;
     uint32_t eligible,blocked,snapEnabled,request;
@@ -20,8 +20,9 @@ struct alignas(8) MenuState {
     uint32_t recenterRequest,recenterAck;
     uint32_t response,requestedResponse;
     uint32_t interaction,requestedInteraction,resetBindings,reserved;
+    float worldScale,requestedWorldScale,activeWorldScale,scaleReserved;
 };
-static_assert(sizeof(MenuState)==344);
+static_assert(sizeof(MenuState)==360);
 struct Quaternion {float x,y,z,w;};
 struct Vector {float x,y,z;};
 struct Pose {Quaternion orientation;Vector position;};
@@ -69,7 +70,7 @@ struct alignas(8) Header {
     uint32_t menuPadding;
     MenuState menu;
 };
-static_assert(sizeof(Header)==1008);
+static_assert(sizeof(Header)==1024);
 static_assert(offsetof(Header,tracking)==72 && offsetof(Header,rendered)==360);
 inline bool Compatible(const Header* h,DWORD pid) {
     return h && h->magic==Magic && h->version==Version && h->pid==pid;

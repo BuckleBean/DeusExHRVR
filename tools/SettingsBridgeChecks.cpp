@@ -5,6 +5,10 @@
 #include <fstream>
 #include <limits>
 namespace EngineCamera {
+float configuredScale=300;
+float ConfiguredWorldScale(){return configuredScale;}
+float ActiveWorldScale(){return 300;}
+void SetConfiguredWorldScale(float value){configuredScale=value;}
 unsigned interaction{};
 unsigned InteractionAim(){return interaction;}
 void SetInteractionAim(unsigned value){interaction=value;}
@@ -28,7 +32,7 @@ int wmain(int argc,wchar_t** argv) {
     assert(argc==2);std::filesystem::path dir=argv[1];std::filesystem::create_directories(dir);
     auto path=std::filesystem::absolute(dir/L"bridge-test.ini");
     {std::ofstream f(path);f<<"[VR]\nSnapTurn=1\nSnapTurnDegrees=30\nSnapTurnMouseCounts=300\n[Buttons]\nLeftX=Start\n";}
-    Transport::Header h{};GamepadBridge::SetChannel(&h);
+    Transport::Header h{};h.menu.requestedWorldScale=300;GamepadBridge::SetChannel(&h);
     wcscpy_s(GamepadBridge::configPath,path.c_str());GamepadBridge::LoadSnap();
     GamepadBridge::originalGet=RealGet;
     GamepadBridge::MenuTick(2);assert(h.menu.eligible&&h.menu.snapEnabled&&h.menu.degrees==30);
@@ -152,6 +156,17 @@ int wmain(int argc,wchar_t** argv) {
     assert(DirectionConfig::Read(path.c_str(),L"InteractionAim")==DirectionConfig::Source::Headset);
     h.menu.request=28;h.menu.hostTick=GetTickCount64();h.menu.requestedInteraction=4;
     GamepadBridge::MenuTick(2);assert(h.menu.result==2&&EngineCamera::interaction==1);
+    h.menu.request=29;h.menu.hostTick=GetTickCount64();h.menu.requestedInteraction=1;h.menu.resetBindings=0;h.menu.bindingMask=0;h.menu.requestedWorldScale=272.727f;
+    GamepadBridge::MenuTick(2);assert(h.menu.worldScale==272.727f&&h.menu.activeWorldScale==300);
+    // Calibration writes must not drop the pending scale.
+    SettingsWriter().Queue(path.c_str(),GamepadBridge::snapCounts);
+    for(int n=0;n<200&&h.menu.saved!=29;++n){Sleep(10);GamepadBridge::MenuTick(2);}
+    assert(h.menu.saved==29&&EngineCamera::ActiveWorldScale()==300);
+    wchar_t scaleText[40];GetPrivateProfileStringW(L"VR",L"WorldUnitsPerMetre",L"",scaleText,40,path.c_str());assert(std::abs(_wtof(scaleText)-272.727)<.001);
+    for(float bad : {0.f,1001.f,std::numeric_limits<float>::quiet_NaN()}){
+        ++h.menu.request;h.menu.hostTick=GetTickCount64();h.menu.requestedWorldScale=bad;
+        GamepadBridge::MenuTick(2);assert(h.menu.result==2&&EngineCamera::ConfiguredWorldScale()==272.727f);
+    }
     GamepadBridge::SetChannel(nullptr);
     printf("PASS %zu-bit actual bridge: request/ack/save/error, duplicate/stale/refused edits, calibration scaling, virtual/physical input and focus recovery\n",sizeof(void*)*8);
 }

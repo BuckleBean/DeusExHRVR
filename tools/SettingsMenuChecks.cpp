@@ -47,7 +47,7 @@ int wmain(int argc,wchar_t** argv) {
     auto diagonal=CameraMath::MovementResponse(1,1,true);assert(diagonal.strafe==1&&diagonal.walk==1);
     {SettingsMenu::State ui;Transport::MenuState gm{};gm.degrees=30;GamepadMapping::Input input{};input.active=true;
      ui.Update(true,true,true,1200,450,input,gm);input.rightTrigger=1;ui.Update(true,true,true,1200,450,input,gm);
-     input.rightTrigger=0;ui.Update(true,true,true,1000,435,input,gm);input.rightTrigger=1;ui.Update(true,true,true,1000,435,input,gm);
+     input.rightTrigger=0;ui.Update(true,true,true,1000,460,input,gm);input.rightTrigger=1;ui.Update(true,true,true,1000,460,input,gm);
      assert(ui.draftResponse==1&&ui.Dirty()&&!ui.request);
      ui.Submit();assert(ui.requestedResponse==1);
     }
@@ -65,6 +65,19 @@ int wmain(int argc,wchar_t** argv) {
      click(SettingsMenu::Entry);assert(!ui.draftReset&&ui.draftBindings==gm.bindings&&ui.draftInteraction==2);
      click(SettingsMenu::Remap);click(SettingsMenu::ResetBindings);click(SettingsMenu::Confirm);click(SettingsMenu::ListSave);
      assert(ui.requestedReset&&ui.requestedBindingMask==((1u<<ButtonBindings::Count)-1));
+    }
+    {SettingsMenu::State ui;Transport::MenuState gm{};gm.degrees=30;gm.worldScale=gm.activeWorldScale=300;
+     GamepadMapping::Input input{};input.active=true;
+     auto click=[&](SettingsMenu::Rect rect){input.rightTrigger=0;ui.Update(true,true,true,float(rect.x+30),float(rect.y+25),input,gm);input.rightTrigger=1;ui.Update(true,true,true,float(rect.x+30),float(rect.y+25),input,gm);};
+     click(SettingsMenu::Entry);assert(ui.draftScale==300&&!ui.Dirty());click(SettingsMenu::WorldScale);assert(ui.scalePage);
+     click(SettingsMenu::ScaleOriginal);assert(ui.draftScale==100&&!ui.request);
+     click(SettingsMenu::Back);assert(!ui.scalePage&&ui.open&&ui.draftScale==100);
+     click(SettingsMenu::Discard);click(SettingsMenu::Entry);assert(ui.draftScale==300);
+     click(SettingsMenu::WorldScale);click(SettingsMenu::ScalePlus);assert(ui.draftScale==310);
+     click(SettingsMenu::ScaleTested);assert(ui.draftScale==300);ui.draftScale=999;click(SettingsMenu::ScalePlus);assert(ui.draftScale==1000);
+     ui.draftScale=11;click(SettingsMenu::ScaleMinus);assert(ui.draftScale==10);
+     click(SettingsMenu::ScaleTested);click(SettingsMenu::ScaleMinus);click(SettingsMenu::Save);
+     assert(ui.requestedScale==290&&ui.saving&&gm.activeWorldScale==300);
     }
     float degrees=30;double counts=300;
     // Validate the diagnostic's native frame offsets and failed-read handling.
@@ -125,7 +138,7 @@ int wmain(int argc,wchar_t** argv) {
     assert(s.draft==75&&s.request==3);update(1000,303);assert(s.draft==75);
     in.rightX=0;update(1000,303);in.rightX=-.8f;update(1000,303);assert(s.draft==60);
     // Angle shortcut cannot accidentally edit while pointing at another setting.
-    in.rightX=0;update(1000,435);in.rightX=.8f;update(1000,435);assert(s.draft==60);
+    in.rightX=0;update(1000,460);in.rightX=.8f;update(1000,460);assert(s.draft==60);
     // The centered overlay blocks the native menu even outside its panel.
     in.rightX=0;in.rightTrigger=0;update(80,450);in.rightTrigger=.8f;update(80,450);
     assert(s.open&&s.blocked&&!s.nativeDown);
@@ -283,7 +296,8 @@ int wmain(int argc,wchar_t** argv) {
             assert(bright(SettingsMenu::Back)>100); // visible button and label
         }else assert(bright(SettingsMenu::Entry)>500);
     }
-    s.open=true;s.draftInteraction=s.originalInteraction=2;assert(draw.Save((out/L"menu-panel.bmp").c_str(),s,game));
+    s.open=true;s.draftScale=s.originalScale=game.worldScale=game.activeWorldScale=300;s.draftInteraction=s.originalInteraction=2;assert(draw.Save((out/L"menu-panel.bmp").c_str(),s,game));
+    s.scalePage=true;assert(draw.Save((out/L"menu-world-scale.bmp").c_str(),s,game));s.scalePage=false;
     s.draft=90;s.draftMovement=3;pixels=static_cast<const uint32_t*>(draw.Draw(s,game));assert(pixels);
     assert(bright(SettingsMenu::Save)>500&&bright(SettingsMenu::Discard)>500);
     assert(draw.Save((out/L"menu-dirty.bmp").c_str(),s,game));

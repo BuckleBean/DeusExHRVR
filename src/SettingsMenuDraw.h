@@ -64,6 +64,22 @@ public:
             Text(L"Your settings will not change.",240,530,1120,45);
             Button(SettingsMenu::Back,L"CANCEL",hovered(SettingsMenu::Back));
         }
+        else if(s.scalePage){
+            Text(L"WORLD SCALE",240,110,1120,55,true,true);
+            Text(L"Lower values make the world look larger. Higher values make it look smaller.",240,210,1120,45);
+            Text(L"Changes take effect after saving and restarting the game.",240,260,1120,45);
+            wchar_t value[40];swprintf_s(value,L"%.6g",double(s.draftScale));Text(value,560,330,480,70,true);
+            Button(SettingsMenu::ScaleMinus,L"-",!s.saving&&hovered(SettingsMenu::ScaleMinus));
+            Button(SettingsMenu::ScalePlus,L"+",!s.saving&&hovered(SettingsMenu::ScalePlus));
+            Text(L"Adjust in steps of 10",240,410,1120,40);
+            Button(SettingsMenu::ScaleOriginal,L"ORIGINAL DEFAULT: 100",!s.saving&&hovered(SettingsMenu::ScaleOriginal));
+            Button(SettingsMenu::ScaleTested,L"TESTED PRESET: 300",!s.saving&&hovered(SettingsMenu::ScaleTested));
+            wchar_t active[96];swprintf_s(active,L"Active this session: %.6g",double(game.activeWorldScale));Text(active,240,565,1120,45);
+            Text(s.saving?L"Saving...":s.committed&&game.result==3?L"Save failed. Choose Save & Back to retry.":L"Your current scale stays active until you restart.",240,685,1120,40);
+            Button(SettingsMenu::Back,L"SETTINGS",!s.saving&&hovered(SettingsMenu::Back));
+            if(s.Dirty())Button(SettingsMenu::Discard,s.committed?L"BACK":L"DISCARD & BACK",!s.saving&&hovered(SettingsMenu::Discard));
+            Button(SettingsMenu::Save,s.saving?L"SAVING...":s.Dirty()?L"SAVE & BACK":L"NO CHANGES",!s.saving&&s.Dirty()&&hovered(SettingsMenu::Save));
+        }
         else if(s.remapping) {
             Text(L"GAMEPLAY BUTTON MAPPING",240,105,770,55,true);
             Button(SettingsMenu::ResetBindings,L"RESTORE DEFAULTS",!s.saving&&hovered(SettingsMenu::ResetBindings));
@@ -109,24 +125,26 @@ public:
             }
         }
         else {
-            const wchar_t* heading=s.saving?L"SAVING...":s.committed&&game.result==3?L"SAVE FAILED - RETRY":s.committed&&game.result==2?L"CHANGE REFUSED":L"DEUS EX / VR SETTINGS";
+            const wchar_t* heading=s.saving?L"SAVING...":s.committed&&game.result==3?L"SAVE FAILED - RETRY":s.committed&&game.result==2?L"CHANGE REFUSED":L"VR SETTINGS";
             Text(heading,240,110,1120,55,true,true);
             Text(L"Turning",240,210,470,50,false,true);
-            Text(s.draftSnap?L"Snap-turn angle":L"Snap-turn angle (inactive)",240,278,470,50,false,true);
-            Text(L"Movement direction",240,346,470,50,false,true);
-            Text(L"Walking response",240,414,470,50,false,true);
-            Text(L"Interaction aim",240,482,470,50,false,true);
-            Text(L"Gameplay controls",240,550,470,50,false,true);
-            Text(L"Recenter view",240,618,470,50,false,true);
+            Text(s.draftSnap?L"Snap-turn angle":L"Snap-turn angle (inactive)",240,267,470,50,false,true);
+            Text(L"Movement direction",240,324,470,50,false,true);
+            Text(L"Walking response",240,438,470,50,false,true);
+            Text(L"Interaction aim",240,381,470,50,false,true);
+            Text(L"World scale",240,495,470,50,false,true);
+            wchar_t scaleLabel[64];swprintf_s(scaleLabel,L"%.6g / ADJUST",double(s.draftScale));Button(SettingsMenu::WorldScale,scaleLabel,!s.saving&&hovered(SettingsMenu::WorldScale));
+            Text(L"Gameplay controls",240,552,470,50,false,true);
+            Text(L"Recenter view",240,609,470,50,false,true);
             Button(SettingsMenu::TurnMode,s.draftSnap?L"SNAP":L"SMOOTH",!s.saving&&hovered(SettingsMenu::TurnMode));
-            wchar_t value[40];swprintf_s(value,L"%.6g\u00b0",double(s.draft));Text(value,870,278,310,50,true);
+            wchar_t value[40];swprintf_s(value,L"%.6g\u00b0",double(s.draft));Text(value,870,267,310,50,true);
             Button(SettingsMenu::Minus,L"-",s.draftSnap&&!s.saving&&hovered(SettingsMenu::Minus));Button(SettingsMenu::Plus,L"+",s.draftSnap&&!s.saving&&hovered(SettingsMenu::Plus));
             Button(SettingsMenu::Movement,s.draftMovement==1?L"HEAD":s.draftMovement==3?L"LEFT HAND":s.draftMovement==2?L"RIGHT HAND":L"FROM CONFIG",!s.saving&&hovered(SettingsMenu::Movement));
             Button(SettingsMenu::Response,s.draftResponse?L"GENTLE":L"NORMAL",!s.saving&&hovered(SettingsMenu::Response));
             Button(SettingsMenu::Interaction,s.draftInteraction==1?L"HEAD":s.draftInteraction==2?L"RIGHT HAND":L"FROM CONFIG",!s.saving&&hovered(SettingsMenu::Interaction));
             Button(SettingsMenu::Remap,L"BUTTON REMAPPING",!s.saving&&hovered(SettingsMenu::Remap));
             Button(SettingsMenu::Recenter,L"RECENTER (3 SECONDS)",!s.saving&&hovered(SettingsMenu::Recenter));
-            Text(s.Dirty()?L"Changes apply when you choose Save & Back.":L"Select a value to change it.",240,685,1120,40);
+            Text(s.Dirty()?L"Changes apply when you choose Save & Back.":game.worldScale!=game.activeWorldScale?L"World scale saved. Restart the game to apply it.":L"Select a value to change it.",240,685,1120,40);
             if(s.Dirty())Button(SettingsMenu::Discard,s.committed?L"BACK":L"DISCARD & BACK",!s.saving&&hovered(SettingsMenu::Discard));
             else Button(SettingsMenu::Back,L"BACK",hovered(SettingsMenu::Back));
             Button(SettingsMenu::Save,s.saving?L"SAVING...":s.Dirty()?L"SAVE & BACK":L"NO CHANGES",!s.saving&&s.Dirty()&&hovered(SettingsMenu::Save));
