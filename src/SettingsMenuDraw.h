@@ -99,7 +99,7 @@ public:
         else {
             const wchar_t* heading=s.saving?L"SAVING...":s.committed&&game.result==3?L"SAVE FAILED - RETRY":s.committed&&game.result==2?L"CHANGE REFUSED":L"DEUS EX / VR SETTINGS";
             Text(heading,1040,120,490,60,true);
-            Button(SettingsMenu::Interaction,s.draftInteraction==1?L"INTERACTION AIM: HEAD":s.draftInteraction==2?L"INTERACTION AIM: RIGHT HAND":L"INTERACTION AIM: FROM CONFIG",!s.saving&&hovered(SettingsMenu::Interaction));
+            Button(SettingsMenu::Interaction,s.draftInteraction==1?L"INTERACT AIM: HEAD":s.draftInteraction==2?L"INTERACT AIM: RIGHT HAND":L"INTERACT AIM: FROM CONFIG",!s.saving&&hovered(SettingsMenu::Interaction));
             Button(SettingsMenu::Response,s.draftResponse?L"WALK RESPONSE: GENTLE":L"WALK RESPONSE: NORMAL",!s.saving&&hovered(SettingsMenu::Response));
             Button(SettingsMenu::TurnMode,s.draftSnap?L"TURNING: SNAP":L"TURNING: SMOOTH",!s.saving&&hovered(SettingsMenu::TurnMode));
             Text(s.draftSnap?L"Snap-turn angle":L"Snap angle (inactive)",1070,380,430,40);
