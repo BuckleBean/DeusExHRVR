@@ -283,7 +283,7 @@ int wmain(int argc,wchar_t** argv) {
             assert(bright(SettingsMenu::Back)>100); // visible button and label
         }else assert(bright(SettingsMenu::Entry)>500);
     }
-    s.open=true;s.draftInteraction=2;assert(draw.Save((out/L"menu-panel.bmp").c_str(),s,game));
+    s.open=true;s.draftInteraction=s.originalInteraction=2;assert(draw.Save((out/L"menu-panel.bmp").c_str(),s,game));
     s.draft=90;s.draftMovement=3;pixels=static_cast<const uint32_t*>(draw.Draw(s,game));assert(pixels);
     assert(bright(SettingsMenu::Save)>500&&bright(SettingsMenu::Discard)>500);
     assert(draw.Save((out/L"menu-dirty.bmp").c_str(),s,game));
