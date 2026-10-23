@@ -26,10 +26,18 @@ public:
         RECT r{x,y,x+w,y+h};if(!DrawTextW(dc,text,-1,&r,(left?DT_LEFT:DT_CENTER)|DT_VCENTER|DT_SINGLELINE|DT_NOPREFIX|DT_END_ELLIPSIS))drawError=true;SelectObject(dc,old);
     }
     void Button(SettingsMenu::Rect r,const wchar_t* label,bool hover) {
-        auto brush=CreateSolidBrush(hover?RGB(119,78,12):RGB(35,28,16));auto pen=CreatePen(PS_SOLID,2,RGB(210,150,30));
+        auto brush=CreateSolidBrush(hover?RGB(151,106,22):RGB(34,28,15));auto pen=CreatePen(PS_SOLID,2,hover?RGB(241,188,68):RGB(115,89,34));
         auto ob=SelectObject(dc,brush),op=SelectObject(dc,pen);
         POINT p[]={{r.x,r.y},{r.x+r.w-20,r.y},{r.x+r.w,r.y+20},{r.x+r.w,r.y+r.h},{r.x+20,r.y+r.h},{r.x,r.y+r.h-20}};
         if(!Polygon(dc,p,6))drawError=true;SelectObject(dc,ob);SelectObject(dc,op);DeleteObject(brush);DeleteObject(pen);
+        // Short diagonal gold hatch, fading toward the right like the native UI.
+        const int span=std::min(r.w-40,220);
+        for(int i=0;i<span;i+=8){
+            float fade=1.f-float(i)/span;int v=int((hover?45:28)*fade);
+            auto stripe=CreatePen(PS_SOLID,1,hover?RGB(151+v,106+v,22+v/2):RGB(34+v,28+v,15+v/2));
+            auto old=SelectObject(dc,stripe);MoveToEx(dc,r.x+10+i,r.y+5,nullptr);LineTo(dc,r.x+18+i,r.y+13);
+            SelectObject(dc,old);DeleteObject(stripe);
+        }
         Text(label,r.x,r.y,r.w,r.h);
     }
     const void* Draw(const SettingsMenu::State& s,const Transport::MenuState& live) {
@@ -41,15 +49,19 @@ public:
         memset(pixels,0,SettingsMenu::Width*SettingsMenu::Height*4);
         if(!s.visible)return pixels;
         auto area=s.Area();
-        RECT r{area.x,area.y,area.x+area.w,area.y+area.h};auto b=CreateSolidBrush(RGB(16,17,14));FillRect(dc,&r,b);DeleteObject(b);
+        if(s.open){
+            auto data=static_cast<uint32_t*>(pixels);std::fill(data,data+SettingsMenu::Width*SettingsMenu::Height,0x90000000u);
+            RECT r{area.x,area.y,area.x+area.w,area.y+area.h};auto b=CreateSolidBrush(RGB(19,18,13));FillRect(dc,&r,b);DeleteObject(b);
+            auto edge=CreateSolidBrush(RGB(115,89,34));FrameRect(dc,&r,edge);DeleteObject(edge);
+        }
         auto hovered=[&](SettingsMenu::Rect rect){return s.pointer&&rect.Has(s.x,s.y);};
         if(!s.open)Button(SettingsMenu::Entry,L"VR SETTINGS",hovered(SettingsMenu::Entry));
         else if(s.recenterAt){
-            Text(L"RECENTER VIEW",1040,270,490,60,true);
-            Text(L"Face forward and get comfortable.",1040,365,490,50);
+            Text(L"RECENTER VIEW",240,120,1120,60,true);
+            Text(L"Face forward and get comfortable.",240,300,1120,50);
             wchar_t seconds[8];swprintf_s(seconds,L"%d",s.recenterSeconds);
-            Text(seconds,1070,440,430,90,true);
-            Text(L"Your settings will not change.",1040,555,490,45);
+            Text(seconds,240,390,1120,90,true);
+            Text(L"Your settings will not change.",240,530,1120,45);
             Button(SettingsMenu::Back,L"CANCEL",hovered(SettingsMenu::Back));
         }
         else if(s.remapping) {
@@ -69,7 +81,7 @@ public:
             Button(SettingsMenu::ListDiscard,s.committed?L"BACK":L"DISCARD & BACK",!s.saving&&hovered(SettingsMenu::ListDiscard));
             Button(SettingsMenu::ListSave,s.saving?L"SAVING...":s.Dirty()?L"SAVE & BACK":L"NO CHANGES",!s.saving&&s.Dirty()&&hovered(SettingsMenu::ListSave));
             if(s.listening||s.confirming||s.resetConfirm){
-                RECT dialog{210,215,1390,685};auto brush=CreateSolidBrush(RGB(16,17,14));FillRect(dc,&dialog,brush);DeleteObject(brush);
+                RECT dialog{210,170,1390,815};auto brush=CreateSolidBrush(RGB(16,17,14));FillRect(dc,&dialog,brush);DeleteObject(brush);
                 brush=CreateSolidBrush(RGB(210,150,30));FrameRect(dc,&dialog,brush);DeleteObject(brush);
                 if(s.resetConfirm){
                     Text(L"RESTORE DEFAULT BINDINGS?",300,290,1000,60,true);
@@ -98,24 +110,34 @@ public:
         }
         else {
             const wchar_t* heading=s.saving?L"SAVING...":s.committed&&game.result==3?L"SAVE FAILED - RETRY":s.committed&&game.result==2?L"CHANGE REFUSED":L"DEUS EX / VR SETTINGS";
-            Text(heading,1040,120,490,60,true);
-            Button(SettingsMenu::Interaction,s.draftInteraction==1?L"INTERACT AIM: HEAD":s.draftInteraction==2?L"INTERACT AIM: RIGHT HAND":L"INTERACT AIM: FROM CONFIG",!s.saving&&hovered(SettingsMenu::Interaction));
-            Button(SettingsMenu::Response,s.draftResponse?L"WALK RESPONSE: GENTLE":L"WALK RESPONSE: NORMAL",!s.saving&&hovered(SettingsMenu::Response));
-            Button(SettingsMenu::TurnMode,s.draftSnap?L"TURNING: SNAP":L"TURNING: SMOOTH",!s.saving&&hovered(SettingsMenu::TurnMode));
-            Text(s.draftSnap?L"Snap-turn angle":L"Snap angle (inactive)",1070,380,430,40);
-            wchar_t value[40];swprintf_s(value,L"%.6g\u00b0",double(s.draft));Text(value,1180,430,210,80,true);
+            Text(heading,240,110,1120,55,true,true);
+            Text(L"Turning",240,210,470,50,false,true);
+            Text(s.draftSnap?L"Snap-turn angle":L"Snap-turn angle (inactive)",240,278,470,50,false,true);
+            Text(L"Movement direction",240,346,470,50,false,true);
+            Text(L"Walking response",240,414,470,50,false,true);
+            Text(L"Interaction aim",240,482,470,50,false,true);
+            Text(L"Gameplay controls",240,550,470,50,false,true);
+            Text(L"Recenter view",240,618,470,50,false,true);
+            Button(SettingsMenu::TurnMode,s.draftSnap?L"SNAP":L"SMOOTH",!s.saving&&hovered(SettingsMenu::TurnMode));
+            wchar_t value[40];swprintf_s(value,L"%.6g\u00b0",double(s.draft));Text(value,870,278,310,50,true);
             Button(SettingsMenu::Minus,L"-",s.draftSnap&&!s.saving&&hovered(SettingsMenu::Minus));Button(SettingsMenu::Plus,L"+",s.draftSnap&&!s.saving&&hovered(SettingsMenu::Plus));
-            Button(SettingsMenu::Movement,s.draftMovement==1?L"MOVEMENT: HEAD":s.draftMovement==3?L"MOVEMENT: LEFT HAND":s.draftMovement==2?L"MOVEMENT: RIGHT HAND":L"MOVEMENT: FROM CONFIG",!s.saving&&hovered(SettingsMenu::Movement));
+            Button(SettingsMenu::Movement,s.draftMovement==1?L"HEAD":s.draftMovement==3?L"LEFT HAND":s.draftMovement==2?L"RIGHT HAND":L"FROM CONFIG",!s.saving&&hovered(SettingsMenu::Movement));
+            Button(SettingsMenu::Response,s.draftResponse?L"GENTLE":L"NORMAL",!s.saving&&hovered(SettingsMenu::Response));
+            Button(SettingsMenu::Interaction,s.draftInteraction==1?L"HEAD":s.draftInteraction==2?L"RIGHT HAND":L"FROM CONFIG",!s.saving&&hovered(SettingsMenu::Interaction));
             Button(SettingsMenu::Remap,L"BUTTON REMAPPING",!s.saving&&hovered(SettingsMenu::Remap));
-            if(s.Dirty()){
-                Button(SettingsMenu::Save,s.saving?L"SAVING...":L"SAVE & BACK",!s.saving&&hovered(SettingsMenu::Save));
-                Button(SettingsMenu::Discard,s.committed?L"BACK":L"DISCARD & BACK",!s.saving&&hovered(SettingsMenu::Discard));
-            }else Button(SettingsMenu::Back,L"BACK",hovered(SettingsMenu::Back));
             Button(SettingsMenu::Recenter,L"RECENTER (3 SECONDS)",!s.saving&&hovered(SettingsMenu::Recenter));
+            Text(s.Dirty()?L"Changes apply when you choose Save & Back.":L"Select a value to change it.",240,685,1120,40);
+            if(s.Dirty())Button(SettingsMenu::Discard,s.committed?L"BACK":L"DISCARD & BACK",!s.saving&&hovered(SettingsMenu::Discard));
+            else Button(SettingsMenu::Back,L"BACK",hovered(SettingsMenu::Back));
+            Button(SettingsMenu::Save,s.saving?L"SAVING...":s.Dirty()?L"SAVE & BACK":L"NO CHANGES",!s.saving&&s.Dirty()&&hovered(SettingsMenu::Save));
         }
         if(!GdiFlush()||drawError)return nullptr;
         auto data=static_cast<uint32_t*>(pixels);
-        for(int y=area.y;y<area.y+area.h;++y)for(int x=area.x;x<area.x+area.w;++x)data[y*SettingsMenu::Width+x]|=0xff000000;
+        for(int y=std::max(0,area.y-2);y<std::min(SettingsMenu::Height,area.y+area.h+2);++y)for(int x=std::max(0,area.x-2);x<std::min(SettingsMenu::Width,area.x+area.w+2);++x){
+            auto& pixel=data[y*SettingsMenu::Width+x];
+            if(s.open&&area.Has(float(x),float(y)))pixel|=0xff000000;
+            else if(!s.open&&pixel)pixel|=0xff000000; // only the shortcut silhouette is opaque
+        }
         // The native cursor continues moving underneath the XR panel. Draw its
         // gold-arrow counterpart only where this opaque layer would cover it.
         if(s.pointer&&area.Has(s.x,s.y)) {
@@ -124,6 +146,10 @@ public:
             auto brush=CreateSolidBrush(RGB(239,171,35));auto pen=CreatePen(PS_SOLID,3,RGB(116,72,16));
             auto ob=SelectObject(dc,brush),op=SelectObject(dc,pen);
             Polygon(dc,arrow,4);SelectObject(dc,ob);SelectObject(dc,op);DeleteObject(brush);DeleteObject(pen);
+            POINT light[]={{px+3,py+3},{px+35,py+18},{px+22,py+23}};
+            POINT shade[]={{px+3,py+3},{px+22,py+23},{px+18,py+35}};
+            auto facet=[&](POINT* points,COLORREF color){auto fill=CreateSolidBrush(color);auto old=SelectObject(dc,fill);auto line=SelectObject(dc,GetStockObject(NULL_PEN));Polygon(dc,points,3);SelectObject(dc,old);SelectObject(dc,line);DeleteObject(fill);};
+            facet(light,RGB(255,209,99));facet(shade,RGB(191,119,18));
             if(!GdiFlush())return nullptr;
             // GDI leaves alpha unset. Cover the cursor's silhouette, including
             // the portion extending past the panel edge, without a square halo.

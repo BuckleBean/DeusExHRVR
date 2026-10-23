@@ -21,8 +21,8 @@ int wmain(int argc,wchar_t** argv) {
     for(int cancel=0;cancel<4;++cancel){
         SettingsMenu::State rc;Transport::MenuState gm{};GamepadMapping::Input input{};input.active=true;
         rc.open=true;rc.draft=45;rc.original=30;
-        rc.Update(true,true,true,1200,810,input,gm,100);
-        input.rightTrigger=1;rc.Update(true,true,true,1200,810,input,gm,200);
+        rc.Update(true,true,true,1000,643,input,gm,100);
+        input.rightTrigger=1;rc.Update(true,true,true,1000,643,input,gm,200);
         assert(rc.recenterAt==3200&&rc.recenterSeconds==3&&!rc.request);
         input.rightTrigger=0;rc.Update(true,true,false,0,0,input,gm,1200);
         assert(rc.recenterSeconds==2&&!rc.recenterPulse);
@@ -47,7 +47,7 @@ int wmain(int argc,wchar_t** argv) {
     auto diagonal=CameraMath::MovementResponse(1,1,true);assert(diagonal.strafe==1&&diagonal.walk==1);
     {SettingsMenu::State ui;Transport::MenuState gm{};gm.degrees=30;GamepadMapping::Input input{};input.active=true;
      ui.Update(true,true,true,1200,450,input,gm);input.rightTrigger=1;ui.Update(true,true,true,1200,450,input,gm);
-     input.rightTrigger=0;ui.Update(true,true,true,1200,280,input,gm);input.rightTrigger=1;ui.Update(true,true,true,1200,280,input,gm);
+     input.rightTrigger=0;ui.Update(true,true,true,1000,435,input,gm);input.rightTrigger=1;ui.Update(true,true,true,1000,435,input,gm);
      assert(ui.draftResponse==1&&ui.Dirty()&&!ui.request);
      ui.Submit();assert(ui.requestedResponse==1);
     }
@@ -101,45 +101,50 @@ int wmain(int argc,wchar_t** argv) {
     in.rightTrigger=.8f;update(1200,450);assert(s.open&&s.blocked);
     // Edits stay local, including rapid clicks, until explicit save.
     auto click=[&](float px,float py){in.rightTrigger=0;update(px,py);in.rightTrigger=.8f;update(px,py);};
-    update(1450,465);assert(!s.request);
-    for(int n=0;n<4;++n)click(1450,465);
+    update(1240,303);assert(!s.request);
+    for(int n=0;n<4;++n)click(1240,303);
     assert(s.draft==90&&s.request==0&&game.degrees==30);
-    click(1200,730);assert(!s.open&&s.request==0); // discard
+    click(700,770);assert(!s.open&&s.request==0); // discard
     click(1200,450);assert(s.open&&s.draft==30);
-    click(1450,465);click(1200,650);
+    click(1240,303);click(1100,770);
     assert(s.open&&s.saving&&s.request==1&&s.requested==45);
-    click(1450,465);assert(s.request==1&&s.draft==45); // pending blocks edits
+    click(1240,303);assert(s.request==1&&s.draft==45); // pending blocks edits
     game.acknowledged=game.saved=1;game.result=0;game.degrees=45;
-    in.rightTrigger=0;update(1200,650);assert(!s.open&&!s.saving);
-    click(1200,450);click(1450,465);click(1200,650);
-    game.acknowledged=2;game.result=3;update(1200,650);
+    in.rightTrigger=0;update(1100,770);assert(!s.open&&!s.saving);
+    click(1200,450);click(1240,303);click(1100,770);
+    game.acknowledged=2;game.result=3;update(1100,770);
     assert(s.open&&!s.saving&&s.committed); // failure stays open, no false success
-    click(1200,650);assert(s.request==3&&s.saving); // explicit retry
+    click(1100,770);assert(s.request==3&&s.saving); // explicit retry
     game.acknowledged=game.saved=3;game.result=0;game.degrees=60;
-    in.rightTrigger=0;update(1200,650);assert(!s.open);
-    click(1200,450);click(1450,465);
+    in.rightTrigger=0;update(1100,770);assert(!s.open);
+    click(1200,450);click(1240,303);
     s.Update(false,false,false,0,0,in,game);assert(!s.open&&s.draft==s.original&&s.request==3);
     update(1200,450);assert(!s.open); // held trigger on refocus
     click(1200,450);assert(s.open&&s.draft==60);
-    in.rightTrigger=0;update(1250,450);in.rightX=.8f;update(1250,450);
-    assert(s.draft==75&&s.request==3);update(1250,450);assert(s.draft==75);
-    in.rightX=0;update(1250,450);in.rightX=-.8f;update(1250,450);assert(s.draft==60);
+    in.rightTrigger=0;update(1000,303);in.rightX=.8f;update(1000,303);
+    assert(s.draft==75&&s.request==3);update(1000,303);assert(s.draft==75);
+    in.rightX=0;update(1000,303);in.rightX=-.8f;update(1000,303);assert(s.draft==60);
+    // Angle shortcut cannot accidentally edit while pointing at another setting.
+    in.rightX=0;update(1000,435);in.rightX=.8f;update(1000,435);assert(s.draft==60);
+    // The centered overlay blocks the native menu even outside its panel.
+    in.rightX=0;in.rightTrigger=0;update(80,450);in.rightTrigger=.8f;update(80,450);
+    assert(s.open&&s.blocked&&!s.nativeDown);
     // Mode edits are drafts; smooth preserves angle and disables angle edits.
     s={};in={};in.active=true;game={};game.snapEnabled=1;game.degrees=30;
-    click(1200,450);click(1200,350);assert(!s.draftSnap&&s.request==0);
-    click(1450,465);assert(s.draft==30);click(1200,730);assert(!s.open&&s.request==0);
-    click(1200,450);assert(s.draftSnap);click(1200,350);click(1200,650);
+    click(1200,450);click(1000,235);assert(!s.draftSnap&&s.request==0);
+    click(1240,303);assert(s.draft==30);click(700,770);assert(!s.open&&s.request==0);
+    click(1200,450);assert(s.draftSnap);click(1000,235);click(1100,770);
     assert(s.saving&&s.request==1&&!s.requestedSnap&&s.requested==30);
-    game.acknowledged=game.saved=1;game.snapEnabled=0;in.rightTrigger=0;update(1200,650);
-    click(1200,450);assert(!s.draftSnap);click(1200,350);click(1450,465);
-    assert(s.draftSnap&&s.draft==45);click(1200,650);assert(s.requestedSnap&&s.requested==45);
+    game.acknowledged=game.saved=1;game.snapEnabled=0;in.rightTrigger=0;update(1100,770);
+    click(1200,450);assert(!s.draftSnap);click(1000,235);click(1240,303);
+    assert(s.draftSnap&&s.draft==45);click(1100,770);assert(s.requestedSnap&&s.requested==45);
     // Movement choices never offer native mode; discard and save remain explicit.
     s={};in={};in.active=true;game={};game.snapEnabled=1;game.degrees=30;game.movement=1;
-    click(1200,450);click(1200,540);assert(s.draftMovement==3&&s.request==0);
-    click(1200,730);click(1200,450);assert(s.draftMovement==1);
-    click(1200,540);click(1200,650);assert(s.requestedMovement==3&&s.saving);
-    game.acknowledged=game.saved=s.request;game.movement=3;in.rightTrigger=0;update(1200,650);
-    click(1200,450);click(1200,540);assert(s.draftMovement==2);click(1200,540);assert(s.draftMovement==1);
+    click(1200,450);click(1000,370);assert(s.draftMovement==3&&s.request==0);
+    click(700,770);click(1200,450);assert(s.draftMovement==1);
+    click(1000,370);click(1100,770);assert(s.requestedMovement==3&&s.saving);
+    game.acknowledged=game.saved=s.request;game.movement=3;in.rightTrigger=0;update(1100,770);
+    click(1200,450);click(1000,370);assert(s.draftMovement==2);click(1000,370);assert(s.draftMovement==1);
     Transport::Tracking directions{};directions.leftController.valid=1;directions.leftController.aim.position.x=-1;
     directions.rightController.valid=1;directions.rightController.aim.position.x=1;
     assert(DirectionConfig::Aim(DirectionConfig::Source::LeftController,directions)->aim.position.x==-1);
@@ -153,33 +158,33 @@ int wmain(int argc,wchar_t** argv) {
     game.bindings[0]=XINPUT_GAMEPAD_RIGHT_SHOULDER;game.holdMs[0]=300;game.bindings[10]=1u<<19;
     game.bindings[2]=XINPUT_GAMEPAD_START;game.holdMs[2]=500;game.bindings[12]=1u<<18;
     game.bindings[4]=game.bindings[3]=XINPUT_GAMEPAD_Y;game.bindings[18]=XINPUT_GAMEPAD_A;
-    click(1200,450);click(1200,590);assert(s.remapping&&s.Area().x==180);
+    click(1200,450);click(1000,575);assert(s.remapping&&s.Area().x==180);
     click(1000,240);assert(s.listening&&!s.captureReady&&!s.confirming); // Jump row
     update(1000,240);assert(s.listening);in.rightTrigger=0;update(1000,240);assert(s.captureReady);
     in.b=true;update(1000,240);assert(s.pressedSlot==1);in.b=false;update(1000,240);
     assert(s.confirming&&s.candidate==1&&s.draftBindings==game.bindings&&!s.request);
-    click(1000,640);assert(!s.confirming&&s.draftBindings[1]==XINPUT_GAMEPAD_A&&!s.draftBindings[18]);
+    click(1100,770);assert(!s.confirming&&s.draftBindings[1]==XINPUT_GAMEPAD_A&&!s.draftBindings[18]);
     assert(!s.nativeDown&&s.blocked);click(700,770);assert(!s.open&&!s.request); // discard
-    click(1200,450);click(1200,590);assert(s.draftBindings==game.bindings);
+    click(1200,450);click(1000,575);assert(s.draftBindings==game.bindings);
     // Capturing a configured tap preserves its hold assignment.
     click(1000,240);in.rightTrigger=0;s.Update(true,true,true,1000,240,in,game,1000);
     in.x=true;s.Update(true,true,true,1000,240,in,game,1100);
     in.x=false;s.Update(true,true,true,1000,240,in,game,1200);
-    assert(s.confirming&&s.candidate==12);click(1000,640);
+    assert(s.confirming&&s.candidate==12);click(1100,770);
     assert(s.draftBindings[12]==XINPUT_GAMEPAD_A&&s.draftBindings[2]==XINPUT_GAMEPAD_START);
     click(1100,770);assert(s.saving&&(s.requestedBindingMask&(1u<<12))&&(s.requestedBindingMask&(1u<<18)));
     game.acknowledged=game.saved=s.request;in.rightTrigger=0;update(1100,770);assert(!s.open);
     // Existing duplicate assignments are visible and unchanged until confirmed.
-    s={};in={};in.active=true;click(1200,450);click(1200,590);
+    s={};in={};in.active=true;click(1200,450);click(1000,575);
     auto duplicates=SettingsMenu::Assigned(XINPUT_GAMEPAD_Y,s.draftBindings,game);
     assert(duplicates.find(L"LEFT Y")!=std::wstring::npos&&duplicates.find(L"LEFT GRIP")!=std::wstring::npos);
     click(1000,240);in.rightTrigger=0;update(1000,240);in.a=true;
     s.Update(true,true,true,1000,240,in,game,1000);in.a=false;s.Update(true,true,true,1000,240,in,game,1400);
-    assert(s.confirming&&s.candidate==0);click(500,640);assert(!s.confirming&&s.draftBindings==game.bindings);
+    assert(s.confirming&&s.candidate==0);click(300,770);assert(!s.confirming&&s.draftBindings==game.bindings);
     // The pointer trigger can itself be captured, but cannot click through.
     click(1000,240);in.rightTrigger=0;update(1000,240);in.rightTrigger=.8f;update(1000,240);
     in.rightTrigger=0;update(1000,240);assert(s.confirming&&s.candidate==9&&!s.nativeDown);
-    click(500,640);click(1000,240);in.rightTrigger=0;update(1000,240);
+    click(300,770);click(1000,240);in.rightTrigger=0;update(1000,240);
     in.leftClick=in.rightClick=true;update(1000,240);assert(!s.captureReady&&!s.confirming);
     in.leftClick=in.rightClick=false;update(1000,240);in.menu=true;update(1000,240);assert(!s.listening&&!s.confirming);
     in.menu=false;update(1000,240);
@@ -187,7 +192,7 @@ int wmain(int argc,wchar_t** argv) {
     in.a=false;in.active=false;update(1000,240);assert(!s.listening&&!s.confirming); // tracking/input loss cannot bind
     in.active=true;update(1000,240);
     click(1000,240);in.rightTrigger=0;update(1000,240);in.rightY=.8f;update(1000,240);
-    in.rightY=0;update(1000,240);assert(s.confirming&&s.candidate==18);click(500,640);
+    in.rightY=0;update(1000,240);assert(s.confirming&&s.candidate==18);click(300,770);
     for(int i=0;i<20;++i)click(1350,650);assert(s.page==SettingsMenu::Actions-SettingsMenu::Rows);
     click(1000,240);s.Update(false,false,false,0,0,in,game);assert(!s.open&&!s.listening&&!s.confirming);
     // Native-menu hover and click route independently of the VR panel.
@@ -248,18 +253,21 @@ int wmain(int argc,wchar_t** argv) {
     wchar_t target[32];GetPrivateProfileStringW(L"Buttons",L"LeftX",L"",target,32,ini.c_str());assert(!wcscmp(target,L"A"));
     assert(GetPrivateProfileIntW(L"VR",L"SnapTurnMouseCounts",0,ini.c_str())==601);
     SettingsMenuDraw draw;s={};s.visible=true;s.draftMovement=s.originalMovement=1;s.draftSnap=s.originalSnap=true;s.draft=s.original=30;game={};game.snapEnabled=1;game.degrees=30;
-    assert(draw.Save((out/L"menu-entry.bmp").c_str(),s,game));s.open=true;s.pointer=true;s.x=1450;s.y=465;
+    assert(draw.Save((out/L"menu-entry.bmp").c_str(),s,game));
+    auto entryPixels=static_cast<const uint32_t*>(draw.Draw(s,game));
+    assert(entryPixels[(SettingsMenu::Entry.y+SettingsMenu::Entry.h-2)*SettingsMenu::Width+SettingsMenu::Entry.x+2]==0);
+    assert(SettingsMenu::Panel.x==SettingsMenu::ListPanel.x&&SettingsMenu::Panel.w==SettingsMenu::ListPanel.w);s.open=true;s.pointer=true;s.x=1240;s.y=303;
     assert(draw.Save((out/L"menu-panel.bmp").c_str(),s,game));
     auto pixels=static_cast<const uint32_t*>(draw.Draw(s,game));
-    assert(pixels[0]==0);assert((pixels[300*SettingsMenu::Width+1050]>>24)==255);
+    assert(pixels[0]==0x90000000u);assert((pixels[300*SettingsMenu::Width+1050]>>24)==255);
     // Pointer remains visible during the approach, outside either clickable area.
     for(bool panelOpen : {false,true}){
-        s.open=panelOpen;s.x=800;s.y=450;
+        s.open=panelOpen;s.x=80;s.y=450;
         pixels=static_cast<const uint32_t*>(draw.Draw(s,game));assert(pixels);
-        assert(pixels[450*SettingsMenu::Width+800]==0); // native arrow owns regular menu
-        assert(pixels[440*SettingsMenu::Width+800]==0);
+        assert(pixels[450*SettingsMenu::Width+80]==(panelOpen?0x90000000u:0u)); // native arrow owns regular menu
+        assert(pixels[440*SettingsMenu::Width+80]==(panelOpen?0x90000000u:0u));
     }
-    s.x=1450;s.y=465;
+    s.x=1240;s.y=303;
     // A successful GDI API call alone does not prove the labels reached the DIB.
     auto bright=[&](SettingsMenu::Rect rect){
         unsigned count=0;
@@ -270,9 +278,9 @@ int wmain(int argc,wchar_t** argv) {
     for(int frame=0;frame<20;++frame){
         s.open=(frame%2)==0;pixels=static_cast<const uint32_t*>(draw.Draw(s,game));assert(pixels);
         if(s.open){
-            assert(bright({1040,185,490,60})>500); // title text
-            assert(bright({1180,430,210,80})>100); // numeric value
-            assert(bright(SettingsMenu::Back)>500); // visible button and label
+            assert(bright({240,110,1120,55})>500); // title text
+            assert(bright({870,278,310,50})>100); // numeric value
+            assert(bright(SettingsMenu::Back)>100); // visible button and label
         }else assert(bright(SettingsMenu::Entry)>500);
     }
     s.open=true;s.draftInteraction=2;assert(draw.Save((out/L"menu-panel.bmp").c_str(),s,game));

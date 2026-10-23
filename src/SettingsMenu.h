@@ -8,16 +8,14 @@
 namespace SettingsMenu {
 constexpr int Width=1600,Height=900;
 struct Rect {int x,y,w,h; bool Has(float px,float py) const {return px>=x&&py>=y&&px<x+w&&py<y+h;}};
-inline constexpr Rect Entry{1080,420,410,70},Panel{1020,110,530,740};
-inline constexpr Rect Interaction{1070,200,430,45},ResetBindings{1040,110,320,45};
-inline constexpr Rect Response{1070,255,430,50};
-inline constexpr Rect Recenter{1070,790,430,45};
-inline constexpr Rect Movement{1070,520,430,45};
-inline constexpr Rect Remap{1070,575,430,40};
-inline constexpr Rect ListPanel{180,90,1240,740};
+inline constexpr Rect Entry{1080,420,410,70},Panel{180,90,1240,740};
+inline constexpr Rect ListPanel=Panel;
 inline constexpr Rect ListSave{940,740,420,60},ListDiscard{490,740,420,60},ListBack{220,740,240,60};
+inline constexpr Rect Interaction{760,482,530,50},ResetBindings{1040,110,320,45};
+inline constexpr Rect Response{760,414,530,50},Recenter{760,618,530,50};
+inline constexpr Rect Movement{760,346,530,50},Remap{760,550,530,50};
 inline constexpr Rect PageUp{1320,220,60,60},PageDown{1320,620,60,60};
-inline constexpr Rect Confirm{810,610,420,65},Cancel{370,610,420,65};
+inline constexpr Rect Confirm=ListSave,Cancel=ListBack;
 inline constexpr int Rows=8,Actions=18;
 inline Rect Row(int index){return {760,220+index*57,530,49};}
 inline std::wstring ControlName(size_t slot,const Transport::MenuState& game){
@@ -46,8 +44,8 @@ inline uint32_t Presses(const GamepadMapping::Input& in){
     if(std::abs(in.rightX)<.3f){if(in.rightY>.6f)mask|=1u<<18;if(in.rightY<-.6f)mask|=1u<<19;}
     return mask;
 }
-inline constexpr Rect TurnMode{1070,330,430,45};
-inline constexpr Rect Minus{1070,430,100,80},Plus{1400,430,100,80},Back{1070,650,430,70},Save{1070,625,430,60},Discard{1070,700,430,60};
+inline constexpr Rect TurnMode{760,210,530,50};
+inline constexpr Rect Minus{760,278,100,50},Plus{1190,278,100,50},Back=ListBack,Save=ListSave,Discard=ListDiscard;
 inline Transport::Vector Rotate(Transport::Quaternion q,Transport::Vector v) {
     Transport::Vector t{2*(q.y*v.z-q.z*v.y),2*(q.z*v.x-q.x*v.z),2*(q.x*v.y-q.y*v.x)};
     return {v.x+q.w*t.x+q.y*t.z-q.z*t.y,v.y+q.w*t.y+q.z*t.x-q.x*t.z,v.z+q.w*t.z+q.x*t.y-q.y*t.x};
@@ -209,7 +207,7 @@ struct State {
             page=std::clamp(page+(in.leftY<0?1:-1),0,Actions-Rows);scrollArmed=false;
         }
         if(std::abs(in.rightX)<.2f)stickArmed=true;
-        if(open&&pointer&&Panel.Has(x,y)&&stickArmed&&std::abs(in.rightX)>.6f&&
+        if(open&&pointer&&Rect{760,278,530,50}.Has(x,y)&&stickArmed&&std::abs(in.rightX)>.6f&&
            std::abs(in.rightX)>std::abs(in.rightY)&&in.rightTrigger<.05f&&
            !saving&&!remapping&&!counting&&draftSnap) {
             draft=std::clamp(draft+(in.rightX>0?15.f:-15.f),5.f,180.f);
