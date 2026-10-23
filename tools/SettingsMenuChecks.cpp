@@ -100,13 +100,13 @@ int wmain(int argc,wchar_t** argv) {
      GamepadMapping::Input input{};input.active=true;
      auto click=[&](SettingsMenu::Rect rect){input.rightTrigger=0;ui.Update(true,true,true,float(rect.x+30),float(rect.y+25),input,gm);input.rightTrigger=1;ui.Update(true,true,true,float(rect.x+30),float(rect.y+25),input,gm);};
      click(SettingsMenu::Entry);assert(ui.draftScale==300&&!ui.Dirty());click(SettingsMenu::WorldScale);assert(ui.scalePage);
-     click(SettingsMenu::ScaleOriginal);assert(ui.draftScale==100&&!ui.request);
-     click(SettingsMenu::Back);assert(!ui.scalePage&&ui.open&&ui.draftScale==100);
+     click(SettingsMenu::ScaleMinus);assert(ui.draftScale==290&&!ui.request);
+     click(SettingsMenu::Back);assert(!ui.scalePage&&ui.open&&ui.draftScale==290);
      click(SettingsMenu::Discard);click(SettingsMenu::Entry);assert(ui.draftScale==300);
      click(SettingsMenu::WorldScale);click(SettingsMenu::ScalePlus);assert(ui.draftScale==310);
-     click(SettingsMenu::ScaleTested);assert(ui.draftScale==300);ui.draftScale=999;click(SettingsMenu::ScalePlus);assert(ui.draftScale==1000);
+     click(SettingsMenu::ScaleReset);assert(ui.draftScale==300);ui.draftScale=999;click(SettingsMenu::ScalePlus);assert(ui.draftScale==1000);
      ui.draftScale=11;click(SettingsMenu::ScaleMinus);assert(ui.draftScale==10);
-     click(SettingsMenu::ScaleTested);click(SettingsMenu::ScaleMinus);click(SettingsMenu::Save);
+     click(SettingsMenu::ScaleReset);click(SettingsMenu::ScaleMinus);click(SettingsMenu::Save);
      assert(ui.requestedScale==290&&ui.saving&&gm.activeWorldScale==300);
     }
     float degrees=30;double counts=300;

@@ -14,7 +14,7 @@ inline constexpr Rect ListSave{940,740,420,60},ListDiscard{490,740,420,60},ListB
 inline constexpr Rect Interaction{760,381,530,50},ResetBindings{1040,110,320,45};
 inline constexpr Rect Response{760,438,530,50},Recenter{760,609,530,50};
 inline constexpr Rect Movement{760,324,530,50},Remap{760,552,530,50};
-inline constexpr Rect WorldScale{760,495,530,50},ScaleMinus{440,330,100,70},ScalePlus{1060,330,100,70},ScaleOriginal{300,470,470,60},ScaleTested{830,470,470,60};
+inline constexpr Rect WorldScale{760,495,530,50},ScaleMinus{440,330,100,70},ScalePlus{1060,330,100,70},ScaleReset{565,470,470,60};
 inline constexpr Rect PageUp{1320,220,60,60},PageDown{1320,620,60,60};
 inline constexpr Rect Confirm=ListSave,Cancel=ListBack;
 inline constexpr int Rows=8,Actions=18;
@@ -177,8 +177,7 @@ struct State {
                 if(Back.Has(x,y))scalePage=false;
                 else if(Save.Has(x,y)&&Dirty())Submit();
                 else if(Discard.Has(x,y)){open=false;armed=false;}
-                else if(ScaleOriginal.Has(x,y))draftScale=100;
-                else if(ScaleTested.Has(x,y))draftScale=300;
+                else if(ScaleReset.Has(x,y))draftScale=300;
                 else if(ScaleMinus.Has(x,y))draftScale=std::clamp(draftScale-10.f,10.f,1000.f);
                 else if(ScalePlus.Has(x,y))draftScale=std::clamp(draftScale+10.f,10.f,1000.f);
             }
