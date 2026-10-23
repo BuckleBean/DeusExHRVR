@@ -1,4 +1,4 @@
-#include "LiveWorldScale.h"
+#include "WorldScaleConfig.h"
 #include "SceneCache.h"
 #include "SettingsMenuDraw.h"
 #include "CameraMath.h"
@@ -41,6 +41,29 @@ int wmain(int argc,wchar_t** argv) {
     assert(scale.Configured()==200&&scale.BeginCamera()==200);
     scale.Request(300);assert(scale.BeginCamera()==300); // reversible without restarting
     assert(argc==2);std::filesystem::path out=argv[1];std::filesystem::create_directories(out);
+    // Exercise the exact Win32 reader called by EngineCamera::Install, using
+    // scratch INIs only. Existing valid choices must survive a default change.
+    const auto config=std::filesystem::absolute(out/L"world-scale-default-test.ini");
+    auto readScale=[&](const char* entry,float expected){
+        {std::ofstream f(config,std::ios::binary);f<<"[VR]\n"<<entry<<"\n";}
+        WritePrivateProfileStringW(nullptr,nullptr,nullptr,config.c_str());
+        const auto value=WorldScaleConfig::Read(config.c_str());
+        LiveWorldScale loaded;loaded.Request(value);
+        assert(value==expected&&loaded.BeginCamera()==expected);
+    };
+    LiveWorldScale defaults;assert(defaults.Configured()==300&&defaults.Active()==300);
+    readScale("",300);
+    for(const char* invalid:{"", "garbage", "0", "1001", "nan", "inf"}){
+        const auto entry=std::string("WorldUnitsPerMetre=")+invalid;
+        readScale(entry.c_str(),300);
+    }
+    readScale("WorldUnitsPerMetre=100",100);
+    readScale("WorldUnitsPerMetre=300",300);
+    readScale("WorldUnitsPerMetre=275.5",275.5f);
+    readScale("WorldUnitsPerMetre=10",10);
+    readScale("WorldUnitsPerMetre=1000",1000);
+    std::filesystem::remove(config);
+    assert(WorldScaleConfig::Read(config.c_str())==300); // absent INI
     Transport::Header h{};h.magic=Transport::Magic;h.version=9;h.pid=42;
     assert(!Transport::Compatible(&h,42));h.version=Transport::Version;assert(Transport::Compatible(&h,42));
     assert(Transport::LockMenu(&h));Transport::MenuState read{};assert(!Transport::ReadMenu(&h,read));Transport::UnlockMenu(&h);

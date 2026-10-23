@@ -72,7 +72,8 @@ public:
             Button(SettingsMenu::ScaleMinus,L"-",!s.saving&&hovered(SettingsMenu::ScaleMinus));
             Button(SettingsMenu::ScalePlus,L"+",!s.saving&&hovered(SettingsMenu::ScalePlus));
             Text(L"Adjust in steps of 10",240,410,1120,40);
-            Button(SettingsMenu::ScaleReset,L"RESET TO 300",!s.saving&&hovered(SettingsMenu::ScaleReset));
+            wchar_t resetLabel[48];swprintf_s(resetLabel,L"RESET TO %.6g",double(LiveWorldScale::Default));
+            Button(SettingsMenu::ScaleReset,resetLabel,!s.saving&&hovered(SettingsMenu::ScaleReset));
             wchar_t active[96];swprintf_s(active,L"Active this session: %.6g",double(game.activeWorldScale));Text(active,240,565,1120,45);
             Text(s.saving?L"Saving...":s.committed&&game.result==3?L"Save failed. Choose Save & Back to retry.":L"Discard & Back keeps your previous scale.",240,685,1120,40);
             Button(SettingsMenu::Back,L"SETTINGS",!s.saving&&hovered(SettingsMenu::Back));

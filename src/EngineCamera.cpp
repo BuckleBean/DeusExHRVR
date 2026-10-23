@@ -1,4 +1,4 @@
-#include "LiveWorldScale.h"
+#include "WorldScaleConfig.h"
 #include "EngineCamera.h"
 #include "CameraMath.h"
 #include "InteractionDiagnostics.h"
@@ -1233,7 +1233,7 @@ Transport::Pose LevelReference(Transport::Pose p) {
 // frozen at while the in-game menu (map/objectives/inventory) is open.
 bool levelMenu=true;
 LiveWorldScale liveWorldScale;
-thread_local float handDrawScale=100.f;
+thread_local float handDrawScale=LiveWorldScale::Default;
 // Local patch: optional per-frame camera trace for head-bob analysis.
 // Buffered in memory (4 MB stdio buffer) so it rarely touches the disk.
 bool bobTrace=false;FILE* bobFile{};uint32_t bobLines{};
@@ -1457,7 +1457,7 @@ CameraMath::Matrix RenderBase(const CameraMath::Matrix& game) {
     return lockVerticalCamera?CameraMath::WithoutLookPitch(game):game;
 }
 struct Snapshot {
-    float scale=100.f;
+    float scale=LiveWorldScale::Default;
     CameraMath::Matrix originalWorld,world,view,manager;
     CameraMath::Matrix controllerBase; // Same post-comfort-filter base used for headset and weapon targets.
     Transport::Tracking tracking{};
@@ -1494,7 +1494,7 @@ std::atomic<bool> wheelOpen{};
 // controllerRaw is the muzzle BEFORE fubar's per-weapon grip offset is applied.
 // muzzle carries that offset, which is right for the gun and wrong for the
 // hand: the offset is a property of the weapon, not of where Mark's hand is.
-struct WeaponPose {void* weapon{};void* instance{};CameraMath::Matrix muzzle;uint64_t tick{};bool active{};void* owner{};CameraMath::Matrix controllerRaw;bool nativeRequested{},nativeValid{};CameraMath::Matrix gripTarget{},nativeSkin{},delta{};uint64_t equippedTick{};uint32_t buttons{};Transport::Gamepad diagnosticPad{};float scale=100.f;};
+struct WeaponPose {void* weapon{};void* instance{};CameraMath::Matrix muzzle;uint64_t tick{};bool active{};void* owner{};CameraMath::Matrix controllerRaw;bool nativeRequested{},nativeValid{};CameraMath::Matrix gripTarget{},nativeSkin{},delta{};uint64_t equippedTick{};uint32_t buttons{};Transport::Gamepad diagnosticPad{};float scale=LiveWorldScale::Default;};
 WeaponPose weaponPose;
 void* diagnosticWeapon{};void* diagnosticInstance{};uint64_t diagnosticEquippedTick{};
 std::atomic<uint64_t> controllerDraws{},controllerMuzzles{};
@@ -2349,7 +2349,7 @@ void __cdecl SkeletonHook(void* model,void* bones,uint32_t flags,uint32_t count,
     const float worldScale=handDrawScale;
     // Discard transient capture windows, never saved calibration. A window
     // spanning two unit scales cannot establish a steady hand or grip.
-    static float captureScale=100.f;
+    static float captureScale=LiveWorldScale::Default;
     if(handDrawing && captureScale!=worldScale){
         captureScale=worldScale;handSteadyValid=false;handSteadySince=0;
         handGripHavePrev=false;handGripSamples=0;handGripWindowOpen=false;
@@ -4269,8 +4269,8 @@ void Install() {
     if(enabled)InstallScreenHooks(); // after, and independent of, the camera hooks
 #endif
     wchar_t config[MAX_PATH]{};GetFullPathNameW(L"DeusExHRVR.ini",MAX_PATH,config,nullptr);
-    wchar_t scaleText[32];GetPrivateProfileStringW(L"VR",L"WorldUnitsPerMetre",L"100",scaleText,32,config);
-    float scale=static_cast<float>(_wtof(scaleText));liveWorldScale.Request(scale);
+    wchar_t scaleText[32];
+    liveWorldScale.Request(WorldScaleConfig::Read(config));
     const float worldScale=liveWorldScale.BeginCamera();
     lockVerticalCamera=GetPrivateProfileIntW(L"VR",L"LockVerticalCamera",0,config)!=0;
     levelRecenter=GetPrivateProfileIntW(L"VR",L"LevelRecenter",1,config)!=0;

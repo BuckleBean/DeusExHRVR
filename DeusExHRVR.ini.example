@@ -8,8 +8,10 @@ MovementResponse=0
 ; Restart the game after editing; this setting applies to tracked VR.
 ; Higher values = smaller apparent world, stronger close-range stereo depth.
 ; Lower values = larger apparent world, weaker close-range stereo depth.
-; Also scales physical head translation. Accepted range: 10-1000.
-WorldUnitsPerMetre=100
+; Also scales physical head/hand translation and apparent hands/weapons.
+; Default 300. Accepted range 10-1000 is not a tested comfort range.
+; VR Settings applies changes on Save & Back, then resume; no restart needed.
+WorldUnitsPerMetre=300
 
 ; Optional: keep mouse/gamepad aiming pitch out of the VR camera.
 ; The gun still aims vertically; headset pitch and horizontal look remain free.

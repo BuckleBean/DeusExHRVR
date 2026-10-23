@@ -131,16 +131,16 @@ The HUD uses a shared plane projected through the recorded eye poses. Alignment 
 
 Shared lighting-depth reconstruction uses the same eye frusta as world geometry. This fixes the tested hanging yellow lights; other light and shadow effects still have known stereo issues. F7 provides a live comparison while those remaining effects are investigated.
 
-World scale can be changed in **VR Settings > World Scale**. **Save & Back** applies it when tracked gameplay resumes; no restart is needed. **Discard & Back** keeps the previous setting. Saved calibration is preserved. The menu offers **Reset to 300** as a return point, with adjustment in either direction. The original code default remains 100, but is not offered as a menu preset. 300 is not a universal comfort recommendation.
+World scale can be changed in **VR Settings > World Scale**. **Save & Back** applies it when tracked gameplay resumes; no restart is needed. **Discard & Back** keeps the previous setting. Saved calibration files are preserved, but apparent alignment can change with scale. The menu offers **Reset to 300** as a return point, with adjustment in either direction. The default is 300, including when the INI key is missing or invalid. Existing valid explicit values, including 100, are respected. 300 is not a universal comfort recommendation.
 
 For manual INI edits, copy `DeusExHRVR.ini.example` to `DeusExHRVR.ini` beside `DXHRDC.exe` to adjust it. Keep the `[VR]` section header; a setting outside that section is ignored. Restart the game after changing it:
 
 ```ini
 [VR]
-WorldUnitsPerMetre=100
+WorldUnitsPerMetre=300
 ```
 
-The accepted range is 10–1000. Higher values make the world appear smaller and increase close-range stereo depth; lower values make it appear larger and reduce depth. Physical head translation uses the same scale. To confirm that your edit was read, check `unitsPerMetre=` in the latest `Camera hooks` line in `DeusExHRVR-camera.log`.
+The accepted range is 10–1000; this is a validation range, not a tested comfort range. Higher values make the world appear smaller and increase close-range stereo depth; lower values make it appear larger and reduce depth. Hands and weapons also appear larger at lower values. Physical head and hand translation use the same scale. Native interaction distances remain fixed in game units, so scale also affects how close you must physically stand to interact. To confirm that your edit was read, check `unitsPerMetre=` in the latest `Camera hooks` line in `DeusExHRVR-camera.log`.
 
 The game's stereo separation/convergence sliders do not calibrate tracked VR: that path uses the headset eye poses and `WorldUnitsPerMetre`. The original stereo settings remain relevant to the untracked screen mode.
 

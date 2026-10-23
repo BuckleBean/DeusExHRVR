@@ -6,7 +6,10 @@
 // rebuilding a complete tracked snapshot under stateMutex. Rendered scenes
 // retain that snapshot's scale, including across a later camera update.
 class LiveWorldScale {
-    std::atomic<float> requested{100.f},active{100.f};
+public:
+    static constexpr float Default=300.f;
+private:
+    std::atomic<float> requested{Default},active{Default};
 public:
     static bool Valid(float value){return std::isfinite(value)&&value>=10.f&&value<=1000.f;}
     void Request(float value){if(Valid(value))requested.store(value);}

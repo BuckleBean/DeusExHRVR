@@ -1,5 +1,6 @@
 #pragma once
 #include "SharedPair.h"
+#include "LiveWorldScale.h"
 #include "GamepadMapping.h"
 #include <cmath>
 #include <algorithm>
@@ -101,7 +102,7 @@ struct State {
     uint32_t draftResponse{},originalResponse{},requestedResponse{};
     bool resetConfirm{},draftReset{},requestedReset{};
     uint32_t draftInteraction{},originalInteraction{},requestedInteraction{};
-    bool scalePage{};float draftScale{100},originalScale{100},requestedScale{100};
+    bool scalePage{};float draftScale{LiveWorldScale::Default},originalScale{LiveWorldScale::Default},requestedScale{LiveWorldScale::Default};
     bool remapping{};size_t selected{};int page{};
     bool listening{},captureReady{},confirming{},captureRelease{},scrollArmed{};
     int candidate{-1},pressedSlot{-1};uint64_t pressAt{};
@@ -177,7 +178,7 @@ struct State {
                 if(Back.Has(x,y))scalePage=false;
                 else if(Save.Has(x,y)&&Dirty())Submit();
                 else if(Discard.Has(x,y)){open=false;armed=false;}
-                else if(ScaleReset.Has(x,y))draftScale=300;
+                else if(ScaleReset.Has(x,y))draftScale=LiveWorldScale::Default;
                 else if(ScaleMinus.Has(x,y))draftScale=std::clamp(draftScale-10.f,10.f,1000.f);
                 else if(ScalePlus.Has(x,y))draftScale=std::clamp(draftScale+10.f,10.f,1000.f);
             }
