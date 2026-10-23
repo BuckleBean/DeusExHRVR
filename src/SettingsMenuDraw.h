@@ -67,7 +67,7 @@ public:
         else if(s.scalePage){
             Text(L"WORLD SCALE",240,110,1120,55,true,true);
             Text(L"Lower values make the world look larger. Higher values make it look smaller.",240,210,1120,45);
-            Text(L"Changes take effect after saving and restarting the game.",240,260,1120,45);
+            Text(L"Choose Save & Back, then resume to see the new scale.",240,260,1120,45);
             wchar_t value[40];swprintf_s(value,L"%.6g",double(s.draftScale));Text(value,560,330,480,70,true);
             Button(SettingsMenu::ScaleMinus,L"-",!s.saving&&hovered(SettingsMenu::ScaleMinus));
             Button(SettingsMenu::ScalePlus,L"+",!s.saving&&hovered(SettingsMenu::ScalePlus));
@@ -75,7 +75,7 @@ public:
             Button(SettingsMenu::ScaleOriginal,L"ORIGINAL DEFAULT: 100",!s.saving&&hovered(SettingsMenu::ScaleOriginal));
             Button(SettingsMenu::ScaleTested,L"TESTED PRESET: 300",!s.saving&&hovered(SettingsMenu::ScaleTested));
             wchar_t active[96];swprintf_s(active,L"Active this session: %.6g",double(game.activeWorldScale));Text(active,240,565,1120,45);
-            Text(s.saving?L"Saving...":s.committed&&game.result==3?L"Save failed. Choose Save & Back to retry.":L"Your current scale stays active until you restart.",240,685,1120,40);
+            Text(s.saving?L"Saving...":s.committed&&game.result==3?L"Save failed. Choose Save & Back to retry.":L"Discard & Back keeps your previous scale.",240,685,1120,40);
             Button(SettingsMenu::Back,L"SETTINGS",!s.saving&&hovered(SettingsMenu::Back));
             if(s.Dirty())Button(SettingsMenu::Discard,s.committed?L"BACK":L"DISCARD & BACK",!s.saving&&hovered(SettingsMenu::Discard));
             Button(SettingsMenu::Save,s.saving?L"SAVING...":s.Dirty()?L"SAVE & BACK":L"NO CHANGES",!s.saving&&s.Dirty()&&hovered(SettingsMenu::Save));
@@ -144,7 +144,7 @@ public:
             Button(SettingsMenu::Interaction,s.draftInteraction==1?L"HEAD":s.draftInteraction==2?L"RIGHT HAND":L"FROM CONFIG",!s.saving&&hovered(SettingsMenu::Interaction));
             Button(SettingsMenu::Remap,L"BUTTON REMAPPING",!s.saving&&hovered(SettingsMenu::Remap));
             Button(SettingsMenu::Recenter,L"RECENTER (3 SECONDS)",!s.saving&&hovered(SettingsMenu::Recenter));
-            Text(s.Dirty()?L"Changes apply when you choose Save & Back.":game.worldScale!=game.activeWorldScale?L"World scale saved. Restart the game to apply it.":L"Select a value to change it.",240,685,1120,40);
+            Text(s.Dirty()?L"Changes apply when you choose Save & Back.":game.worldScale!=game.activeWorldScale?L"World scale saved. Resume to apply it.":L"Select a value to change it.",240,685,1120,40);
             if(s.Dirty())Button(SettingsMenu::Discard,s.committed?L"BACK":L"DISCARD & BACK",!s.saving&&hovered(SettingsMenu::Discard));
             else Button(SettingsMenu::Back,L"BACK",hovered(SettingsMenu::Back));
             Button(SettingsMenu::Save,s.saving?L"SAVING...":s.Dirty()?L"SAVE & BACK":L"NO CHANGES",!s.saving&&s.Dirty()&&hovered(SettingsMenu::Save));

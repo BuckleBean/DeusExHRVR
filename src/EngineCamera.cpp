@@ -1,3 +1,4 @@
+#include "LiveWorldScale.h"
 #include "EngineCamera.h"
 #include "CameraMath.h"
 #include "InteractionDiagnostics.h"
@@ -1231,8 +1232,8 @@ Transport::Pose LevelReference(Transport::Pose p) {
 // Local patch (level in-game menu): LevelMenu=1 levels the head pose the view is
 // frozen at while the in-game menu (map/objectives/inventory) is open.
 bool levelMenu=true;
-float worldScale=100.f;
-std::atomic<float> configuredWorldScale{100.f};
+LiveWorldScale liveWorldScale;
+thread_local float handDrawScale=100.f;
 // Local patch: optional per-frame camera trace for head-bob analysis.
 // Buffered in memory (4 MB stdio buffer) so it rarely touches the disk.
 bool bobTrace=false;FILE* bobFile{};uint32_t bobLines{};
@@ -1452,6 +1453,7 @@ CameraMath::Matrix RenderBase(const CameraMath::Matrix& game) {
     return lockVerticalCamera?CameraMath::WithoutLookPitch(game):game;
 }
 struct Snapshot {
+    float scale=100.f;
     CameraMath::Matrix originalWorld,world,view,manager;
     CameraMath::Matrix controllerBase; // Same post-comfort-filter base used for headset and weapon targets.
     Transport::Tracking tracking{};
@@ -1488,7 +1490,7 @@ std::atomic<bool> wheelOpen{};
 // controllerRaw is the muzzle BEFORE fubar's per-weapon grip offset is applied.
 // muzzle carries that offset, which is right for the gun and wrong for the
 // hand: the offset is a property of the weapon, not of where Mark's hand is.
-struct WeaponPose {void* weapon{};void* instance{};CameraMath::Matrix muzzle;uint64_t tick{};bool active{};void* owner{};CameraMath::Matrix controllerRaw;bool nativeRequested{},nativeValid{};CameraMath::Matrix gripTarget{},nativeSkin{},delta{};uint64_t equippedTick{};uint32_t buttons{};Transport::Gamepad diagnosticPad{};};
+struct WeaponPose {void* weapon{};void* instance{};CameraMath::Matrix muzzle;uint64_t tick{};bool active{};void* owner{};CameraMath::Matrix controllerRaw;bool nativeRequested{},nativeValid{};CameraMath::Matrix gripTarget{},nativeSkin{},delta{};uint64_t equippedTick{};uint32_t buttons{};Transport::Gamepad diagnosticPad{};float scale=100.f;};
 WeaponPose weaponPose;
 void* diagnosticWeapon{};void* diagnosticInstance{};uint64_t diagnosticEquippedTick{};
 std::atomic<uint64_t> controllerDraws{},controllerMuzzles{};
@@ -1717,7 +1719,7 @@ bool DirectionWorld(DirectionConfig::Source source,CameraMath::Matrix& result,Ca
     auto aim=DirectionConfig::Aim(source,current.tracking);
     if(!motionControls || !aim)return false;
     auto baseWorld=current.nativeHeading?current.controllerBase:RenderBase(current.originalWorld);
-    result=CameraMath::HeadWorld(baseWorld,reference,aim->aim,worldScale);
+    result=CameraMath::HeadWorld(baseWorld,reference,aim->aim,current.scale);
     return true;
 }
 
@@ -1816,7 +1818,7 @@ void __fastcall SenseUpdateHook(void* self,void*,float dt) {
     if(sample){
         interactionSample={};interactionSample.active=true;interactionSample.tick=now;
         std::lock_guard lock(stateMutex);interactionSample.native=current.originalWorld;
-        interactionSample.scale=worldScale;interactionSample.source=unsigned(interactionAim.load());
+        interactionSample.scale=current.scale;interactionSample.source=unsigned(interactionAim.load());
     }
     originalSenseUpdate(self,dt);senseQueries=previous;
     if(sample){interactionSample.active=false;++interactionSampleCount;WriteInteractionSample();}
@@ -1870,7 +1872,7 @@ WeaponPose ReadWeaponPose(bool resolve=true,MuzzleQueryDiagnostic::Site site=Muz
     {
         std::lock_guard lock(stateMutex);pose=weaponPose;
         auto now=GetTickCount64();
-        pose.active=pose.active && current.active && requested && !screenReasons && now>=pose.tick && now-pose.tick<250;
+        pose.active=pose.active && (!drawing.active || drawing.scale==pose.scale) && current.active && requested && !screenReasons && now>=pose.tick && now-pose.tick<250;
     }
     // Native animation is read at consumption time, not retained as a learned
     // grip or a previous-frame offset. No state mutex held during engine calls.
@@ -2114,7 +2116,7 @@ void __fastcall BoundsHook(void* self,void*,void* volume) {
     // pistol) has its volume taken before the pose is active, so it kept the
     // native size and vanished once the hand left the view around the game
     // camera's own heading - the weapon-switch-plus-roomscale-turn report.
-    if(NativeBounds::ExpandWeapon(volume,4.f*worldScale))++controllerBounds;
+    if(NativeBounds::ExpandWeapon(volume,4.f*liveWorldScale.Active()))++controllerBounds;
 }
 uintptr_t __fastcall WeaponMuzzleHook(void* self,void*,CameraMath::Matrix* out,int barrel,bool firstPerson) {
     auto result=NativeWeaponMuzzle(self,out,barrel,firstPerson);
@@ -2154,7 +2156,9 @@ void __fastcall ActorDrawHook(void* self,void*,void* matrix,void* args) {
            *reinterpret_cast<void**>(static_cast<unsigned char*>(self)+8)==current.playerInstance)return;
     }
     if(experimentalMotionControls && (controllerHideArms || controllerHands)) {
-        auto pose=ReadWeaponPose(false); // A holstered/missing muzzle must not hide the unarmed hand.
+        auto pose=ReadWeaponPose(false);
+        const float worldScale=pose.scale; // one scale for the entire actor draw
+        // A holstered/missing muzzle must not hide the unarmed hand.
         // Suppress only the equipped weapon owner's actor mesh in tracked
         // player view. Animation, physics and other actors still run normally.
         if(pose.active && pose.owner && *reinterpret_cast<void**>(static_cast<unsigned char*>(self)+8)==pose.owner) {
@@ -2238,6 +2242,7 @@ void __fastcall ActorDrawHook(void* self,void*,void* matrix,void* args) {
                 }
             }
             if(!handNativeMuzzleValid)handUnarmedDraws.fetch_add(1);
+            handDrawScale=pose.scale;
             ++handDraws;handDrawing=true;handPrimIndex=0;
             originalActorDraw(self,matrix,args);
             handDrawing=false;
@@ -2285,12 +2290,12 @@ bool TryModelHand(void* model,unsigned char* data,CameraMath::Matrix* palette,ui
     CameraMath::Matrix target{},leftTarget{};bool leftValid=false;
     {
         std::lock_guard lock(stateMutex);
-        if(!requested || !current.active || !referenceValid || screenReasons ||
-           !ModelHandAlignment::GripTarget(current.tracking,GetTickCount64(),current.controllerBase,reference,worldScale,target)) {
+        if(!requested || !current.active || !referenceValid || screenReasons || current.scale!=handDrawScale ||
+           !ModelHandAlignment::GripTarget(current.tracking,GetTickCount64(),current.controllerBase,reference,current.scale,target)) {
             ++modelHandNoGrip;return false;
         }
         if(controllerHandsLeft.load())leftValid=
-            ModelHandAlignment::GripTarget(current.tracking,GetTickCount64(),current.controllerBase,reference,worldScale,leftTarget,true);
+            ModelHandAlignment::GripTarget(current.tracking,GetTickCount64(),current.controllerBase,reference,current.scale,leftTarget,true);
     }
     auto plan=(HandDrawDiagnostic::hookStatus.load()==1)?HandOnlyGeometry::Prepare(model):nullptr;
     if(!plan || plan->boneCount!=n){++modelHandBadModel;return false;}
@@ -2334,6 +2339,14 @@ bool TryModelHand(void* model,unsigned char* data,CameraMath::Matrix* palette,ui
     ++modelHandApplied;return true;
 }
 void __cdecl SkeletonHook(void* model,void* bones,uint32_t flags,uint32_t count,void* state) {
+    const float worldScale=handDrawScale;
+    // Discard transient capture windows, never saved calibration. A window
+    // spanning two unit scales cannot establish a steady hand or grip.
+    static float captureScale=100.f;
+    if(handDrawing && captureScale!=worldScale){
+        captureScale=worldScale;handSteadyValid=false;handSteadySince=0;
+        handGripHavePrev=false;handGripSamples=0;handGripWindowOpen=false;
+    }
     originalSkeleton(model,bones,flags,count,state);
     // Every freshly generated palette invalidates any previous VR-only tag,
     // including native third-person draws that bypass handDrawing entirely.
@@ -3311,7 +3324,7 @@ void __fastcall RenderStateHook(void* self,void*) {
             instance=*reinterpret_cast<float**>(cb+8);
             if(instance) {
                 saved=CameraMath::Load(instance);
-                auto eye=CameraMath::EyeWorld(drawing.tracking,state[0x5ea]?0:1,worldScale);
+                auto eye=CameraMath::EyeWorld(drawing.tracking,state[0x5ea]?0:1,drawing.scale);
                 auto corrected=CameraMath::Multiply(eye,saved);memcpy(instance,corrected.m,64);
                 state[0x5c8]=1;state[0x1c]=1;++instanceCorrections;
             }
@@ -3356,13 +3369,13 @@ void __fastcall UniformsHook(void* self,void*) {
         if(eyeViewFix) {
             // Keep V * eyeInverse * P unchanged for geometry, but expose the
             // actual eye view and camera position to all shared shader inputs.
-            auto eyeWorld=CameraMath::EyeWorld(drawing.tracking,eye,worldScale);
+            auto eyeWorld=CameraMath::EyeWorld(drawing.tracking,eye,drawing.scale);
             auto view=CameraMath::Multiply(CameraMath::Load(scene+0x2b0),CameraMath::InverseRigid(eyeWorld));
             memcpy(state+0x480,view.m,64);state[0x545]=1;
             auto eyeWorldAbsolute=CameraMath::Multiply(eyeWorld,world);
             for(int i=0;i<3;i++){data[10*4+i]=eyeWorldAbsolute.m[12+i];data[11*4+i]=eyeWorldAbsolute.m[8+i];}
         }
-        auto depth=CameraMath::DepthToWorld(world,drawing.tracking,eye,worldScale);
+        auto depth=CameraMath::DepthToWorld(world,drawing.tracking,eye,drawing.scale);
         // SceneBuffer stores the three output components as transposed rows.
         for(int col=0;col<3;col++)for(int row=0;row<4;row++)data[(15+col)*4+row]=depth.m[row*4+col];
         const auto& e=drawing.tracking.eyes[eye];
@@ -3520,6 +3533,15 @@ void __fastcall UpdateHook(void* self,void*) {
         Transport::Tracking t{};
         RefreshScreenMode();
         if(requested && !screenReasons && active && trackingReader.Read(channel,t,GetTickCount64())) {
+            const float previousScale=liveWorldScale.Active();
+            const float worldScale=liveWorldScale.BeginCamera();
+            current.scale=worldScale;
+            if(previousScale!=worldScale){
+                calibration.Cancel();handCalibrateArmed.store(0);handArmGestureSince=0;
+                FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")){
+                    fprintf(f,"WorldScale applied previous=%g active=%g frame=%llu\n",previousScale,worldScale,frameId.load());fclose(f);
+                }
+            }
             if(!referenceValid || recenterRequested){reference=LevelReference(t.head);referenceValid=true;recenterRequested=false;}
             // Interaction cameras implement the same virtual getters as the
             // player camera; use that interface instead of its private layout.
@@ -3836,6 +3858,7 @@ void __fastcall UpdateHook(void* self,void*) {
                             raw=WeaponCalibration::Units(result.muzzle,worldScale);
                         }
                         weaponPose={weapon,instance,raw,t.tick,true,*reinterpret_cast<void**>(weapon+0x64),rawController};
+                        weaponPose.scale=worldScale;
                         weaponPose.nativeRequested=nativeRequested;weaponPose.gripTarget=modelTarget;
                         if(diagnosticWeapon!=weapon || diagnosticInstance!=instance){
                             diagnosticWeapon=weapon;diagnosticInstance=instance;diagnosticEquippedTick=now;
@@ -4079,7 +4102,7 @@ void __cdecl StereoHook(float* projection,bool firstEye,float width,float plane)
     if(drawing.active && std::abs(projection[11]-1.f)<0.001f && std::abs(projection[15])<0.001f) {
         unsigned eye=firstEye?0:1;
         auto source=CameraMath::Load(projection);
-        auto p=effectsFix&&eyeViewFix?CameraMath::EyeFrustum(source,drawing.tracking,eye):CameraMath::EyeProjection(source,drawing.tracking,eye,worldScale);
+        auto p=effectsFix&&eyeViewFix?CameraMath::EyeFrustum(source,drawing.tracking,eye):CameraMath::EyeProjection(source,drawing.tracking,eye,drawing.scale);
         memcpy(projection,p.m,64);drawnEyes|=1u<<eye;
         {std::lock_guard lock(stateMutex);++stereoCalls;}
     } else originalStereo(projection,firstEye,width,plane);
@@ -4115,7 +4138,7 @@ void LevelFrozenView(uint64_t frame) {
     }
     t.head.orientation=level;
     current.tiltedWorld=current.world;
-    current.world=CameraMath::HeadWorld(lastRenderBase,reference,t.head,worldScale);
+    current.world=CameraMath::HeadWorld(lastRenderBase,reference,t.head,current.scale);
     current.view=CameraMath::InverseRigid(current.world);
     current.manager=lastManagerRaw;
     for(int col=0;col<3;col++) {
@@ -4240,8 +4263,8 @@ void Install() {
 #endif
     wchar_t config[MAX_PATH]{};GetFullPathNameW(L"DeusExHRVR.ini",MAX_PATH,config,nullptr);
     wchar_t scaleText[32];GetPrivateProfileStringW(L"VR",L"WorldUnitsPerMetre",L"100",scaleText,32,config);
-    float scale=static_cast<float>(_wtof(scaleText));if(std::isfinite(scale)&&scale>=10&&scale<=1000)worldScale=scale;
-    configuredWorldScale.store(worldScale);
+    float scale=static_cast<float>(_wtof(scaleText));liveWorldScale.Request(scale);
+    const float worldScale=liveWorldScale.BeginCamera();
     lockVerticalCamera=GetPrivateProfileIntW(L"VR",L"LockVerticalCamera",0,config)!=0;
     levelRecenter=GetPrivateProfileIntW(L"VR",L"LevelRecenter",1,config)!=0;
     levelMenu=GetPrivateProfileIntW(L"VR",L"LevelMenu",1,config)!=0;
@@ -4612,9 +4635,9 @@ void SetChannel(Transport::Header* header){std::lock_guard lock(stateMutex);chan
 // Bits 32 (in-game menu) and 64 (e-reader, news reader) select [ScreenButtons] only;
 // the display stays tracked. Bit 128 is the opposite: a wheel screen pausing
 // gameplay, where [Buttons] must be kept.
-float ConfiguredWorldScale(){return configuredWorldScale.load();}
-float ActiveWorldScale(){return worldScale;} // immutable after startup; no live rescaling
-void SetConfiguredWorldScale(float value){if(std::isfinite(value)&&value>=10&&value<=1000)configuredWorldScale.store(value);}
+float ConfiguredWorldScale(){return liveWorldScale.Configured();}
+float ActiveWorldScale(){return liveWorldScale.Active();}
+void SetConfiguredWorldScale(float value){liveWorldScale.Request(value);}
 unsigned InteractionAim(){return unsigned(interactionAim.load());}
 void SetInteractionAim(unsigned value){if(value<=3)interactionAim.store(static_cast<DirectionConfig::Source>(value));}
 unsigned MovementResponse(){return movementResponse.load();}

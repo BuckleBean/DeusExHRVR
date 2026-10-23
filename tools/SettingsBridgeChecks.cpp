@@ -1,3 +1,4 @@
+#include "LiveWorldScale.h"
 // Exercise the actual game-side consumer and final XInput merge, without a game.
 #include "../src/GamepadBridge.cpp"
 #include <cassert>
@@ -5,10 +6,10 @@
 #include <fstream>
 #include <limits>
 namespace EngineCamera {
-float configuredScale=300;
-float ConfiguredWorldScale(){return configuredScale;}
-float ActiveWorldScale(){return 300;}
-void SetConfiguredWorldScale(float value){configuredScale=value;}
+LiveWorldScale scale;
+float ConfiguredWorldScale(){return scale.Configured();}
+float ActiveWorldScale(){return scale.Active();}
+void SetConfiguredWorldScale(float value){scale.Request(value);}
 unsigned interaction{};
 unsigned InteractionAim(){return interaction;}
 void SetInteractionAim(unsigned value){interaction=value;}
@@ -29,6 +30,7 @@ unsigned recenterCount{};void Recenter(){++recenterCount;}
 XINPUT_GAMEPAD physical{};
 DWORD WINAPI RealGet(DWORD,XINPUT_STATE* s){*s={};s->Gamepad=physical;return ERROR_SUCCESS;}
 int wmain(int argc,wchar_t** argv) {
+    EngineCamera::scale.Request(300);EngineCamera::scale.BeginCamera();
     assert(argc==2);std::filesystem::path dir=argv[1];std::filesystem::create_directories(dir);
     auto path=std::filesystem::absolute(dir/L"bridge-test.ini");
     {std::ofstream f(path);f<<"[VR]\nSnapTurn=1\nSnapTurnDegrees=30\nSnapTurnMouseCounts=300\n[Buttons]\nLeftX=Start\n";}
@@ -162,6 +164,9 @@ int wmain(int argc,wchar_t** argv) {
     SettingsWriter().Queue(path.c_str(),GamepadBridge::snapCounts);
     for(int n=0;n<200&&h.menu.saved!=29;++n){Sleep(10);GamepadBridge::MenuTick(2);}
     assert(h.menu.saved==29&&EngineCamera::ActiveWorldScale()==300);
+    // Resume consumes the real pending-scale object; next menu tick reports it.
+    EngineCamera::scale.BeginCamera();GamepadBridge::MenuTick(2);
+    assert(h.menu.activeWorldScale==272.727f);
     wchar_t scaleText[40];GetPrivateProfileStringW(L"VR",L"WorldUnitsPerMetre",L"",scaleText,40,path.c_str());assert(std::abs(_wtof(scaleText)-272.727)<.001);
     for(float bad : {0.f,1001.f,std::numeric_limits<float>::quiet_NaN()}){
         ++h.menu.request;h.menu.hostTick=GetTickCount64();h.menu.requestedWorldScale=bad;

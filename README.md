@@ -131,7 +131,9 @@ The HUD uses a shared plane projected through the recorded eye poses. Alignment 
 
 Shared lighting-depth reconstruction uses the same eye frusta as world geometry. This fixes the tested hanging yellow lights; other light and shadow effects still have known stereo issues. F7 provides a live comparison while those remaining effects are investigated.
 
-World scale is provisional. Copy `DeusExHRVR.ini.example` to `DeusExHRVR.ini` beside `DXHRDC.exe` to adjust it. Keep the `[VR]` section header; a setting outside that section is ignored. Restart the game after changing it:
+World scale can be changed in **VR Settings > World Scale**. **Save & Back** applies it when tracked gameplay resumes; no restart is needed. **Discard & Back** keeps the previous setting. Saved calibration is preserved. The original default is 100; 300 is a tested preset, not a universal recommendation.
+
+For manual INI edits, copy `DeusExHRVR.ini.example` to `DeusExHRVR.ini` beside `DXHRDC.exe` to adjust it. Keep the `[VR]` section header; a setting outside that section is ignored. Restart the game after changing it:
 
 ```ini
 [VR]

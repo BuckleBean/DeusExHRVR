@@ -1,3 +1,5 @@
+#include "LiveWorldScale.h"
+#include "SceneCache.h"
 #include "SettingsMenuDraw.h"
 #include "CameraMath.h"
 #include "InteractionDiagnostics.h"
@@ -10,6 +12,34 @@
 #include <limits>
 
 int wmain(int argc,wchar_t** argv) {
+    // Production scale handoff: requests never mutate an already-built view.
+    // Cached eyes, head and controller must all retain the old units until
+    // the camera builds a complete new snapshot, including multiple requests.
+    LiveWorldScale scale;scale.Request(300);assert(scale.BeginCamera()==300);
+    struct View {float scale;float padding[3]{};CameraMath::Matrix head,hand;};
+    SceneCache<View> cache;
+    auto base=CameraMath::Rotation({0,0,0,1});
+    CameraMath::Pose reference{},head{},hand{};
+    reference.orientation.w=head.orientation.w=hand.orientation.w=1;
+    head.position.x=.2f;hand.position.x=.5f;
+    auto view=[&](float units){return View{units,{},CameraMath::HeadWorld(base,reference,head,units),CameraMath::HeadWorld(base,reference,hand,units)};};
+    int scene=0;cache.Store(&scene,view(scale.Active()),1);
+    scale.Request(100);scale.Request(200);
+    assert(scale.Active()==300&&scale.Configured()==200);
+    auto old=cache.Find(&scene);assert(old.scale==300&&std::abs(old.head.m[12]-60)<.001&&old.hand.m[12]==150);
+    auto fresh=view(scale.BeginCamera());
+    assert(fresh.scale==200&&std::abs(fresh.head.m[12]-40)<.001&&fresh.hand.m[12]==100);
+    assert(cache.Find(&scene).scale==300); // a queued scene still uses its own stereo scale
+    Transport::Tracking eyes{};eyes.head.orientation.w=1;
+    eyes.eyes[0].pose.orientation.w=eyes.eyes[1].pose.orientation.w=1;
+    eyes.eyes[0].pose.position.x=-.032f;eyes.eyes[1].pose.position.x=.032f;
+    auto left=CameraMath::EyeWorld(eyes,0,old.scale),right=CameraMath::EyeWorld(eyes,1,old.scale);
+    assert(std::abs(std::abs(right.m[12]-left.m[12])-19.2f)<.001);
+    left=CameraMath::EyeWorld(eyes,0,fresh.scale);right=CameraMath::EyeWorld(eyes,1,fresh.scale);
+    assert(std::abs(std::abs(right.m[12]-left.m[12])-12.8f)<.001);
+    for(float bad:{0.f,1001.f,std::numeric_limits<float>::quiet_NaN()})scale.Request(bad);
+    assert(scale.Configured()==200&&scale.BeginCamera()==200);
+    scale.Request(300);assert(scale.BeginCamera()==300); // reversible without restarting
     assert(argc==2);std::filesystem::path out=argv[1];std::filesystem::create_directories(out);
     Transport::Header h{};h.magic=Transport::Magic;h.version=9;h.pid=42;
     assert(!Transport::Compatible(&h,42));h.version=Transport::Version;assert(Transport::Compatible(&h,42));
