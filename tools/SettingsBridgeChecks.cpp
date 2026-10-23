@@ -5,6 +5,9 @@
 #include <fstream>
 #include <limits>
 namespace EngineCamera {
+unsigned interaction{};
+unsigned InteractionAim(){return interaction;}
+void SetInteractionAim(unsigned value){interaction=value;}
 unsigned response{};
 unsigned MovementResponse(){return response;}
 void SetMovementResponse(unsigned value){response=value;}
@@ -138,6 +141,17 @@ int wmain(int argc,wchar_t** argv) {
     assert(h.menu.saved==25&&GetPrivateProfileIntW(L"VR",L"MovementResponse",0,path.c_str())==1);
     h.menu.request=26;h.menu.hostTick=GetTickCount64();h.menu.requestedResponse=2;
     GamepadBridge::MenuTick(2);assert(h.menu.result==2&&EngineCamera::response==1);
+    h.menu.request=27;h.menu.hostTick=GetTickCount64();h.menu.requestedResponse=1;
+    h.menu.requestedInteraction=1;h.menu.resetBindings=1;
+    h.menu.requestedBindings=ButtonBindings::Defaults;h.menu.bindingMask=(1u<<ButtonBindings::Count)-1;
+    GamepadBridge::MenuTick(2);assert(EngineCamera::interaction==1&&GamepadBridge::buttonHoldMs[0]==0);
+    for(int n=0;n<200&&h.menu.saved!=27;++n){Sleep(10);GamepadBridge::MenuTick(2);}
+    assert(h.menu.saved==27);GamepadBridge::LoadButtons();
+    assert(!GamepadBridge::remapActive&&!GamepadBridge::buttonHoldMs[0]&&!GamepadBridge::buttonTapTarget[0]&&!GamepadBridge::stickUpTarget);
+    assert(GamepadBridge::screenTarget[0]==XINPUT_GAMEPAD_X);
+    assert(DirectionConfig::Read(path.c_str(),L"InteractionAim")==DirectionConfig::Source::Headset);
+    h.menu.request=28;h.menu.hostTick=GetTickCount64();h.menu.requestedInteraction=4;
+    GamepadBridge::MenuTick(2);assert(h.menu.result==2&&EngineCamera::interaction==1);
     GamepadBridge::SetChannel(nullptr);
     printf("PASS %zu-bit actual bridge: request/ack/save/error, duplicate/stale/refused edits, calibration scaling, virtual/physical input and focus recovery\n",sizeof(void*)*8);
 }

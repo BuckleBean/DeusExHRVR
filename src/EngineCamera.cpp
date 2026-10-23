@@ -1180,7 +1180,7 @@ void WriteHandsStatus() {
         controllerHandsHideFrom,controllerHandsHideTo,handHiddenSlots.load());
     fclose(f);
 }
-DirectionConfig::Source interactionAim{};
+std::atomic<DirectionConfig::Source> interactionAim{};
 std::atomic<DirectionConfig::Source> movementDirection{DirectionConfig::Source::Mouse};
 thread_local bool senseQueries{};
 std::atomic<uint64_t> interactionQueries{},movementAxes{};
@@ -1815,7 +1815,7 @@ void __fastcall SenseUpdateHook(void* self,void*,float dt) {
     if(sample){
         interactionSample={};interactionSample.active=true;interactionSample.tick=now;
         std::lock_guard lock(stateMutex);interactionSample.native=current.originalWorld;
-        interactionSample.scale=worldScale;interactionSample.source=unsigned(interactionAim);
+        interactionSample.scale=worldScale;interactionSample.source=unsigned(interactionAim.load());
     }
     originalSenseUpdate(self,dt);senseQueries=previous;
     if(sample){interactionSample.active=false;++interactionSampleCount;WriteInteractionSample();}
@@ -4610,6 +4610,8 @@ void SetChannel(Transport::Header* header){std::lock_guard lock(stateMutex);chan
 // Bits 32 (in-game menu) and 64 (e-reader, news reader) select [ScreenButtons] only;
 // the display stays tracked. Bit 128 is the opposite: a wheel screen pausing
 // gameplay, where [Buttons] must be kept.
+unsigned InteractionAim(){return unsigned(interactionAim.load());}
+void SetInteractionAim(unsigned value){if(value<=3)interactionAim.store(static_cast<DirectionConfig::Source>(value));}
 unsigned MovementResponse(){return movementResponse.load();}
 void SetMovementResponse(unsigned value){
     if(value>1)return;

@@ -21,6 +21,8 @@ void Recenter();
 unsigned CurrentScreenReasons();
 unsigned MovementDirection();
 unsigned MovementResponse();
+unsigned InteractionAim();
+void SetInteractionAim(unsigned value);
 void SetMovementResponse(unsigned value);
 void SetMovementDirection(unsigned value);
 // Luma port: forward the engine's D3D11 device to ShaderSwap so it can build

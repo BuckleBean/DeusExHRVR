@@ -8,7 +8,8 @@
 namespace SettingsMenu {
 constexpr int Width=1600,Height=900;
 struct Rect {int x,y,w,h; bool Has(float px,float py) const {return px>=x&&py>=y&&px<x+w&&py<y+h;}};
-inline constexpr Rect Entry{1080,420,410,70},Panel{1020,170,530,680};
+inline constexpr Rect Entry{1080,420,410,70},Panel{1020,110,530,740};
+inline constexpr Rect Interaction{1070,200,430,45},ResetBindings{1040,110,320,45};
 inline constexpr Rect Response{1070,255,430,50};
 inline constexpr Rect Recenter{1070,790,430,45};
 inline constexpr Rect Movement{1070,520,430,45};
@@ -99,11 +100,13 @@ struct State {
     bool draftSnap{},originalSnap{},requestedSnap{};
     uint32_t draftMovement{},originalMovement{},requestedMovement{};
     uint32_t draftResponse{},originalResponse{},requestedResponse{};
+    bool resetConfirm{},draftReset{},requestedReset{};
+    uint32_t draftInteraction{},originalInteraction{},requestedInteraction{};
     bool remapping{};size_t selected{};int page{};
     bool listening{},captureReady{},confirming{},captureRelease{},scrollArmed{};
     int candidate{-1},pressedSlot{-1};uint64_t pressAt{};
     Rect Area() const {return open?(remapping?ListPanel:Panel):Entry;}
-    void Submit(){requestedResponse=draftResponse;requested=draft;requestedSnap=draftSnap;requestedMovement=draftMovement;requestedBindings=draftBindings;requestedBindingMask|=ButtonBindings::Changes(draftBindings,originalBindings);++request;saving=true;committed=true;}
+    void Submit(){requestedInteraction=draftInteraction;requestedReset=draftReset;requestedResponse=draftResponse;requested=draft;requestedSnap=draftSnap;requestedMovement=draftMovement;requestedBindings=draftBindings;if(draftReset)requestedBindingMask=(1u<<ButtonBindings::Count)-1;requestedBindingMask|=ButtonBindings::Changes(draftBindings,originalBindings);++request;saving=true;committed=true;}
     void Assign(){
         const auto target=ButtonBindings::Targets[selected].value;
         for(auto& value:draftBindings)if(value==target)value=0;
@@ -111,7 +114,7 @@ struct State {
     }
     ButtonBindings::Layout draftBindings{},originalBindings{},requestedBindings{};
     uint32_t requestedBindingMask{};
-    bool Dirty() const {return draftResponse!=originalResponse||draft!=original||draftSnap!=originalSnap||draftMovement!=originalMovement||draftBindings!=originalBindings||committed;}
+    bool Dirty() const {return draftReset||draftInteraction!=originalInteraction|| draftResponse!=originalResponse||draft!=original||draftSnap!=originalSnap||draftMovement!=originalMovement||draftBindings!=originalBindings||committed;}
     void Update(bool eligible,bool focused,bool ray,float px,float py,const GamepadMapping::Input& in,const Transport::MenuState& game,uint64_t now=GetTickCount64()) {
         recenterPulse=false;
         visible=eligible&&focused;pointer=visible&&ray;x=px;y=py;
@@ -127,7 +130,7 @@ struct State {
             if(game.saved==request&&game.result==0){saving=false;open=false;armed=false;}
             else if(game.result==2||game.result==3)saving=false;
         }
-        if(!visible){open=false;remapping=false;listening=confirming=captureReady=false;candidate=pressedSlot=-1;draftResponse=originalResponse;draft=original;draftSnap=originalSnap;draftMovement=originalMovement;draftBindings=originalBindings;armed=false;nativeCapture=false;}
+        if(!visible){open=false;remapping=false;listening=confirming=captureReady=resetConfirm=false;candidate=pressedSlot=-1;draftInteraction=originalInteraction;draftReset=false;draftResponse=originalResponse;draft=original;draftSnap=originalSnap;draftMovement=originalMovement;draftBindings=originalBindings;armed=false;nativeCapture=false;}
         if(visible&&in.rightTrigger<.05f)armed=true;
         bool hit=pointer&&Area().Has(x,y);
         // Capture from first trigger movement, before the game's low threshold.
@@ -157,7 +160,7 @@ struct State {
                     pressedSlot=-1;captureReady=false;
                 }else if(pressedSlot>=0&&!presses){
                     candidate=pressedSlot;
-                    if(candidate<8&&game.holdMs[candidate]&&now-pressAt<game.holdMs[candidate])candidate+=10;
+                    if(candidate<8&&!draftReset&&game.holdMs[candidate]&&now-pressAt<game.holdMs[candidate])candidate+=10;
                     pressedSlot=-1;listening=false;confirming=true;captureRelease=true;
                 }
             }
@@ -169,9 +172,13 @@ struct State {
             recenterSeconds=recenterAt?int((recenterAt-now+999)/1000):0;
         }
         if(!counting&&visible&&armed&&down&&!triggerDown&&hit&&!nativeCapture&&!capturing) {
-            if(!open){open=true;remapping=false;listening=confirming=captureRelease=false;page=0;selected=0;requestedBindingMask=0;releaseGate=true;draftResponse=originalResponse=game.response;draft=original=game.degrees;draftSnap=originalSnap=game.snapEnabled!=0;draftMovement=originalMovement=game.movement;draftBindings=originalBindings=game.bindings;committed=false;}
+            if(!open){open=true;remapping=false;listening=confirming=captureRelease=resetConfirm=draftReset=false;draftInteraction=originalInteraction=game.interaction;page=0;selected=0;requestedBindingMask=0;releaseGate=true;draftResponse=originalResponse=game.response;draft=original=game.degrees;draftSnap=originalSnap=game.snapEnabled!=0;draftMovement=originalMovement=game.movement;draftBindings=originalBindings=game.bindings;committed=false;}
             else if(remapping&&!saving){
-                if(confirming){
+                if(resetConfirm){
+                    if(Confirm.Has(x,y)){draftBindings=ButtonBindings::Defaults;draftReset=true;resetConfirm=false;}
+                    else if(Cancel.Has(x,y))resetConfirm=false;
+                }else if(ResetBindings.Has(x,y))resetConfirm=true;
+                else if(confirming){
                     if(Confirm.Has(x,y))Assign();
                     else if(Cancel.Has(x,y)){confirming=false;candidate=-1;}
                 }else if(ListSave.Has(x,y)&&Dirty())Submit();
@@ -187,6 +194,7 @@ struct State {
             else if(!saving&&Dirty()&&Save.Has(x,y))Submit();
             else if(!saving&&Recenter.Has(x,y)){recenterAt=now+3000;recenterSeconds=3;}
             else if(!saving&&Remap.Has(x,y)){remapping=true;}
+            else if(!saving&&Interaction.Has(x,y)){draftInteraction=draftInteraction==1?2:1;}
             else if(!saving&&Response.Has(x,y)){draftResponse=draftResponse?0:1;}
             else if(!saving&&Movement.Has(x,y)){draftMovement=draftMovement==1?3:draftMovement==3?2:1;}
             else if(!saving&&TurnMode.Has(x,y)){draftSnap=!draftSnap;}
@@ -197,7 +205,7 @@ struct State {
         }
         // One step per stick deflection; no frame-rate-dependent repeats.
         if(std::abs(in.leftY)<.2f)scrollArmed=true;
-        if(remapping&&!listening&&!confirming&&!saving&&scrollArmed&&std::abs(in.leftY)>.6f){
+        if(remapping&&!listening&&!confirming&&!resetConfirm&&!saving&&scrollArmed&&std::abs(in.leftY)>.6f){
             page=std::clamp(page+(in.leftY<0?1:-1),0,Actions-Rows);scrollArmed=false;
         }
         if(std::abs(in.rightX)<.2f)stickArmed=true;

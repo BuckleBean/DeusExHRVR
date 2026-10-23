@@ -32,7 +32,8 @@ public:
         if(!Polygon(dc,p,6))drawError=true;SelectObject(dc,ob);SelectObject(dc,op);DeleteObject(brush);DeleteObject(pen);
         Text(label,r.x,r.y,r.w,r.h);
     }
-    const void* Draw(const SettingsMenu::State& s,const Transport::MenuState& game) {
+    const void* Draw(const SettingsMenu::State& s,const Transport::MenuState& live) {
+        auto game=live;if(s.draftReset)for(auto& hold:game.holdMs)hold=0;
         if(!Init())return nullptr;
         drawError=false;
         // Complete any pending GDI work before direct writes to the DIB.
@@ -52,7 +53,8 @@ public:
             Button(SettingsMenu::Back,L"CANCEL",hovered(SettingsMenu::Back));
         }
         else if(s.remapping) {
-            Text(L"GAMEPLAY BUTTON MAPPING",240,105,1120,55,true);
+            Text(L"GAMEPLAY BUTTON MAPPING",240,105,770,55,true);
+            Button(SettingsMenu::ResetBindings,L"RESTORE DEFAULTS",!s.saving&&hovered(SettingsMenu::ResetBindings));
             Text(L"ACTION",240,170,470,40,true,true);Text(L"ASSIGNED CONTROL",760,170,530,40,true);
             for(int row=0;row<SettingsMenu::Rows;++row){
                 auto target=ButtonBindings::Targets[s.page+row];
@@ -66,9 +68,15 @@ public:
             Button(SettingsMenu::ListBack,L"SETTINGS",hovered(SettingsMenu::ListBack));
             Button(SettingsMenu::ListDiscard,s.committed?L"BACK":L"DISCARD & BACK",!s.saving&&hovered(SettingsMenu::ListDiscard));
             Button(SettingsMenu::ListSave,s.saving?L"SAVING...":s.Dirty()?L"SAVE & BACK":L"NO CHANGES",!s.saving&&s.Dirty()&&hovered(SettingsMenu::ListSave));
-            if(s.listening||s.confirming){
+            if(s.listening||s.confirming||s.resetConfirm){
                 RECT dialog{210,215,1390,685};auto brush=CreateSolidBrush(RGB(16,17,14));FillRect(dc,&dialog,brush);DeleteObject(brush);
                 brush=CreateSolidBrush(RGB(210,150,30));FrameRect(dc,&dialog,brush);DeleteObject(brush);
+                if(s.resetConfirm){
+                    Text(L"RESTORE DEFAULT BINDINGS?",300,290,1000,60,true);
+                    Text(L"Replaces gameplay assignments and clears custom tap / hold bindings.",240,390,1120,50);
+                    Text(L"Choose Save & Back afterward to apply, or Discard to keep your setup.",240,465,1120,50);
+                    Button(SettingsMenu::Confirm,L"RESTORE DEFAULTS",hovered(SettingsMenu::Confirm));
+                }else {
                 Text(ButtonBindings::Targets[s.selected].label,340,290,920,60,true);
                 if(s.listening){
                     Text(s.captureReady?L"Press and release a button or trigger":L"Release controls to begin",340,375,920,50,true);
@@ -84,12 +92,14 @@ public:
                     Text(L"Other custom assignments for this action will be replaced.",340,545,920,40);
                     Button(SettingsMenu::Confirm,L"ASSIGN",hovered(SettingsMenu::Confirm));
                 }
+                }
                 Button(SettingsMenu::Cancel,L"CANCEL",hovered(SettingsMenu::Cancel));
             }
         }
         else {
             const wchar_t* heading=s.saving?L"SAVING...":s.committed&&game.result==3?L"SAVE FAILED - RETRY":s.committed&&game.result==2?L"CHANGE REFUSED":L"DEUS EX / VR SETTINGS";
-            Text(heading,1040,185,490,60,true);
+            Text(heading,1040,120,490,60,true);
+            Button(SettingsMenu::Interaction,s.draftInteraction==1?L"INTERACTION AIM: HEAD":s.draftInteraction==2?L"INTERACTION AIM: RIGHT HAND":L"INTERACTION AIM: FROM CONFIG",!s.saving&&hovered(SettingsMenu::Interaction));
             Button(SettingsMenu::Response,s.draftResponse?L"WALK RESPONSE: GENTLE":L"WALK RESPONSE: NORMAL",!s.saving&&hovered(SettingsMenu::Response));
             Button(SettingsMenu::TurnMode,s.draftSnap?L"TURNING: SNAP":L"TURNING: SMOOTH",!s.saving&&hovered(SettingsMenu::TurnMode));
             Text(s.draftSnap?L"Snap-turn angle":L"Snap angle (inactive)",1070,380,430,40);

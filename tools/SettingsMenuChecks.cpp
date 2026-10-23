@@ -51,6 +51,21 @@ int wmain(int argc,wchar_t** argv) {
      assert(ui.draftResponse==1&&ui.Dirty()&&!ui.request);
      ui.Submit();assert(ui.requestedResponse==1);
     }
+    {SettingsMenu::State ui;Transport::MenuState gm{};gm.degrees=30;gm.interaction=2;
+     gm.bindings=ButtonBindings::Defaults;gm.bindings[0]=XINPUT_GAMEPAD_B;
+     GamepadMapping::Input input{};input.active=true;
+     auto click=[&](SettingsMenu::Rect rect){input.rightTrigger=0;ui.Update(true,true,true,float(rect.x+30),float(rect.y+25),input,gm);input.rightTrigger=1;ui.Update(true,true,true,float(rect.x+30),float(rect.y+25),input,gm);};
+     click(SettingsMenu::Entry);assert(ui.draftInteraction==2);
+     click(SettingsMenu::Interaction);assert(ui.draftInteraction==1&&!ui.request);
+     click(SettingsMenu::Remap);click(SettingsMenu::ResetBindings);assert(ui.resetConfirm);
+     click(SettingsMenu::Cancel);assert(!ui.resetConfirm&&ui.draftBindings==gm.bindings);
+     click(SettingsMenu::ResetBindings);click(SettingsMenu::Confirm);
+     assert(ui.draftReset&&ui.draftBindings==ButtonBindings::Defaults&&!ui.request);
+     click(SettingsMenu::ListDiscard);assert(!ui.open&&!ui.request);
+     click(SettingsMenu::Entry);assert(!ui.draftReset&&ui.draftBindings==gm.bindings&&ui.draftInteraction==2);
+     click(SettingsMenu::Remap);click(SettingsMenu::ResetBindings);click(SettingsMenu::Confirm);click(SettingsMenu::ListSave);
+     assert(ui.requestedReset&&ui.requestedBindingMask==((1u<<ButtonBindings::Count)-1));
+    }
     float degrees=30;double counts=300;
     // Validate the diagnostic's native frame offsets and failed-read handling.
     {
@@ -274,6 +289,7 @@ int wmain(int argc,wchar_t** argv) {
     s.draftBindings[8]=1u<<16;s.draftBindings[9]=1u<<17;s.draftBindings[10]=1u<<19;s.draftBindings[12]=1u<<18;
     s.draftBindings[18]=XINPUT_GAMEPAD_A;s.draftBindings[19]=XINPUT_GAMEPAD_LEFT_THUMB;
     assert(draw.Save((out/L"menu-remap.bmp").c_str(),s,game));
+    s.resetConfirm=true;assert(draw.Save((out/L"menu-reset.bmp").c_str(),s,game));s.resetConfirm=false;
     s.page=10;assert(draw.Save((out/L"menu-remap-bottom.bmp").c_str(),s,game));s.page=0;
     s.listening=true;assert(draw.Save((out/L"menu-listen.bmp").c_str(),s,game));
     s.listening=false;s.confirming=true;s.candidate=0;

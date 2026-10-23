@@ -6,6 +6,7 @@
 namespace ButtonBindings {
 constexpr size_t Count=20;
 using Layout=std::array<uint32_t,Count>;
+inline constexpr Layout Defaults{XINPUT_GAMEPAD_A,XINPUT_GAMEPAD_Y,XINPUT_GAMEPAD_X,XINPUT_GAMEPAD_B,XINPUT_GAMEPAD_LEFT_SHOULDER,XINPUT_GAMEPAD_RIGHT_SHOULDER,XINPUT_GAMEPAD_LEFT_THUMB,XINPUT_GAMEPAD_RIGHT_THUMB,1u<<16,1u<<17};
 inline constexpr const wchar_t* Keys[]={L"RightA",L"RightB",L"LeftX",L"LeftY",L"LeftGrip",L"RightGrip",L"LeftStickClick",L"RightStickClick",L"LeftTrigger",L"RightTrigger",L"RightATap",L"RightBTap",L"LeftXTap",L"LeftYTap",L"LeftGripTap",L"RightGripTap",L"LeftStickClickTap",L"RightStickClickTap",L"RightStickUp",L"RightStickDown"};
 inline constexpr const wchar_t* Labels[]={L"RIGHT A",L"RIGHT B",L"LEFT X",L"LEFT Y",L"LEFT GRIP",L"RIGHT GRIP",L"LEFT STICK CLICK",L"RIGHT STICK CLICK",L"LEFT TRIGGER",L"RIGHT TRIGGER"};
 struct Target {uint32_t value;const wchar_t* key;const wchar_t* label;};
