@@ -35,6 +35,8 @@
 #include "HandOnlyGeometry.h"
 #include "ModelHandAlignment.h"
 #include "NativeHandWeapon.h"
+#include "InteractionCurl.h"
+#include "GamepadBridge.h"
 #include "MuzzleQueryDiagnostic.h"
 #include "HandWeaponMotionDiagnostic.h"
 
@@ -307,6 +309,7 @@ std::atomic<uint64_t> handDriveRejected{};
 // mean what I assumed, and it replaced the hand band on most frames. It stays
 // off until it has tests that do not depend on them.
 bool controllerHandsPose=false;
+bool controllerHandsInteractCurl=false;
 uint32_t controllerHandsPoseMask=0x4000;     // XINPUT_GAMEPAD_X    = interact
 uint32_t controllerHandsSprintMask=0x0100;   // XINPUT_GAMEPAD_LB   = sprint
 CameraMath::Matrix handPoseBase[32]{},handPoseBest[32]{};
@@ -1489,7 +1492,7 @@ std::atomic<bool> wheelOpen{};
 // controllerRaw is the muzzle BEFORE fubar's per-weapon grip offset is applied.
 // muzzle carries that offset, which is right for the gun and wrong for the
 // hand: the offset is a property of the weapon, not of where Mark's hand is.
-struct WeaponPose {void* weapon{};void* instance{};CameraMath::Matrix muzzle;uint64_t tick{};bool active{};void* owner{};CameraMath::Matrix controllerRaw;bool nativeRequested{},nativeValid{};CameraMath::Matrix gripTarget{},nativeSkin{},delta{};uint64_t equippedTick{};uint32_t buttons{};Transport::Gamepad diagnosticPad{};float scale=LiveWorldScale::Default;};
+struct WeaponPose {void* weapon{};void* instance{};CameraMath::Matrix muzzle;uint64_t tick{};bool active{};void* owner{};CameraMath::Matrix controllerRaw;bool nativeRequested{},nativeValid{};CameraMath::Matrix gripTarget{},nativeSkin{},delta{};uint64_t equippedTick{};uint32_t buttons{};Transport::Gamepad diagnosticPad{};float scale=LiveWorldScale::Default;void* holder{};};
 WeaponPose weaponPose;
 void* diagnosticWeapon{};void* diagnosticInstance{};uint64_t diagnosticEquippedTick{};
 std::atomic<uint64_t> controllerDraws{},controllerMuzzles{};
@@ -1927,8 +1930,9 @@ uintptr_t NativeWeaponMuzzle(void* weapon,CameraMath::Matrix* out,int barrel,boo
 }
 // Frame and pivot are immutable model data. The live bone/muzzle are never cached.
 bool NativeModelFrame(void* model,const std::shared_ptr<const HandOnlyGeometry::Plan>& plan,
-                      CameraMath::Matrix& frame,ModelHandAlignment::V& pivot) {
+                      CameraMath::Matrix& frame,ModelHandAlignment::V& pivot,InteractionCurl::Definition* curl=nullptr) {
     static std::mutex guard;
+    static InteractionCurl::Definition cachedCurl{};
     static std::shared_ptr<const HandOnlyGeometry::Plan> previous;
     static CameraMath::Matrix cachedFrame{};static ModelHandAlignment::V cachedPivot{};
     static bool ready{};static uint64_t retryAfter{};
@@ -1947,9 +1951,10 @@ bool NativeModelFrame(void* model,const std::shared_ptr<const HandOnlyGeometry::
                 memcpy(&segments[i].parent,raw.data()+i*64+0x38,4);
             }
             ready=NativeHandWeapon::Frame(segments,cachedFrame,cachedPivot,plan->boneCount);
+            if(ready && controllerHandsInteractCurl)cachedCurl=InteractionCurl::Build(segments,plan->boneCount);
         }
     }
-    if(!ready)return false;frame=cachedFrame;pivot=cachedPivot;return true;
+    if(!ready)return false;frame=cachedFrame;pivot=cachedPivot;if(curl)*curl=cachedCurl;return true;
 }
 bool LeftModelFrame(void* model,const std::shared_ptr<const HandOnlyGeometry::Plan>& plan,
                       CameraMath::Matrix& frame,ModelHandAlignment::V& pivot) {
@@ -2298,7 +2303,8 @@ bool TryModelHand(void* model,unsigned char* data,CameraMath::Matrix* palette,ui
     auto plan=(HandDrawDiagnostic::hookStatus.load()==1)?HandOnlyGeometry::Prepare(model):nullptr;
     if(!plan || plan->boneCount!=n){if(DiagnosticOptions::hands)++modelHandBadModel;return false;}
     CameraMath::Matrix frame{};ModelHandAlignment::V pivot{};
-    if(!NativeModelFrame(model,plan,frame,pivot)){if(DiagnosticOptions::hands)++modelHandBadModel;return false;}
+    InteractionCurl::Definition curl;
+    if(!NativeModelFrame(model,plan,frame,pivot,controllerHandsInteractCurl?&curl:nullptr)){if(DiagnosticOptions::hands)++modelHandBadModel;return false;}
     auto pose=ReadWeaponPose(false);
     bool capture=HandWeaponMotionDiagnostic::enabled && HandWeaponMotionDiagnostic::Wanted(0,frameId.load());
     HandWeaponMotionDiagnostic::Sample motion{};
@@ -2334,6 +2340,20 @@ bool TryModelHand(void* model,unsigned char* data,CameraMath::Matrix* palette,ui
     CameraMath::Matrix leftFrame{};ModelHandAlignment::V unused{};
     bool leftMoved=leftValid && LeftModelFrame(model,plan,leftFrame,unused) &&
         ModelHandAlignment::RestLeft(palette,n,plan->leftBones,leftFrame,leftTarget);
+    if(controllerHandsInteractCurl){
+        // Completed holster is state 4; do not infer empty from a missing muzzle.
+        // Validate the current holder association, not just a cached weapon address.
+        uint32_t weapon{},vtable{},flags{},pending{};auto now=GetTickCount64();
+        bool known=pose.active && pose.holder && pose.weapon &&
+            HandMeshDiagnostic::Read(uintptr_t(pose.holder)+0x14,&weapon,4) && weapon==uintptr_t(pose.weapon) &&
+            HandMeshDiagnostic::Read(weapon,&vtable,4) && vtable==base+0xab1944-0x400000 &&
+            HandMeshDiagnostic::Read(weapon+0x50,&flags,4) &&
+            HandMeshDiagnostic::Read(uintptr_t(pose.holder)+0x1c,&pending,4);
+        static thread_local InteractionCurl::Envelope envelope;
+        float amount=envelope.Update(now,frameId.load(),weapon,
+            InteractionCurl::Eligible(known,curl.valid,flags,pending),GamepadBridge::InteractionVisualHeld(now));
+        if(amount>0)InteractionCurl::Apply(palette,n,curl,amount);
+    }
     HandOnlyGeometry::Activate(uintptr_t(data),frameId.load(),plan,palette[130].m,leftMoved);
 
     if(DiagnosticOptions::hands)++modelHandApplied;return true;
@@ -3860,7 +3880,7 @@ void __fastcall UpdateHook(void* self,void*) {
                             raw=WeaponCalibration::Units(result.muzzle,worldScale);
                         }
                         weaponPose={weapon,instance,raw,t.tick,true,*reinterpret_cast<void**>(weapon+0x64),rawController};
-                        weaponPose.scale=worldScale;
+                        weaponPose.scale=worldScale;weaponPose.holder=holder;
                         weaponPose.nativeRequested=nativeRequested;weaponPose.gripTarget=modelTarget;
                         if(diagnosticWeapon!=weapon || diagnosticInstance!=instance){
                             diagnosticWeapon=weapon;diagnosticInstance=instance;diagnosticEquippedTick=now;
@@ -4368,6 +4388,8 @@ void Install() {
     controllerHandsModelAlignment=GetPrivateProfileIntW(L"VR",L"ControllerHandsModelAlignment",0,config)!=0;
     controllerHandsLeft=GetPrivateProfileIntW(L"VR",L"ControllerHandsLeft",1,config)!=0;
     controllerHandsNeutralWrist=GetPrivateProfileIntW(L"VR",L"ControllerHandsNeutralWrist",1,config)!=0;
+    controllerHandsInteractCurl=GetPrivateProfileIntW(L"VR",L"ControllerHandsInteractCurl",0,config)!=0;
+    GamepadBridge::EnableInteractionVisual(controllerHandsInteractCurl);
     controllerHandsRadius=float(GetPrivateProfileIntW(L"VR",L"ControllerHandsRadiusCm",15,config));
     controllerHandsSplitA=int(GetPrivateProfileIntW(L"VR",L"ControllerHandsSplitA",74,config));
     controllerHandsSplitB=int(GetPrivateProfileIntW(L"VR",L"ControllerHandsSplitB",148,config));

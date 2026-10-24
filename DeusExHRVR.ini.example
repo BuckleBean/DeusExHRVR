@@ -102,6 +102,10 @@ ControllerHandsLeft=1
 ; animation move it, which otherwise wiggles while sprinting and sits at a
 ; different angle per weapon.
 ControllerHandsNeutralWrist=1
+; Experimental visual-only curl of the empty right hand on Reload / interact.
+; Uses remapped VR input and only the supported completed-holster weapon state.
+; Disabled by default; restart after changing. No calibration or pose capture.
+ControllerHandsInteractCurl=0
 ; Which camera modes the hands step aside for, as a bit mask over the game's
 ; modes. 342 = cover, ladders, the animation-bone camera, lying down, orbit.
 ControllerHandsSuspendModes=342

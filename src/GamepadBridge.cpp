@@ -15,6 +15,9 @@
 namespace GamepadBridge {
 namespace {
 std::mutex guard;
+std::atomic<bool> interactionVisualEnabled{};
+std::atomic<uint64_t> interactionVisualPress{};
+void PublishInteraction(bool down,uint64_t now){if(interactionVisualEnabled.load(std::memory_order_relaxed))interactionVisualPress.store(down?now:0,std::memory_order_relaxed);}
 Transport::Header* channel{};
 Transport::Tracking latest{};
 using GetState=DWORD(WINAPI*)(DWORD,XINPUT_STATE*);
@@ -338,7 +341,7 @@ void StickButtons(XINPUT_GAMEPAD& pad) {
     }
 }
 bool Read(XINPUT_GAMEPAD& pad) {
-    if(!enabled || !channel)return false;
+    if(!enabled || !channel){PublishInteraction(false,0);return false;}
     Transport::Tracking sample{};
     if(Transport::ReadTracking(channel,sample))latest=sample;
     auto now=GetTickCount64();
@@ -346,6 +349,7 @@ bool Read(XINPUT_GAMEPAD& pad) {
     Transport::ReadMenu(channel,menuGate.latest);
     menuBlocked=menuGate.Blocked(now);
     if(menuBlocked){
+        PublishInteraction(false,0);
         pad={};quickSaveWanted=false;
         for(size_t i=0;i<buttonCount;i++){buttonWasDown[i]=false;buttonTapUntil[i]=0;}
         snapPending=snapMoving=snapArmed=false;snapHoldUntil=0;
@@ -356,6 +360,7 @@ bool Read(XINPUT_GAMEPAD& pad) {
         std::memcpy(&pad,&latest.gamepad.buttons,sizeof(pad));connected=true;
         if(latest.controllerButtons==3)calibrationInputBlocked=true;
         if(calibrationInputBlocked){
+            PublishInteraction(false,0);
             pad={};
             for(size_t i=0;i<buttonCount;i++){buttonWasDown[i]=false;buttonTapUntil[i]=0;}
             snapPending=snapMoving=snapArmed=false;
@@ -367,6 +372,7 @@ bool Read(XINPUT_GAMEPAD& pad) {
         if(snapEnabled)SnapTurn(pad);
         else if(stickUpTarget || stickDownTarget)StickButtons(pad);
     }
+    PublishInteraction(fresh && latest.gamepad.valid && (pad.wButtons&XINPUT_GAMEPAD_X)!=0,now);
     // Keep the device connected after first activation, but release every
     // button/axis on focus loss, sleeping controllers or a stalled companion.
     return connected;
@@ -421,6 +427,8 @@ void Install() {
     InputLog("Xbox input bridge installed: slot 0, motionControls=1");
 }
 }
+void EnableInteractionVisual(bool on){interactionVisualEnabled=on;interactionVisualPress=0;}
+bool InteractionVisualHeld(uint64_t now){auto tick=interactionVisualPress.load(std::memory_order_relaxed);return tick&&now>=tick&&now-tick<250;}
 void SetChannel(Transport::Header* header) {
     std::lock_guard lock(guard);
     NativeMenuPointer::Update({},false,GetTickCount64());

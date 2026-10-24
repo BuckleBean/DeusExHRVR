@@ -172,6 +172,24 @@ int wmain(int argc,wchar_t** argv) {
         ++h.menu.request;h.menu.hostTick=GetTickCount64();h.menu.requestedWorldScale=bad;
         GamepadBridge::MenuTick(2);assert(h.menu.result==2&&EngineCamera::ConfiguredWorldScale()==272.727f);
     }
+    // Visual interaction observes remapped output, not raw X.
+    EngineCamera::reasons=0;h.menu.blocked=0;GamepadBridge::menuGate={};
+    GamepadBridge::EnableInteractionVisual(true);GamepadBridge::enabled=true;
+    GamepadBridge::remapActive=true;GamepadBridge::snapEnabled=false;
+    for(size_t i=0;i<GamepadBridge::buttonCount;i++){
+        GamepadBridge::buttonTarget[i]=0;GamepadBridge::buttonTapTarget[i]=0;
+        GamepadBridge::buttonHoldMs[i]=0;GamepadBridge::buttonWasDown[i]=false;
+    }
+    GamepadBridge::buttonTarget[0]=XINPUT_GAMEPAD_X;
+    t={};t.tick=GetTickCount64();t.gamepad.valid=1;t.gamepad.buttons=XINPUT_GAMEPAD_A;
+    Transport::WriteTracking(&h,t);XINPUT_GAMEPAD visualPad{};GamepadBridge::Read(visualPad);
+    assert(visualPad.wButtons==XINPUT_GAMEPAD_X&&GamepadBridge::InteractionVisualHeld(GetTickCount64()));
+    t.tick=GetTickCount64();t.gamepad.buttons=XINPUT_GAMEPAD_X;Transport::WriteTracking(&h,t);
+    visualPad={};GamepadBridge::Read(visualPad);assert(!GamepadBridge::InteractionVisualHeld(GetTickCount64()));
+    GamepadBridge::rightTriggerTarget=XINPUT_GAMEPAD_X;t.gamepad.buttons=0;t.gamepad.rightTrigger=255;
+    Transport::WriteTracking(&h,t);visualPad={};GamepadBridge::Read(visualPad);assert(GamepadBridge::InteractionVisualHeld(GetTickCount64()));
+    t.tick=1;Transport::WriteTracking(&h,t);visualPad={};GamepadBridge::Read(visualPad);assert(!GamepadBridge::InteractionVisualHeld(GetTickCount64()));
+    GamepadBridge::EnableInteractionVisual(false);
     GamepadBridge::SetChannel(nullptr);
     printf("PASS %zu-bit actual bridge: request/ack/save/error, duplicate/stale/refused edits, calibration scaling, virtual/physical input and focus recovery\n",sizeof(void*)*8);
 }
