@@ -116,13 +116,24 @@ int wmain(int argc,wchar_t** argv) {
         for(int n=0;n<=1000;++n){
             float r=n/1000.f,x=r*std::cos(heading),y=r*std::sin(heading);
             auto v=CameraMath::MovementResponse(x,y,2);float length=std::hypot(v.strafe,v.walk);
-            assert(std::abs(length-r*r)<.00001f&&length+.00001f>=previous);
+            assert(std::isfinite(length)&&length+.00001f>=previous&&length<=1.00001f);
+            if(r>=.2f&&r<=.8f)assert(length>=.19999f&&length<=.55001f);
+            assert(length-previous<.0031f);
             assert(std::abs(x*v.walk-y*v.strafe)<.00001f);previous=length;
         }
     }
-    for(float r:{.25f,.5f,.75f,1.f}){
-        auto v=CameraMath::MovementResponse(0,r,2);assert(v.walk==r*r&&v.strafe==0);
+    for(auto point:{CameraMath::MovementAxes{0,0},{.2f,.2f},{.8f,.55f},{1,1}}){
+        auto v=CameraMath::MovementResponse(0,point.strafe,2);
+        assert(std::abs(v.walk-point.walk)<.00001f&&v.strafe==0);
     }
+    for(float knot:{.2f,.8f}){
+        const float h=.0001f;
+        auto f=[](float r){return CameraMath::MovementResponse(0,r,2).walk;};
+        assert(std::abs((f(knot)-f(knot-h))/h-(f(knot+h)-f(knot))/h)<.02f);
+    }
+    // Exact center remains finite; tiny movements do not introduce a new deadzone.
+    assert(CameraMath::MovementResponse(0,0,2).walk==0);
+    assert(CameraMath::MovementResponse(0,1e-6f,2).walk>0);
     auto full=CameraMath::MovementResponse(1,1,2);assert(full.strafe==1&&full.walk==1);
     auto invalid=CameraMath::MovementResponse(.2f,.3f,3);assert(invalid.strafe==.2f&&invalid.walk==.3f);
     auto diagonal=CameraMath::MovementResponse(1,1,true);assert(diagonal.strafe==1&&diagonal.walk==1);

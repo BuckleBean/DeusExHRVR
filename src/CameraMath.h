@@ -64,8 +64,19 @@ struct MovementAxes {float strafe,walk;};
 inline MovementAxes MovementResponse(float x,float y,unsigned mode){
     float r=std::hypot(x,y);
     if(mode==0||mode>2||!std::isfinite(r)||r>=1.f)return {x,y};
-    // Gentle retains the original curve; Gentler squares the radial magnitude.
-    float scale=mode==2?r:.5f+.5f*r;return {x*scale,y*scale};
+    if(mode==1){float scale=.5f+.5f*r;return {x*scale,y*scale};}
+    if(r==0.f)return {x,y};
+    // Gentler: broad middle range, then a deliberate outer-stick rise.
+    // Hermite joins preserve value and slope. Knots (input,output):
+    // (0,0), (.2,.2), (.8,.55), (1,1). Not measured world speeds.
+    float lo,hi,a,b,da,db;
+    if(r<.2f){lo=0;hi=.2f;a=0;b=.2f;da=1;db=.7f;}
+    else if(r<.8f){lo=.2f;hi=.8f;a=.2f;b=.55f;da=.7f;db=1;}
+    else {lo=.8f;hi=1;a=.55f;b=1;da=1;db=2.75f;}
+    float width=hi-lo,t=(r-lo)/width,t2=t*t,t3=t2*t;
+    float output=(2*t3-3*t2+1)*a+(t3-2*t2+t)*width*da
+        +(-2*t3+3*t2)*b+(t3-t2)*width*db;
+    float scale=output/r;return {x*scale,y*scale};
 }
 inline MovementAxes ReorientMovement(float strafe,float walk,const Matrix& native,const Matrix& target) {
     // Native locomotion actions use the opposite yaw sense to the camera's
