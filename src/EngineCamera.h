@@ -9,6 +9,9 @@ void SetDialogueEnabled(bool enabled);
 Transport::RenderInfo OnPresent(uint64_t frame, bool capture);
 void SetChannel(Transport::Header* header);
 bool SnapTurnView(float& yaw);
+void SetDirectSnapEnabled(bool enabled);
+void CancelDirectSnap();
+bool RequestDirectSnap(float rightDegrees);
 // Local patch: the game's quickbar auto-hide setting (tilde). Returns the value
 // found, setting it to 1 first if asked, or -1 if the game's layout doesn't match.
 int QuickBarAutoHide(bool set);

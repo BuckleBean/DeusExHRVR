@@ -188,21 +188,14 @@ void ApplyButtons(XINPUT_GAMEPAD& pad) {
 }
 
 // ---- Local patch: snap turn via one injected relative mouse move ----
-// Mouse look turns by a fixed angle per count, so one move gives an instant,
-// repeatable snap without the right stick's acceleration ramp. The count is
-// calibrated from the game camera's measured heading change and saved back.
-constexpr float Pi=3.14159265f;
-bool snapEnabled{},snapArmed{},snapPending{},snapMoving{};
-float snapDegrees=30.f,snapYaw{};
-double snapCounts=300.;
-int snapDir{},snapMisses{};
-uint64_t snapAt{},snapCooldown{},snapCount{},snapHoldUntil{};
-int snapPauseMs=60;
-bool snapHoldAdaptive{};float snapHoldYaw{};uint64_t snapHoldStart{};
-bool snapHideQuickBar{},quickBarPending=true,quickBarFailed{},quickBarLogged{};
+// Direct native-angle snaps: no mouse input and no left-stick suppression.
+bool snapEnabled{},snapArmed{};
+float snapDegrees=30.f;
+double snapCounts=300.; // Legacy settings serialization only; never used to turn.
+uint64_t snapCooldown{};
 void LoadSnap() {
     snapEnabled=GetPrivateProfileIntW(L"VR",L"SnapTurn",0,configPath)!=0;
-    snapHideQuickBar=GetPrivateProfileIntW(L"VR",L"SnapTurnHideQuickBar",1,configPath)!=0;
+    EngineCamera::SetDirectSnapEnabled(snapEnabled);
     wchar_t text[32]{};
     GetPrivateProfileStringW(L"VR",L"SnapTurnDegrees",L"30",text,32,configPath);
     float degrees=static_cast<float>(_wtof(text));
@@ -210,22 +203,7 @@ void LoadSnap() {
     GetPrivateProfileStringW(L"VR",L"SnapTurnMouseCounts",L"300",text,32,configPath);
     double counts=_wtof(text);
     if(std::isfinite(counts) && counts>=1 && counts<=20000)snapCounts=counts;
-    // The game appears to drop mouse look while the gamepad left stick is
-    // deflected, so walking is released until the injected turn shows up.
-    snapPauseMs=std::clamp(static_cast<int>(GetPrivateProfileIntW(L"VR",L"SnapTurnPauseMs",60,configPath)),0,500);
-    // SnapTurnPauseMs is the maximum; the pause ends as soon as the turn is seen.
-    InputLog("snapTurn enabled=%d degrees=%.1f mouseCounts=%.0f pauseMs=%d hideQuickBar=%d",snapEnabled,snapDegrees,snapCounts,snapPauseMs,snapHideQuickBar);
-}
-// The injected mouse move brings up the game's PC quickbar. The game's own
-// quickbar auto-hide (the tilde key) keeps it hidden, so snap turn turns it on each
-// time gameplay starts, in case the game has reloaded its settings since.
-// SnapTurnHideQuickBar=0 leaves the setting to the player.
-void HideQuickBar() {
-    if(!snapHideQuickBar || quickBarFailed)return;
-    int found=EngineCamera::QuickBarAutoHide(true);
-    if(found<0){quickBarFailed=true;InputLog("quickBarAutoHide: setting not recognized, left alone");return;}
-    if(!quickBarLogged || !found)InputLog("quickBarAutoHide found=%d%s",found,found?"":", set to 1");
-    quickBarLogged=true;
+    InputLog("snapTurn directNative enabled=%d degrees=%.1f",snapEnabled,snapDegrees);
 }
 bool GameInForeground() {
     DWORD pid=0;GetWindowThreadProcessId(GetForegroundWindow(),&pid);
@@ -245,82 +223,21 @@ void SyncQuickSave() {
     InputLog("quickSave F5 %s%s",want?"down":"up",sent?"":" (SendInput failed)");
 }
 void SnapTurn(XINPUT_GAMEPAD& pad) {
-    auto now=GetTickCount64();
-    float yaw=0;
-    bool view=EngineCamera::SnapTurnView(yaw);
-    if(snapPending && now>=snapAt+400) {
-        snapPending=false;
-        if(view) {
-            float delta=yaw-snapYaw;
-            while(delta>Pi)delta-=2*Pi;
-            while(delta<-Pi)delta+=2*Pi;
-            float measured=std::abs(delta)*180/Pi;
-            double used=snapCounts;
-            if(measured<1) {
-                ++snapMisses;
-                InputLog("snap #%llu dir=%d moving=%d counts=%.0f measured=%.2f deg: no turn detected (misses=%d)",snapCount,snapDir,snapMoving,used,measured,snapMisses);
-            } else {
-                snapMisses=0;
-                double next=std::clamp(snapCounts*snapDegrees/measured,snapCounts/4,snapCounts*4);
-                next=std::clamp(next,1.,20000.);
-                if(std::abs(next-snapCounts)>snapCounts*.02) {
-                    snapCounts=next;
-                    SettingsWriter().Queue(configPath,snapCounts);
-                }
-                InputLog("snap #%llu dir=%d moving=%d counts=%.0f measured=%.2f deg signed=%.2f target=%.1f nextCounts=%.0f",
-                    snapCount,snapDir,snapMoving,used,measured,delta*180/Pi,snapDegrees,snapCounts);
-            }
-        } else {
-            InputLog("snap #%llu dir=%d: view left gameplay before measurement",snapCount,snapDir);
-        }
+    auto now=GetTickCount64();float yaw=0;
+    if(!EngineCamera::SnapTurnView(yaw) || !GameInForeground()){
+        snapArmed=false;EngineCamera::CancelDirectSnap();return;
     }
-    if(!view){snapArmed=false;snapHoldUntil=0;quickBarPending=true;return;} // menus/terminals/scope keep the native right stick
-    if(quickBarPending){quickBarPending=false;HideQuickBar();}
-    // During gameplay the right stick is snap-only (vertical look did nothing useful with LockVerticalCamera).
     double rx=pad.sThumbRX/32767.,ry=pad.sThumbRY/32767.;
     double magnitude=std::hypot(rx,ry);
     pad.sThumbRX=pad.sThumbRY=0;
-    if(now<snapHoldUntil && snapHoldAdaptive) {
-        // Release walking on the first read after the camera has visibly turned,
-        // so the pause is hidden behind the snap itself.
-        float d=yaw-snapHoldYaw;
-        while(d>Pi)d-=2*Pi;
-        while(d<-Pi)d+=2*Pi;
-        if(std::abs(d)*180/Pi>=snapDegrees*.5f) {
-            InputLog("snap #%llu walking resumed after %llums (turn seen)",snapCount,now-snapHoldStart);
-            snapHoldUntil=0;snapHoldAdaptive=false;
-        }
-    }
-    if(snapHoldUntil && now>=snapHoldUntil && snapHoldAdaptive) {
-        InputLog("snap #%llu walking resumed after %llums (cap reached, turn not seen)",snapCount,now-snapHoldStart);
-        snapHoldAdaptive=false;
-    }
-    if(now<snapHoldUntil){pad.sThumbLX=pad.sThumbLY=0;} // brief walking pause around the mouse move
-    auto inject=[&] {
-        snapYaw=yaw;snapAt=now;snapPending=true;
-        INPUT input{};input.type=INPUT_MOUSE;input.mi.dwFlags=MOUSEEVENTF_MOVE;
-        input.mi.dx=static_cast<LONG>(std::lround(snapCounts))*snapDir;
-        if(SendInput(1,&input,sizeof(input))!=1)InputLog("snap #%llu SendInput failed error=%lu",snapCount,GetLastError());
-    };
-    // Up/down within 30 degrees of vertical: hold the configured button (e.g. jump/crouch).
-    if(magnitude>=.6 && std::abs(ry)>=magnitude*.866) {
+    if(magnitude>=.6 && std::abs(ry)>=magnitude*.866){
         auto target=ry>0?stickUpTarget:stickDownTarget;
         if(target)Emit(pad,target,true,BYTE(255));
     }
     if(magnitude<.35){snapArmed=true;return;}
-    // Any flick pointing within 60 degrees of horizontal counts (diagonals included).
-    if(!snapArmed || now<snapCooldown || magnitude<.6 || std::abs(rx)<magnitude*.5 || !GameInForeground())return;
-    const int dead=32767/4;
-    snapMoving=std::abs(int(pad.sThumbLX))>dead || std::abs(int(pad.sThumbLY))>dead;
-    snapArmed=false;snapDir=rx>0?1:-1;++snapCount;
-    snapPending=false; // a newer snap replaces any measurement still pending
-    snapCooldown=now+60;
-    if(snapMoving) { // release walking until the turn is seen (capped at SnapTurnPauseMs)
-        pad.sThumbLX=pad.sThumbLY=0;
-        snapHoldUntil=now+snapPauseMs;
-        snapHoldAdaptive=true;snapHoldYaw=yaw;snapHoldStart=now;
-    }
-    inject();
+    if(!snapArmed || now<snapCooldown || magnitude<.6 || std::abs(rx)<magnitude*.5)return;
+    snapArmed=false;snapCooldown=now+60;
+    EngineCamera::RequestDirectSnap(rx>0?snapDegrees:-snapDegrees);
 }
 
 // Without snap turn the right stick normally reaches the game untouched. When
@@ -352,7 +269,7 @@ bool Read(XINPUT_GAMEPAD& pad) {
         PublishInteraction(false,0);
         pad={};quickSaveWanted=false;
         for(size_t i=0;i<buttonCount;i++){buttonWasDown[i]=false;buttonTapUntil[i]=0;}
-        snapPending=snapMoving=snapArmed=false;snapHoldUntil=0;
+        snapArmed=false;EngineCamera::CancelDirectSnap();
         connected=true;return true;
     }
     if(fresh && latest.gamepad.valid) {
@@ -363,7 +280,7 @@ bool Read(XINPUT_GAMEPAD& pad) {
             PublishInteraction(false,0);
             pad={};
             for(size_t i=0;i<buttonCount;i++){buttonWasDown[i]=false;buttonTapUntil[i]=0;}
-            snapPending=snapMoving=snapArmed=false;
+            snapArmed=false;EngineCamera::CancelDirectSnap();
             if(!latest.controllerButtons)calibrationInputBlocked=false;
             return true;
         }
@@ -372,6 +289,7 @@ bool Read(XINPUT_GAMEPAD& pad) {
         if(snapEnabled)SnapTurn(pad);
         else if(stickUpTarget || stickDownTarget)StickButtons(pad);
     }
+    if(!fresh || !latest.gamepad.valid || !GameInForeground()){snapArmed=false;EngineCamera::CancelDirectSnap();}
     PublishInteraction(fresh && latest.gamepad.valid && (pad.wButtons&XINPUT_GAMEPAD_X)!=0,now);
     // Keep the device connected after first activation, but release every
     // button/axis on focus loss, sleeping controllers or a stalled companion.
@@ -461,13 +379,13 @@ void MenuTick(unsigned screenReasons) {
     if(m.request!=m.acknowledged && Transport::Fresh(m.hostTick,now)) {
         m.acknowledged=m.request;
         if(m.eligible&&m.blocked&&m.requestedDialogue<=1&&(!m.requestedDialogue||m.dialogueAvailable)&&std::isfinite(m.requestedWorldScale)&&m.requestedWorldScale>=10&&m.requestedWorldScale<=1000&&m.resetBindings<=1&&m.requestedInteraction<=3&&(m.requestedInteraction==1||m.requestedInteraction==2||m.requestedInteraction==m.interaction)&&m.requestedResponse<=2&&m.requestedSnap<=1&&m.requestedMovement<=3&&(m.requestedMovement!=0||m.movement==0)&&ButtonBindings::Valid(m.requestedBindings,m.bindingMask)&&SettingsMenu::ApplyAngle(m.requestedDegrees,snapDegrees,snapCounts)) {
-            snapPending=snapMoving=snapArmed=false;snapHoldUntil=0;
+            snapArmed=false;EngineCamera::CancelDirectSnap();
             EngineCamera::SetDialogueEnabled(m.requestedDialogue!=0);m.dialogue=m.requestedDialogue;
             EngineCamera::SetConfiguredWorldScale(m.requestedWorldScale);m.worldScale=m.requestedWorldScale;
             EngineCamera::SetInteractionAim(m.requestedInteraction);m.interaction=m.requestedInteraction;
             if(m.resetBindings)for(auto& hold:buttonHoldMs)hold=0;
             EngineCamera::SetMovementResponse(m.requestedResponse);m.response=m.requestedResponse;
-            snapEnabled=m.requestedSnap!=0;m.snapEnabled=snapEnabled;
+            snapEnabled=m.requestedSnap!=0;EngineCamera::SetDirectSnapEnabled(snapEnabled);m.snapEnabled=snapEnabled;
             EngineCamera::SetMovementDirection(m.requestedMovement);m.movement=m.requestedMovement;
             for(size_t i=0;i<ButtonBindings::Count;++i)if(m.bindingMask&(1u<<i))m.bindings[i]=m.requestedBindings[i];
             if(m.bindingMask){

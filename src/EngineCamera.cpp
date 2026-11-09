@@ -4,6 +4,7 @@
 #include "CameraMath.h"
 #include "InteractionDiagnostics.h"
 #include "NativeHeading.h"
+#include "DirectSnap.h"
 #include "CameraPosition.h"
 #include "DirectionConfig.h"
 #include "NativeBounds.h"
@@ -1643,6 +1644,16 @@ bool nativeHeadingWasUsed{};
 using NativeLookInput=float*(__thiscall*)(void*,float*,void*);
 using NativeLookSet=void(__thiscall*)(void*,const float*);
 NativeLookInput originalNativeLookInput{};
+std::atomic<bool> directSnapReady{};
+bool directSnapEnabled{}; // stateMutex
+DirectSnap::Request directSnapRequest; // stateMutex
+bool SnapForeground(){DWORD pid=0;GetWindowThreadProcessId(GetForegroundWindow(),&pid);return pid==GetCurrentProcessId();}
+bool DirectSnapEligible(uint64_t now){ // stateMutex held
+    return directSnapReady && directSnapEnabled && motionControls && requested && current.active &&
+        !screenReasons && !gameMenuOpen && !wheelOpen && !conversationCamera.load() &&
+        current.playerInstance && current.managerAddress && current.tracking.rightController.valid &&
+        now>=current.tracking.tick && now-current.tracking.tick<250;
+}
 std::atomic<uint64_t> nativeLookCalls{},nativeLookApplied{};
 std::atomic<float> nativeLookBefore{},nativeLookAfter{},nativeLookYaw{};
 
@@ -1679,25 +1690,35 @@ bool NativeLookOwner(void* self,void* context,void* instance,uintptr_t manager) 
 float* __fastcall NativeLookInputHook(void* self,void*,float* out,void* context) {
     ++nativeLookCalls;
     float* result=originalNativeLookInput(self,out,context);
-    if((!nativeLookPitchLock && !nativeLookHeading) || !result || result!=out)return result;
+    if(!result || result!=out){CancelDirectSnap();return result;}
     void* instance{};uintptr_t manager{};
     {
         std::lock_guard lock(stateMutex);
         auto now=GetTickCount64();
         if(!motionControls || !requested || !current.active || screenReasons || gameMenuOpen ||
            wheelOpen || conversationCamera.load() || !current.tracking.rightController.valid ||
-           now<current.tracking.tick || now-current.tracking.tick>=250)return result;
+           now<current.tracking.tick || now-current.tracking.tick>=250){directSnapRequest.Clear();return result;}
         instance=current.playerInstance;manager=current.managerAddress;
     }
-    if(!NativeLookOwner(self,context,instance,manager))return result;
-    for(int i=0;i<4;i++)if(!std::isfinite(result[i]))return result;
+    if(!NativeLookOwner(self,context,instance,manager)){CancelDirectSnap();return result;}
+    for(int i=0;i<4;i++)if(!std::isfinite(result[i])){CancelDirectSnap();return result;}
+    float snapDegrees=0;
+    {
+        bool focused=SnapForeground();
+        std::lock_guard lock(stateMutex);auto now=GetTickCount64();
+        snapDegrees=directSnapRequest.Take(now,reinterpret_cast<uintptr_t>(instance),manager,
+            focused && DirectSnapEligible(now) && current.playerInstance==instance && current.managerAddress==manager);
+    }
     // Native setter uses MOVAPS: supply an explicitly aligned vector. Preserve
-    // all components except pitch, including the yaw produced by native input.
+    // components not intentionally changed. Consume snaps only on this game thread.
     alignas(16) float angles[4];memcpy(angles,result,sizeof(angles));
-    if(nativeLookPitchLock) {
-        nativeLookBefore=angles[0];nativeLookYaw=angles[2];angles[0]=0;
+    if(nativeLookPitchLock){nativeLookBefore=angles[0];nativeLookYaw=angles[2];angles[0]=0;}
+    if(snapDegrees!=0)angles[2]=DirectSnap::Turn(angles[2],snapDegrees);
+    if(nativeLookPitchLock || snapDegrees!=0){
         reinterpret_cast<NativeLookSet>(base+0x7a90a0-0x400000)(self,angles);
-        result[0]=0;
+        memcpy(result,angles,sizeof(angles));
+    }
+    if(nativeLookPitchLock) {
         nativeLookAfter=*reinterpret_cast<float*>(static_cast<unsigned char*>(self)+0x30);
         if(nativeLookApplied.fetch_add(1)==0) {
             FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")) {
@@ -4343,7 +4364,7 @@ void Install() {
     DiagnosticOptions::runtime=GetPrivateProfileIntW(L"VR",L"RuntimeDiagnosticLog",0,config)!=0;
     DiagnosticOptions::liveHandConfig=GetPrivateProfileIntW(L"VR",L"HandConfigLiveReload",0,config)!=0;
     HandWeaponMotionDiagnostic::enabled=GetPrivateProfileIntW(L"VR",L"HandWeaponMotionLog",0,config)!=0;
-    if(enabled && (nativeLookPitchLock || nativeLookHeading)) {
+    if(enabled && (motionControls || nativeLookPitchLock || nativeLookHeading)) {
         auto target=reinterpret_cast<void*>(VA(0x7ac8c0));
         const char inputBytes[]="\x55\x8b\xec\x83\xe4\xf0\x81\xec\x74\x01\x00\x00";
         const char setterBytes[]="\x55\x8b\xec\x83\xe4\xf0\x83\xec\x28\x56\x8b\xf1";
@@ -4354,6 +4375,7 @@ void Install() {
                 reinterpret_cast<void**>(&originalNativeLookInput))==MH_OK;
             if(ok && MH_EnableHook(target)!=MH_OK){MH_RemoveHook(target);ok=false;}
         }
+        directSnapReady=ok;
         nativeLookPitchLock=nativeLookPitchLock && ok;
         nativeLookHeading=nativeLookHeading && ok;
         FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")) {
@@ -4645,6 +4667,14 @@ void SetInteractionAim(unsigned value){if(value<=3)interactionAim.store(static_c
 unsigned MovementResponse(){return movementResponse.load();}
 void SetMovementResponse(unsigned value){if(value<=2)movementResponse.store(value);}
 
+void SetDirectSnapEnabled(bool value){std::lock_guard lock(stateMutex);directSnapEnabled=value;directSnapRequest.Clear();}
+void CancelDirectSnap(){std::lock_guard lock(stateMutex);directSnapRequest.Clear();}
+bool RequestDirectSnap(float degrees){
+    if(!SnapForeground())return false;
+    std::lock_guard lock(stateMutex);auto now=GetTickCount64();
+    if(!DirectSnapEligible(now)){directSnapRequest.Clear();return false;}
+    return directSnapRequest.Queue(degrees,now,reinterpret_cast<uintptr_t>(current.playerInstance),current.managerAddress);
+}
 unsigned MovementDirection(){return unsigned(movementDirection.load());}
 void Recenter(){recenterRequested=true;conversationCamera=nullptr;}
 void SetMovementDirection(unsigned value){if(value<=3)movementDirection.store(static_cast<DirectionConfig::Source>(value));}

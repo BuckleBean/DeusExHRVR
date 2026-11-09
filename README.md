@@ -188,9 +188,9 @@ The filter reports the time-average of the heading over the last window, extrapo
 
 `SnapTurn=1` under `[VR]` replaces the right stick's smooth camera turn during gameplay with a snap turn. A flick within 60 degrees of horizontal turns the view instantly by `SnapTurnDegrees` (default 30); the stick must return near center before the next flick. Menus, terminals and scoped aiming keep the native right stick.
 
-The turn is one injected relative mouse move, which avoids the stick's acceleration ramp. `SnapTurnMouseCounts` is the size of that move; the mod measures the resulting heading change after each snap and writes a corrected value back to the INI, so it self-calibrates within a few turns from any starting value. The game appears to ignore mouse look while the gamepad left stick is deflected, so walking is released for up to `SnapTurnPauseMs` (default 60) around the injected move and resumed as soon as the camera has visibly turned.
+This experimental candidate applies the angle through the game's native aiming setter, on the game thread. It sends no mouse movement and does not pause left-stick movement. Requests are consumed once, expire after 100 ms, and are rejected when gameplay ownership, tracking or focus is invalid. There is no mouse fallback if the native hook cannot be validated. Headset behavior remains unverified.
 
-The injected mouse move also brings up the game's keyboard-and-mouse quickbar (the PC item bar). The game's own quickbar auto-hide, the setting the tilde key toggles, keeps it hidden, so with `SnapTurn=1` the mod turns it on whenever gameplay starts. The setting is checked against the supported build before it is changed. `SnapTurnHideQuickBar=0` leaves it to you.
+`SnapTurnMouseCounts` remains in legacy settings serialization for rollback compatibility but does not control turning and is no longer self-calibrated. `SnapTurnPauseMs` and `SnapTurnHideQuickBar` are unused by direct snapping. The candidate does not change the game's quickbar setting. Normal walking is the recommended comparison against smooth turn; walking curves have not been changed in this candidate.
 
 ### Remapping buttons
 

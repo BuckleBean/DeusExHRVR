@@ -26,6 +26,10 @@ void SetMovementDirection(unsigned value){movement=value;}
 unsigned reasons=2;
 unsigned CurrentScreenReasons(){return reasons;}
 bool SnapTurnView(float&){return reasons==0;}
+bool directEnabled{},directPending{};
+void SetDirectSnapEnabled(bool value){directEnabled=value;directPending=false;}
+void CancelDirectSnap(){directPending=false;}
+bool RequestDirectSnap(float){return true;}
 int QuickBarAutoHide(bool){return 1;}
 bool ImmersiveScopeButton(){return false;}
 void ArmHandCalibration(){}
@@ -79,10 +83,10 @@ int wmain(int argc,wchar_t** argv) {
     wcscpy_s(GamepadBridge::configPath,path.c_str());
     auto oldCounts=GamepadBridge::snapCounts;auto oldAngle=GamepadBridge::snapDegrees;
     h.menu.hostTick=GetTickCount64();h.menu.request=6;h.menu.requestedSnap=0;h.menu.requestedDegrees=oldAngle;
-    GamepadBridge::snapPending=GamepadBridge::snapMoving=GamepadBridge::snapArmed=true;
+    EngineCamera::directPending=GamepadBridge::snapArmed=true;
     GamepadBridge::MenuTick(2);
     assert(!h.menu.snapEnabled&&!GamepadBridge::snapEnabled&&GamepadBridge::snapCounts==oldCounts);
-    assert(!GamepadBridge::snapPending&&!GamepadBridge::snapMoving&&!GamepadBridge::snapArmed);
+    assert(!EngineCamera::directPending&&!EngineCamera::directEnabled&&!GamepadBridge::snapArmed);
     for(int n=0;n<200&&h.menu.saved!=6;++n){Sleep(10);GamepadBridge::MenuTick(2);}
     assert(h.menu.saved==6&&GetPrivateProfileIntW(L"VR",L"SnapTurn",2,path.c_str())==0);
     GamepadBridge::LoadSnap();assert(!GamepadBridge::snapEnabled&&GamepadBridge::snapDegrees==oldAngle);
