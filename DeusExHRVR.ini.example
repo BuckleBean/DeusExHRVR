@@ -106,6 +106,8 @@ ControllerHandsNeutralWrist=1
 ; Uses remapped VR input and only the supported completed-holster weapon state.
 ; Disabled by default; restart after changing. No calibration or pose capture.
 ControllerHandsInteractCurl=0
+; Experimental shoulder-to-hand IK; startup only, requires supported model hands.
+ControllerArmsIK=0
 ; Which camera modes the hands step aside for, as a bit mask over the game's
 ; modes. 342 = cover, ladders, the animation-bone camera, lying down, orbit.
 ControllerHandsSuspendModes=342

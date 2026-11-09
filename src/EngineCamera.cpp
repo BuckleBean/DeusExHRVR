@@ -36,6 +36,9 @@
 #include "ModelHandAlignment.h"
 #include "NativeHandWeapon.h"
 #include "InteractionCurl.h"
+#include "FullArmIK.h"
+#include "ArmPoseHistory.h"
+#include "ArmBodyHeading.h"
 #include "GamepadBridge.h"
 #include "MuzzleQueryDiagnostic.h"
 #include "HandWeaponMotionDiagnostic.h"
@@ -1211,6 +1214,7 @@ void RefreshScreenMode() {
     }
 }
 Transport::Pose reference{};
+uint64_t armReferenceEpoch{}; // stateMutex; explicit recenter/tracking-reference lifecycle
 bool levelRecenter=true;
 bool yawOnlyCamera=false; // Local patch: drop game camera pitch/roll (head-bob tilt) from the VR base
 CameraMath::Matrix RenderBase(const CameraMath::Matrix& game);
@@ -1930,9 +1934,10 @@ uintptr_t NativeWeaponMuzzle(void* weapon,CameraMath::Matrix* out,int barrel,boo
 }
 // Frame and pivot are immutable model data. The live bone/muzzle are never cached.
 bool NativeModelFrame(void* model,const std::shared_ptr<const HandOnlyGeometry::Plan>& plan,
-                      CameraMath::Matrix& frame,ModelHandAlignment::V& pivot,InteractionCurl::Definition* curl=nullptr) {
+                      CameraMath::Matrix& frame,ModelHandAlignment::V& pivot,InteractionCurl::Definition* curl=nullptr,FullArmIK::Rig* arms=nullptr) {
     static std::mutex guard;
     static InteractionCurl::Definition cachedCurl{};
+    static FullArmIK::Rig cachedArms{};
     static std::shared_ptr<const HandOnlyGeometry::Plan> previous;
     static CameraMath::Matrix cachedFrame{};static ModelHandAlignment::V cachedPivot{};
     static bool ready{};static uint64_t retryAfter{};
@@ -1952,9 +1957,10 @@ bool NativeModelFrame(void* model,const std::shared_ptr<const HandOnlyGeometry::
             }
             ready=NativeHandWeapon::Frame(segments,cachedFrame,cachedPivot,plan->boneCount);
             if(ready && controllerHandsInteractCurl)cachedCurl=InteractionCurl::Build(segments,plan->boneCount);
+            if(ready && HandOnlyGeometry::fullArmsEnabled)cachedArms=FullArmIK::Build(segments,plan->boneCount);
         }
     }
-    if(!ready)return false;frame=cachedFrame;pivot=cachedPivot;if(curl)*curl=cachedCurl;return true;
+    if(!ready)return false;frame=cachedFrame;pivot=cachedPivot;if(curl)*curl=cachedCurl;if(arms)*arms=cachedArms;return true;
 }
 bool LeftModelFrame(void* model,const std::shared_ptr<const HandOnlyGeometry::Plan>& plan,
                       CameraMath::Matrix& frame,ModelHandAlignment::V& pivot) {
@@ -2289,23 +2295,64 @@ void MotionContext(HandWeaponMotionDiagnostic::Sample& sample,const WeaponPose& 
     std::lock_guard lock(stateMutex);sample.tracking=current.tracking.id;
     sample.base=current.controllerBase;sample.viewWorld=current.world;
 }
+ArmPoseHistory::Cache armPoseHistory;
+struct ArmDrawInput {
+    Snapshot camera{};Transport::Pose origin{};WeaponPose weapon{};
+    uint64_t frame{};bool valid{};
+};
+// stateMutex owns this snapshot. Freeze camera and weapon inputs together for
+// the present generation, so repeated draws never sample different tracking.
+ArmDrawInput armDrawInput;
+ArmBodyHeading::State armBodyHeading; // stateMutex owns this estimate
 bool TryModelHand(void* model,unsigned char* data,CameraMath::Matrix* palette,uint32_t n) {
-    CameraMath::Matrix target{},leftTarget{};bool leftValid=false;
+    CameraMath::Matrix target{},leftTarget{},armHead{};bool leftValid=false;
+    WeaponPose frozenWeapon{};ArmPoseHistory::Key armKey{};bool armInputsCoherent=false;
+    const bool useArms=HandOnlyGeometry::fullArmsEnabled;
     {
-        std::lock_guard lock(stateMutex);
-        if(!requested || !current.active || !referenceValid || screenReasons || current.scale!=handDrawScale ||
-           !ModelHandAlignment::GripTarget(current.tracking,GetTickCount64(),current.controllerBase,reference,current.scale,target)) {
+        std::lock_guard lock(stateMutex);auto now=GetTickCount64();
+        if(!requested || !current.active || !referenceValid || screenReasons || current.scale!=handDrawScale){
+            if(useArms){armDrawInput.valid=false;armPoseHistory.Reset();armBodyHeading.Reset();}
             if(DiagnosticOptions::hands)++modelHandNoGrip;return false;
         }
+        if(useArms){
+            auto frame=frameId.load();
+            if(!armDrawInput.valid || armDrawInput.frame!=frame ||
+               current.playerInstance!=armDrawInput.camera.playerInstance || current.scale!=armDrawInput.camera.scale ||
+               memcmp(&reference,&armDrawInput.origin,sizeof(reference))){
+                armDrawInput={current,reference,weaponPose,frame,true};
+            }
+        }
+        const auto& camera=useArms?armDrawInput.camera:current;
+        const auto& origin=useArms?armDrawInput.origin:reference;
+        if(!ModelHandAlignment::GripTarget(camera.tracking,now,camera.controllerBase,origin,camera.scale,target)){
+            if(useArms){armDrawInput.valid=false;armPoseHistory.Reset();armBodyHeading.Reset();}
+            if(DiagnosticOptions::hands)++modelHandNoGrip;return false;
+        }
+        if(useArms){
+            auto trackedHead=CameraMath::HeadWorld(camera.controllerBase,origin,camera.tracking.head,camera.scale);
+            bool bodyValid=armBodyHeading.Update(trackedHead,camera.controllerBase,
+                {uintptr_t(camera.playerInstance),camera.managerAddress,armReferenceEpoch,camera.scale},
+                armDrawInput.frame,now,armHead);
+            armKey.baseYaw=ArmBodyHeading::Yaw(CameraMath::HorizontalDirection(camera.controllerBase,camera.controllerBase));
+            frozenWeapon=armDrawInput.weapon;
+            frozenWeapon.active=frozenWeapon.active && (!drawing.active || drawing.scale==frozenWeapon.scale) &&
+                now>=frozenWeapon.tick && now-frozenWeapon.tick<250;
+            armInputsCoherent=bodyValid && (!frozenWeapon.nativeRequested || (frozenWeapon.active &&
+                frozenWeapon.tick==camera.tracking.tick && frozenWeapon.scale==camera.scale));
+            armKey.epoch=armReferenceEpoch;armKey.frame=armDrawInput.frame;armKey.tracking=camera.tracking.id;armKey.tick=now;
+            armKey.model=uintptr_t(model);armKey.player=uintptr_t(camera.playerInstance);
+            armKey.weapon=uintptr_t(frozenWeapon.weapon);armKey.scale=camera.scale;
+            armKey.reference=origin;armKey.scene=camera.managerAddress;
+        }
         if(controllerHandsLeft.load())leftValid=
-            ModelHandAlignment::GripTarget(current.tracking,GetTickCount64(),current.controllerBase,reference,current.scale,leftTarget,true);
+            ModelHandAlignment::GripTarget(camera.tracking,now,camera.controllerBase,origin,camera.scale,leftTarget,true);
     }
     auto plan=(HandDrawDiagnostic::hookStatus.load()==1)?HandOnlyGeometry::Prepare(model):nullptr;
     if(!plan || plan->boneCount!=n){if(DiagnosticOptions::hands)++modelHandBadModel;return false;}
     CameraMath::Matrix frame{};ModelHandAlignment::V pivot{};
-    InteractionCurl::Definition curl;
-    if(!NativeModelFrame(model,plan,frame,pivot,controllerHandsInteractCurl?&curl:nullptr)){if(DiagnosticOptions::hands)++modelHandBadModel;return false;}
-    auto pose=ReadWeaponPose(false);
+    InteractionCurl::Definition curl;FullArmIK::Rig armRig;
+    if(!NativeModelFrame(model,plan,frame,pivot,controllerHandsInteractCurl?&curl:nullptr,HandOnlyGeometry::fullArmsEnabled?&armRig:nullptr)){if(DiagnosticOptions::hands)++modelHandBadModel;return false;}
+    auto pose=useArms?frozenWeapon:ReadWeaponPose(false);
     bool capture=HandWeaponMotionDiagnostic::enabled && HandWeaponMotionDiagnostic::Wanted(0,frameId.load());
     HandWeaponMotionDiagnostic::Sample motion{};
     if(capture){MotionContext(motion,pose,0);motion.count=2;motion.before[0]=palette[129];motion.before[1]=palette[130];}
@@ -2354,7 +2401,11 @@ bool TryModelHand(void* model,unsigned char* data,CameraMath::Matrix* palette,ui
             InteractionCurl::Eligible(known,curl.valid,flags,pending),GamepadBridge::InteractionVisualHeld(now));
         if(amount>0)InteractionCurl::Apply(palette,n,curl,amount);
     }
-    HandOnlyGeometry::Activate(uintptr_t(data),frameId.load(),plan,palette[130].m,leftMoved);
+    armKey.plan=uintptr_t(plan.get());
+    bool armsMoved=useArms && armInputsCoherent && plan->armsReady && leftMoved &&
+        armPoseHistory.Apply(palette,n,armRig,armHead,plan->armBones,armKey);
+    if(useArms && (!armInputsCoherent || !plan->armsReady || !leftMoved))armPoseHistory.Reset();
+    HandOnlyGeometry::Activate(uintptr_t(data),frameId.load(),plan,palette[130].m,leftMoved,armsMoved);
 
     if(DiagnosticOptions::hands)++modelHandApplied;return true;
 }
@@ -3562,7 +3613,7 @@ void __fastcall UpdateHook(void* self,void*) {
                     fprintf(f,"WorldScale applied previous=%g active=%g frame=%llu\n",previousScale,worldScale,frameId.load());fclose(f);
                 }
             }
-            if(!referenceValid || recenterRequested){reference=LevelReference(t.head);referenceValid=true;recenterRequested=false;}
+            if(!referenceValid || recenterRequested){reference=LevelReference(t.head);++armReferenceEpoch;referenceValid=true;recenterRequested=false;}
             // Interaction cameras implement the same virtual getters as the
             // player camera; use that interface instead of its private layout.
             current.originalWorld=CameraMath::Load(originalWorld(self));
@@ -4096,7 +4147,7 @@ void __fastcall PrimitiveHook(void* self,void*,void* stream,bool backBeforeFront
             t.flags=primitiveState?*reinterpret_cast<uint32_t*>(primitiveState):0;
         }
         // Simply do not submit it. Nothing is moved, so nothing can smear.
-        if(idx<32 && (controllerHandsSkipPrimMask&(1u<<idx)))return;
+        if(!HandOnlyGeometry::fullArmsEnabled && idx<32 && (controllerHandsSkipPrimMask&(1u<<idx)))return;
     }
     auto snapshot=drawing.active?drawing:lastWorld;
     // scaleformData is consumed only by the engine's UI shader path at 0x532d3c.
@@ -4388,6 +4439,7 @@ void Install() {
     controllerHandsModelAlignment=GetPrivateProfileIntW(L"VR",L"ControllerHandsModelAlignment",0,config)!=0;
     controllerHandsLeft=GetPrivateProfileIntW(L"VR",L"ControllerHandsLeft",1,config)!=0;
     controllerHandsNeutralWrist=GetPrivateProfileIntW(L"VR",L"ControllerHandsNeutralWrist",1,config)!=0;
+    HandOnlyGeometry::fullArmsEnabled=GetPrivateProfileIntW(L"VR",L"ControllerArmsIK",0,config)!=0;
     controllerHandsInteractCurl=GetPrivateProfileIntW(L"VR",L"ControllerHandsInteractCurl",0,config)!=0;
     GamepadBridge::EnableInteractionVisual(controllerHandsInteractCurl);
     controllerHandsRadius=float(GetPrivateProfileIntW(L"VR",L"ControllerHandsRadiusCm",15,config));
