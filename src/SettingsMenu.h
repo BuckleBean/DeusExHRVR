@@ -208,7 +208,7 @@ struct State {
             else if(!saving&&Remap.Has(x,y)){remapping=true;}
             else if(!saving&&WorldScale.Has(x,y))scalePage=true;
             else if(!saving&&Interaction.Has(x,y)){draftInteraction=draftInteraction==1?2:1;}
-            else if(!saving&&Response.Has(x,y)){draftResponse=draftResponse?0:1;}
+            else if(!saving&&Response.Has(x,y)){draftResponse=(draftResponse+1)%3;}
             else if(!saving&&Movement.Has(x,y)){draftMovement=draftMovement==1?3:draftMovement==3?2:1;}
             else if(!saving&&TurnMode.Has(x,y)){draftSnap=!draftSnap;}
             else if(!saving&&draftSnap) {

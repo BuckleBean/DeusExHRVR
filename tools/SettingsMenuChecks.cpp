@@ -110,6 +110,21 @@ int wmain(int argc,wchar_t** argv) {
             if(n==1000)assert(std::abs(length-1)<1e-6f);previous=length;
         }
     }
+    // Dense radial sweep checks direction and monotonicity for the new curve.
+    for(float heading:{0.f,.5f,1.5f,3.f}){
+        float previous=0;
+        for(int n=0;n<=1000;++n){
+            float r=n/1000.f,x=r*std::cos(heading),y=r*std::sin(heading);
+            auto v=CameraMath::MovementResponse(x,y,2);float length=std::hypot(v.strafe,v.walk);
+            assert(std::abs(length-r*r)<.00001f&&length+.00001f>=previous);
+            assert(std::abs(x*v.walk-y*v.strafe)<.00001f);previous=length;
+        }
+    }
+    for(float r:{.25f,.5f,.75f,1.f}){
+        auto v=CameraMath::MovementResponse(0,r,2);assert(v.walk==r*r&&v.strafe==0);
+    }
+    auto full=CameraMath::MovementResponse(1,1,2);assert(full.strafe==1&&full.walk==1);
+    auto invalid=CameraMath::MovementResponse(.2f,.3f,3);assert(invalid.strafe==.2f&&invalid.walk==.3f);
     auto diagonal=CameraMath::MovementResponse(1,1,true);assert(diagonal.strafe==1&&diagonal.walk==1);
     {SettingsMenu::State ui;Transport::MenuState gm{};gm.degrees=30;GamepadMapping::Input input{};input.active=true;
      ui.Update(true,true,true,1200,450,input,gm);input.rightTrigger=1;ui.Update(true,true,true,1200,450,input,gm);
@@ -144,6 +159,17 @@ int wmain(int argc,wchar_t** argv) {
      ui.draftScale=11;click(SettingsMenu::ScaleMinus);assert(ui.draftScale==10);
      click(SettingsMenu::ScaleReset);click(SettingsMenu::ScaleMinus);click(SettingsMenu::Save);
      assert(ui.requestedScale==290&&ui.saving&&gm.activeWorldScale==300);
+    }
+    {SettingsMenu::State ui;Transport::MenuState gm{};gm.degrees=30;gm.worldScale=300;gm.response=1;
+     GamepadMapping::Input input{};input.active=true;
+     auto click=[&](SettingsMenu::Rect r){input.rightTrigger=0;ui.Update(true,true,true,float(r.x+20),float(r.y+20),input,gm);input.rightTrigger=1;ui.Update(true,true,true,float(r.x+20),float(r.y+20),input,gm);};
+     click(SettingsMenu::Entry);assert(ui.draftResponse==1);
+     click(SettingsMenu::Response);assert(ui.draftResponse==2&&ui.Dirty());
+     click(SettingsMenu::Discard);assert(!ui.open&&!ui.request);
+     click(SettingsMenu::Entry);assert(ui.draftResponse==1);
+     click(SettingsMenu::Response);click(SettingsMenu::Response);assert(ui.draftResponse==0);
+     click(SettingsMenu::Response);assert(ui.draftResponse==1);
+     click(SettingsMenu::Response);click(SettingsMenu::Save);assert(ui.requestedResponse==2&&ui.saving);
     }
     float degrees=30;double counts=300;
     // Validate the diagnostic's native frame offsets and failed-read handling.
@@ -337,6 +363,7 @@ int wmain(int argc,wchar_t** argv) {
     assert(entryPixels[(SettingsMenu::Entry.y+SettingsMenu::Entry.h-2)*SettingsMenu::Width+SettingsMenu::Entry.x+2]==0);
     assert(SettingsMenu::Panel.x==SettingsMenu::ListPanel.x&&SettingsMenu::Panel.w==SettingsMenu::ListPanel.w);s.open=true;s.pointer=true;s.x=1240;s.y=303;
     game.dialogueAvailable=1;assert(draw.Save((out/L"menu-panel.bmp").c_str(),s,game));
+    s.draftResponse=2;assert(draw.Save((out/L"menu-gentler.bmp").c_str(),s,game));s.draftResponse=0;
     s.draftDialogue=true;assert(draw.Save((out/L"menu-dialogue.bmp").c_str(),s,game));s.draftDialogue=false;
     auto pixels=static_cast<const uint32_t*>(draw.Draw(s,game));
     assert(pixels[0]==0x90000000u);assert((pixels[300*SettingsMenu::Width+1050]>>24)==255);
@@ -364,6 +391,7 @@ int wmain(int argc,wchar_t** argv) {
         }else assert(bright(SettingsMenu::Entry)>500);
     }
     s.open=true;s.draftScale=s.originalScale=game.worldScale=game.activeWorldScale=300;s.draftInteraction=s.originalInteraction=2;game.dialogueAvailable=1;assert(draw.Save((out/L"menu-panel.bmp").c_str(),s,game));
+    s.draftResponse=2;assert(draw.Save((out/L"menu-gentler.bmp").c_str(),s,game));s.draftResponse=0;
     s.draftDialogue=true;assert(draw.Save((out/L"menu-dialogue.bmp").c_str(),s,game));s.draftDialogue=false;
     s.scalePage=true;assert(draw.Save((out/L"menu-world-scale.bmp").c_str(),s,game));s.scalePage=false;
     s.draft=90;s.draftMovement=3;pixels=static_cast<const uint32_t*>(draw.Draw(s,game));assert(pixels);

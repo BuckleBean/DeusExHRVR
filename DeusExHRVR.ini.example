@@ -1,5 +1,6 @@
 [VR]
-; Walking input response: 0 = Normal (default), 1 = Gentle.
+; Walking input response: 0 = Normal (default), 1 = Gentle, 2 = Gentler.
+; Gentler squares the input magnitude for more low-speed stick travel.
 ; Gentle reduces partial locomotion input after native deadzone processing,
 ; preserving direction and full-deflection input. Requires MotionControls.
 ; Also adjustable in VR Settings with Save & Back; menus remain unchanged.

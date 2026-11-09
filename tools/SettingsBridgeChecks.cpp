@@ -149,7 +149,7 @@ int wmain(int argc,wchar_t** argv) {
     GamepadBridge::MenuTick(2);assert(h.menu.response==1&&EngineCamera::response==1);
     for(int n=0;n<200&&h.menu.saved!=25;++n){Sleep(10);GamepadBridge::MenuTick(2);}
     assert(h.menu.saved==25&&GetPrivateProfileIntW(L"VR",L"MovementResponse",0,path.c_str())==1);
-    h.menu.request=26;h.menu.hostTick=GetTickCount64();h.menu.requestedResponse=2;
+    h.menu.request=26;h.menu.hostTick=GetTickCount64();h.menu.requestedResponse=3;
     GamepadBridge::MenuTick(2);assert(h.menu.result==2&&EngineCamera::response==1);
     h.menu.request=27;h.menu.hostTick=GetTickCount64();h.menu.requestedResponse=1;
     h.menu.requestedInteraction=1;h.menu.resetBindings=1;
@@ -205,6 +205,13 @@ int wmain(int argc,wchar_t** argv) {
     for(int n=0;n<200&&h.menu.saved!=102;++n){Sleep(10);GamepadBridge::MenuTick(2);}
     assert(h.menu.saved==102&&GetPrivateProfileIntW(L"VR",L"FixedDialogueCamera",1,path.c_str())==0);
     h.menu.requestedDialogue=2;request(103,30);assert(h.menu.result==2);
+    h.menu.requestedDialogue=0;h.menu.requestedResponse=2;EngineCamera::available=true;
+    request(104,30);assert(h.menu.response==2&&EngineCamera::response==2);
+    for(int n=0;n<200&&h.menu.saved!=104;++n){Sleep(10);GamepadBridge::MenuTick(2);}
+    assert(h.menu.saved==104&&GetPrivateProfileIntW(L"VR",L"MovementResponse",3,path.c_str())==2);
+    h.menu.requestedResponse=0;request(105,30);assert(EngineCamera::response==0);
+    for(int n=0;n<200&&h.menu.saved!=105;++n){Sleep(10);GamepadBridge::MenuTick(2);}
+    assert(h.menu.saved==105&&GetPrivateProfileIntW(L"VR",L"MovementResponse",3,path.c_str())==0);
     GamepadBridge::SetChannel(nullptr);
     printf("PASS %zu-bit actual bridge: request/ack/save/error, duplicate/stale/refused edits, calibration scaling, virtual/physical input and focus recovery\n",sizeof(void*)*8);
 }

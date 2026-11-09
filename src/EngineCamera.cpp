@@ -1842,8 +1842,8 @@ float __fastcall InputAxisHook(void* self,void*,uint32_t index,bool requireActiv
     float value=originalInputAxis(self,index,requireActive);
     auto walk=walkAction.load(),strafe=strafeAction.load();
     const auto source=movementDirection.load();
-    bool gentle=motionControls&&movementResponse.load()==1;
-    if((source==DirectionConfig::Source::Mouse&&!gentle) || !walk || !strafe || (self!=walk && self!=strafe))return value;
+    const unsigned response=motionControls?movementResponse.load():0;
+    if((source==DirectionConfig::Source::Mouse&&response==0) || !walk || !strafe || (self!=walk && self!=strafe))return value;
     {std::lock_guard lock(stateMutex);if(index!=current.inputIndex)return value;}
     CameraMath::Matrix target,native;
     if(!DirectionWorld(source==DirectionConfig::Source::Mouse?DirectionConfig::Source::Headset:source,target,&native))return value;
@@ -1853,7 +1853,7 @@ float __fastcall InputAxisHook(void* self,void*,uint32_t index,bool requireActiv
     float x=self==strafe?value:originalInputAxis(strafe,index,requireActive);
     float y=self==walk?value:originalInputAxis(walk,index,requireActive);
     if(!std::isfinite(x) || !std::isfinite(y))return value;
-    auto shaped=CameraMath::MovementResponse(x,y,gentle);
+    auto shaped=CameraMath::MovementResponse(x,y,response);
     auto axes=source==DirectionConfig::Source::Mouse?shaped:CameraMath::ReorientMovement(shaped.strafe,shaped.walk,native,target);
     if(DiagnosticOptions::runtime)++movementAxes;
     if(DiagnosticOptions::runtime && std::abs(x)+std::abs(y)>.01f) {
@@ -4442,7 +4442,8 @@ void Install() {
     if(!(controllerHandsRadius>0)||controllerHandsRadius>500)controllerHandsRadius=15.f;
     interactionAim=DirectionConfig::Read(config,L"InteractionAim");
     movementDirection=DirectionConfig::Read(config,L"MovementDirection");
-    movementResponse=GetPrivateProfileIntW(L"VR",L"MovementResponse",0,config)==1?1u:0u;
+    const unsigned configuredResponse=GetPrivateProfileIntW(L"VR",L"MovementResponse",0,config);
+    movementResponse=configuredResponse<=2?configuredResponse:0;
     immersiveScope=GetPrivateProfileIntW(L"VR",L"ImmersiveScope",0,config)!=0;
     GetPrivateProfileStringW(L"VR",L"ScopeMagnification",L"4",scaleText,32,config);
     {float value=static_cast<float>(_wtof(scaleText));if(std::isfinite(value)&&value>=1&&value<=12)scopeMagnification=value;}
@@ -4642,7 +4643,7 @@ bool DialogueAvailable(){return dialogueHooksReady.load();}
 void SetDialogueEnabled(bool value){fixedDialogueCamera.store(value&&dialogueHooksReady.load());}
 void SetInteractionAim(unsigned value){if(value<=3)interactionAim.store(static_cast<DirectionConfig::Source>(value));}
 unsigned MovementResponse(){return movementResponse.load();}
-void SetMovementResponse(unsigned value){if(value<=1)movementResponse.store(value);}
+void SetMovementResponse(unsigned value){if(value<=2)movementResponse.store(value);}
 
 unsigned MovementDirection(){return unsigned(movementDirection.load());}
 void Recenter(){recenterRequested=true;conversationCamera=nullptr;}

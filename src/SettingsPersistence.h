@@ -27,7 +27,7 @@ public:
         if(dialogue < -1 || dialogue > 1)return false;
         if(worldScale!=-1&&(!std::isfinite(worldScale)||worldScale<10||worldScale>1000))return false;
         if(interaction < -1 || interaction > 3)return false;
-        if(response < -1 || response > 1 || !ButtonBindings::Valid(bindings,mask))return false;
+        if(response < -1 || response > 2 || !ButtonBindings::Valid(bindings,mask))return false;
         FILE* f{};if(_wfopen_s(&f,path.c_str(),L"rb"))return false;
         unsigned char start[4]{};auto n=fread(start,1,4,f);fclose(f);
         // Existing project INIs are BOM-free and start with [VR]. Refuse other
@@ -39,7 +39,7 @@ public:
         if(angle&&worldScale>=0){swprintf_s(text,L"%.9g",double(worldScale));if(!WritePrivateProfileStringW(L"VR",L"WorldUnitsPerMetre",text,path.c_str()))return false;}
         if(angle&&dialogue>=0&&!WritePrivateProfileStringW(L"VR",L"FixedDialogueCamera",dialogue?L"1":L"0",path.c_str()))return false;
         if(angle&&snap>=0&&!WritePrivateProfileStringW(L"VR",L"SnapTurn",snap?L"1":L"0",path.c_str()))return false;
-        if(angle&&response>=0&&!WritePrivateProfileStringW(L"VR",L"MovementResponse",response?L"1":L"0",path.c_str()))return false;
+        if(angle&&response>=0&&!WritePrivateProfileStringW(L"VR",L"MovementResponse",response==2?L"2":response==1?L"1":L"0",path.c_str()))return false;
         if(angle&&interaction>=0&&!WritePrivateProfileStringW(L"VR",L"InteractionAim",DirectionConfig::Value(unsigned(interaction)),path.c_str()))return false;
         if(angle&&reset)for(size_t i=0;i<8;++i){wchar_t key[48];swprintf_s(key,L"%lsHoldMs",ButtonBindings::Keys[i]);if(!WritePrivateProfileStringW(L"Buttons",key,L"0",path.c_str()))return false;}
         if(angle&&movement>=0&&!WritePrivateProfileStringW(L"VR",L"MovementDirection",DirectionConfig::Value(unsigned(movement)),path.c_str()))return false;
@@ -54,7 +54,7 @@ public:
         if(angle&&worldScale>=0){GetPrivateProfileStringW(L"VR",L"WorldUnitsPerMetre",L"",text,40,path.c_str());if(std::abs(_wtof(text)-worldScale)>.001)return false;}
         if(angle&&interaction>=0&&unsigned(DirectionConfig::Read(path.c_str(),L"InteractionAim"))!=unsigned(interaction))return false;
         if(angle&&reset)for(size_t i=0;i<8;++i){wchar_t key[48];swprintf_s(key,L"%lsHoldMs",ButtonBindings::Keys[i]);if(GetPrivateProfileIntW(L"Buttons",key,1,path.c_str())!=0)return false;}
-        if(angle&&response>=0&&GetPrivateProfileIntW(L"VR",L"MovementResponse",2,path.c_str())!=unsigned(response))return false;
+        if(angle&&response>=0&&GetPrivateProfileIntW(L"VR",L"MovementResponse",3,path.c_str())!=unsigned(response))return false;
         if(angle&&movement>=0&&unsigned(DirectionConfig::Read(path.c_str(),L"MovementDirection"))!=unsigned(movement))return false;
         if(angle&&dialogue>=0&&GetPrivateProfileIntW(L"VR",L"FixedDialogueCamera",2,path.c_str())!=unsigned(dialogue))return false;
         if(angle&&snap>=0&&GetPrivateProfileIntW(L"VR",L"SnapTurn",2,path.c_str())!=unsigned(snap))return false;

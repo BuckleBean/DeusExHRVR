@@ -142,7 +142,7 @@ public:
             wchar_t value[40];swprintf_s(value,L"%.6g\u00b0",double(s.draft));Text(value,870,260,310,50,true);
             Button(SettingsMenu::Minus,L"-",s.draftSnap&&!s.saving&&hovered(SettingsMenu::Minus));Button(SettingsMenu::Plus,L"+",s.draftSnap&&!s.saving&&hovered(SettingsMenu::Plus));
             Button(SettingsMenu::Movement,s.draftMovement==1?L"HEAD":s.draftMovement==3?L"LEFT HAND":s.draftMovement==2?L"RIGHT HAND":L"FROM CONFIG",!s.saving&&hovered(SettingsMenu::Movement));
-            Button(SettingsMenu::Response,s.draftResponse?L"GENTLE":L"NORMAL",!s.saving&&hovered(SettingsMenu::Response));
+            Button(SettingsMenu::Response,s.draftResponse==2?L"GENTLER":s.draftResponse==1?L"GENTLE":L"NORMAL",!s.saving&&hovered(SettingsMenu::Response));
             Button(SettingsMenu::Interaction,s.draftInteraction==1?L"HEAD":s.draftInteraction==2?L"RIGHT HAND":L"FROM CONFIG",!s.saving&&hovered(SettingsMenu::Interaction));
             Button(SettingsMenu::Remap,L"BUTTON REMAPPING",!s.saving&&hovered(SettingsMenu::Remap));
             Button(SettingsMenu::Recenter,L"RECENTER (3 SECONDS)",!s.saving&&hovered(SettingsMenu::Recenter));

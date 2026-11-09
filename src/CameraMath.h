@@ -61,10 +61,11 @@ inline float HeadingDelta(const Matrix& from,const Matrix& to) {
 struct MovementAxes {float strafe,walk;};
 // Shape processed locomotion, after native deadzone handling. Preserve direction,
 // full deflection, and out-of-range combined inputs. No temporal smoothing.
-inline MovementAxes MovementResponse(float x,float y,bool gentle){
+inline MovementAxes MovementResponse(float x,float y,unsigned mode){
     float r=std::hypot(x,y);
-    if(!gentle||!std::isfinite(r)||r>=1.f)return {x,y};
-    float scale=.5f+.5f*r;return {x*scale,y*scale};
+    if(mode==0||mode>2||!std::isfinite(r)||r>=1.f)return {x,y};
+    // Gentle retains the original curve; Gentler squares the radial magnitude.
+    float scale=mode==2?r:.5f+.5f*r;return {x*scale,y*scale};
 }
 inline MovementAxes ReorientMovement(float strafe,float walk,const Matrix& native,const Matrix& target) {
     // Native locomotion actions use the opposite yaw sense to the camera's

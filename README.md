@@ -333,3 +333,7 @@ controller status, or `HandConfigLiveReload=1` to poll hand INI settings while
 running. Each defaults to 0. `HandWeaponMotionLog` remains separately opt-in.
 `MovementResponseLog` is retired and has no effect. Rendering, hand validation,
 calibration, startup/error messages and explicitly requested captures remain.
+
+### Walking response
+
+The VR menu offers **Normal / Gentle / Gentler**. Gentler gives more stick travel to low movement inputs: 25%, 50%, 75%, and 100% processed input produce 6.25%, 25%, 56.25%, and 100% output. Gentle retains its previous curve; Normal passes input through unchanged. These are continuous input curves, not measured walking speeds or four speed tiers. Full input and the sprint binding remain unchanged. Choose Save & Back to apply and persist; Discard keeps the previous setting. `[VR] MovementResponse=0/1/2` selects Normal/Gentle/Gentler; missing or invalid values use Normal.
