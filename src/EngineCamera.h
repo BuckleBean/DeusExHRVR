@@ -3,6 +3,9 @@
 #include "SharedPair.h"
 struct ID3D11Device;
 namespace EngineCamera {
+bool DialogueEnabled();
+bool DialogueAvailable();
+void SetDialogueEnabled(bool enabled);
 Transport::RenderInfo OnPresent(uint64_t frame, bool capture);
 void SetChannel(Transport::Header* header);
 bool SnapTurnView(float& yaw);

@@ -112,6 +112,7 @@ struct Bridge {
             m.recenterRequest=menuRecenterRequest;
             m.requestedResponse=menuUI.requestedResponse;
             m.requestedWorldScale=menuUI.requestedScale;
+            m.requestedDialogue=menuUI.requestedDialogue;
             m.requestedInteraction=menuUI.requestedInteraction;m.resetBindings=menuUI.requestedReset;
             m.request=menuUI.request;m.requestedDegrees=menuUI.requested;m.requestedSnap=menuUI.requestedSnap;m.requestedMovement=menuUI.requestedMovement;
             m.requestedBindings=menuUI.requestedBindings;m.bindingMask=menuUI.requestedBindingMask;

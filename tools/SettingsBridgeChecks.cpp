@@ -6,6 +6,10 @@
 #include <fstream>
 #include <limits>
 namespace EngineCamera {
+bool dialogue{},available=true;
+bool DialogueEnabled(){return dialogue;}
+bool DialogueAvailable(){return available;}
+void SetDialogueEnabled(bool value){dialogue=value&&available;}
 LiveWorldScale scale;
 float ConfiguredWorldScale(){return scale.Configured();}
 float ActiveWorldScale(){return scale.Active();}
@@ -190,6 +194,17 @@ int wmain(int argc,wchar_t** argv) {
     Transport::WriteTracking(&h,t);visualPad={};GamepadBridge::Read(visualPad);assert(GamepadBridge::InteractionVisualHeld(GetTickCount64()));
     t.tick=1;Transport::WriteTracking(&h,t);visualPad={};GamepadBridge::Read(visualPad);assert(!GamepadBridge::InteractionVisualHeld(GetTickCount64()));
     GamepadBridge::EnableInteractionVisual(false);
+    h.menu.requestedDegrees=30;h.menu.requestedSnap=1;h.menu.requestedMovement=1;
+    h.menu.requestedInteraction=1;h.menu.requestedResponse=0;h.menu.requestedWorldScale=300;
+    h.menu.resetBindings=0;h.menu.bindingMask=0;h.menu.requestedDialogue=1;
+    request(100,30);assert(EngineCamera::dialogue&&h.menu.dialogue==1);
+    for(int n=0;n<200&&h.menu.saved!=100;++n){Sleep(10);GamepadBridge::MenuTick(2);}
+    assert(h.menu.saved==100&&GetPrivateProfileIntW(L"VR",L"FixedDialogueCamera",0,path.c_str())==1);
+    EngineCamera::available=false;request(101,30);assert(h.menu.result==2);
+    h.menu.requestedDialogue=0;request(102,30);assert(!EngineCamera::dialogue);
+    for(int n=0;n<200&&h.menu.saved!=102;++n){Sleep(10);GamepadBridge::MenuTick(2);}
+    assert(h.menu.saved==102&&GetPrivateProfileIntW(L"VR",L"FixedDialogueCamera",1,path.c_str())==0);
+    h.menu.requestedDialogue=2;request(103,30);assert(h.menu.result==2);
     GamepadBridge::SetChannel(nullptr);
     printf("PASS %zu-bit actual bridge: request/ack/save/error, duplicate/stale/refused edits, calibration scaling, virtual/physical input and focus recovery\n",sizeof(void*)*8);
 }

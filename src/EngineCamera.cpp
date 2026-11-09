@@ -1,5 +1,6 @@
 #include "WorldScaleConfig.h"
 #include "EngineCamera.h"
+#include "DialogueCamera.h"
 #include "CameraMath.h"
 #include "InteractionDiagnostics.h"
 #include "NativeHeading.h"
@@ -77,9 +78,10 @@ bool lockVerticalCamera{};
 // calls 0x6bddb0 (thiscall track, flag; track 0xffff clears it) on a
 // participant. A participant's +8 is its conversation; participants leave
 // through 0x6bed40 and 0x6bf3e0, which both skip unless +0x50 (entered) is set.
-bool fixedDialogueCamera{};
+std::atomic<bool> fixedDialogueCamera{},dialogueHooksReady{};
+DialogueCamera::State dialogueState;
 std::atomic<void*> conversationCamera{}; // conversation that last picked a camera track
-CameraMath::Matrix lastPlayerBase;uint64_t lastPlayerBaseTick{},dialogueEndTick{};
+
 bool dialogueCamera{},holdingPlayerBase{};
 void NoteConversation(const char* event,void* conversation) {
     FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")){fprintf(f,"conversation %s %p\n",event,conversation);fclose(f);}
@@ -3545,7 +3547,7 @@ void __fastcall UpdateHook(void* self,void*) {
         }
         const bool dialogue=conversationCamera.load()!=nullptr;
         if(dialogue!=dialogueCamera) {
-            dialogueCamera=dialogue;if(!dialogue)dialogueEndTick=now;
+            dialogueCamera=dialogue;
             FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")) {
                 fprintf(f,"dialogueCamera=%d frame=%llu\n",dialogue,frameId.load());fclose(f);
             }
@@ -3562,6 +3564,8 @@ void __fastcall UpdateHook(void* self,void*) {
                     fprintf(f,"WorldScale applied previous=%g active=%g frame=%llu\n",previousScale,worldScale,frameId.load());fclose(f);
                 }
             }
+            if(previousScale!=worldScale || !referenceValid || recenterRequested){dialogueState.Reset(dialogue);holdingPlayerBase=false;}
+            if(active!=manager+0x6f0){dialogueState.Reset(dialogue);holdingPlayerBase=false;}
             if(!referenceValid || recenterRequested){reference=LevelReference(t.head);referenceValid=true;recenterRequested=false;}
             // Interaction cameras implement the same virtual getters as the
             // player camera; use that interface instead of its private layout.
@@ -3762,43 +3766,23 @@ void __fastcall UpdateHook(void* self,void*) {
                     renderBase.m[8]=x;renderBase.m[9]=y;renderBase.m[10]=0;
                 }
                 if(bobTrace)BobTrace(ms,current.originalWorld,renderBase.m+12,t);
-                if(fixedDialogueCamera) {
-                    const bool held=holdingPlayerBase;
-                    // Hold only straight out of gameplay, never a pose from before a load.
-                    if(dialogueCamera && now-lastPlayerBaseTick<1000)holdingPlayerBase=true;
-                    // Afterwards, keep holding until the game camera is back at the held
-                    // pose (at most 2 s), so its blend back from the last shot is not shown.
-                    if(holdingPlayerBase && !dialogueCamera) {
-                        float dx=renderBase.m[12]-lastPlayerBase.m[12];
-                        float dy=renderBase.m[13]-lastPlayerBase.m[13];
-                        float dz=renderBase.m[14]-lastPlayerBase.m[14];
-                        float lim=.1f*worldScale;
-                        if(dx*dx+dy*dy+dz*dz<lim*lim || now-dialogueEndTick>2000)holdingPlayerBase=false;
-                    }
-                    if(holdingPlayerBase)renderBase=lastPlayerBase;
-                    else {lastPlayerBase=renderBase;lastPlayerBaseTick=now;}
-                    if(held!=holdingPlayerBase) {
-                        // Mark was put at FLOOR HEIGHT in two conversations
-                        // (2026-10-18). Cause unknown; StanceHold was checked
-                        // and ruled out (it returns the true eye height on
-                        // reset, never 0). Record enough to tell next time
-                        // whether the hold engaged, what height it froze, and
-                        // how far that sits above the player's feet: a held
-                        // eye of ~0 means a bad pose was captured, while a
-                        // sane held eye with the view still on the floor means
-                        // something downstream moved it.
-                        auto entity=*reinterpret_cast<const unsigned char* const*>(active+0xaa0);
-                        float entZ=entity?*reinterpret_cast<const float*>(entity+0x28):0.f;
-                        const auto& b=holdingPlayerBase?lastPlayerBase:renderBase;
-                        FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")) {
-                            fprintf(f,"dialogueHold=%d frame=%llu heldZ=%.2f entityZ=%.2f eyeIn=%.2f ageMs=%llu stale=%d\n",
-                                holdingPlayerBase,frameId.load(),b.m[14],entZ,
-                                entity?b.m[14]-entZ:-1.f,now-lastPlayerBaseTick,
-                                int(now-lastPlayerBaseTick>=1000));
-                            fclose(f);
-                        }
+                if(fixedDialogueCamera.load()){
+                auto entity=*reinterpret_cast<const unsigned char* const*>(active+0xaa0);
+                const auto player=reinterpret_cast<uintptr_t>(entity);
+                Transport::Vector body{};
+                if(entity){body={*reinterpret_cast<const float*>(entity+0x20),*reinterpret_cast<const float*>(entity+0x24),*reinterpret_cast<const float*>(entity+0x28)};}
+                const bool entering=dialogue&&!dialogueState.wasDialogue;
+                const bool wasHeld=holdingPlayerBase;
+                const bool gameplay=!gameMenuOpen&&!wheelOpen&&!immersiveScopeActive&&
+                    NativeCombatCamera(const_cast<unsigned char*>(entity),reinterpret_cast<uintptr_t>(manager));
+                holdingPlayerBase=dialogueState.Update(fixedDialogueCamera.load(),dialogue,
+                    gameplay,player,body,worldScale,now,renderBase);
+                if((entering&&!holdingPlayerBase)||wasHeld!=holdingPlayerBase){
+                    FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")){
+                        fprintf(f,"dialogueHold=%d frame=%llu fallback=%d\n",int(holdingPlayerBase),frameId.load(),int(entering&&!holdingPlayerBase));fclose(f);
                     }
                 }
+                }else{dialogueState.Reset(dialogue);holdingPlayerBase=false;}
             }
             // Re-arm calibration by holding the RIGHT controller above the head.
             // Positions only, so no axis convention can invert it, and raising a
@@ -3929,6 +3913,7 @@ void __fastcall UpdateHook(void* self,void*) {
             }
 
         }
+        if(!current.active){dialogueState.Reset(dialogue);holdingPlayerBase=false;}
         if(!calibrationUpdated)calibration.Cancel();
     }
     if(budget.load()<=0)return;
@@ -4293,7 +4278,7 @@ void Install() {
     yawOnlyCamera=GetPrivateProfileIntW(L"VR",L"YawOnlyCamera",0,config)!=0;
     controllerHandsForceFallback=GetPrivateProfileIntW(L"VR",L"ControllerHandsForceFallback",0,config)!=0;
     fixedDialogueCamera=GetPrivateProfileIntW(L"VR",L"FixedDialogueCamera",0,config)!=0;
-    if(enabled && fixedDialogueCamera) {
+    if(enabled) {
         // Hooked on their own, like the screen hooks: a mismatch or failure only
         // turns this option off and never affects the camera hooks.
         const Hook conversation[]={
@@ -4306,6 +4291,7 @@ void Install() {
         if(ok)for(auto& h:conversation){if(MH_CreateHook((void*)VA(h.address),h.hook,h.original)!=MH_OK){ok=false;break;}++created;}
         if(ok)for(auto& h:conversation)if(MH_EnableHook((void*)VA(h.address))!=MH_OK)ok=false;
         if(!ok){for(int i=0;i<created;i++){MH_DisableHook((void*)VA(conversation[i].address));MH_RemoveHook((void*)VA(conversation[i].address));}fixedDialogueCamera=false;}
+        dialogueHooksReady.store(ok);
         FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")){fprintf(f,"conversation hooks: %s\n",ok?"hooked":"skipped");fclose(f);}
     }
     bobTrace=GetPrivateProfileIntW(L"VR",L"BobTrace",0,config)!=0;
@@ -4553,6 +4539,7 @@ Transport::RenderInfo OnPresent(uint64_t frame,bool capture) {
     // Menus/videos can keep presenting while simulation (and camera updates)
     // is paused. Refresh here as well, before the following frame is built.
     RefreshScreenMode();if(screenReasons)current.active=false;
+    if(screenReasons || !requested || recenterRequested){dialogueState.Reset(conversationCamera.load()!=nullptr);holdingPlayerBase=false;}
     if(screenReasons || gameMenuOpen || !requested || recenterRequested)calibration.Cancel();
     LevelFrozenView(frame);
     if(effectsCapture){SaveEffects(frame);effectCount=0;shaderTrace.End();}effectsCapture=capture;
@@ -4650,6 +4637,9 @@ float ConfiguredWorldScale(){return liveWorldScale.Configured();}
 float ActiveWorldScale(){return liveWorldScale.Active();}
 void SetConfiguredWorldScale(float value){liveWorldScale.Request(value);}
 unsigned InteractionAim(){return unsigned(interactionAim.load());}
+bool DialogueEnabled(){return fixedDialogueCamera.load();}
+bool DialogueAvailable(){return dialogueHooksReady.load();}
+void SetDialogueEnabled(bool value){fixedDialogueCamera.store(value&&dialogueHooksReady.load());}
 void SetInteractionAim(unsigned value){if(value<=3)interactionAim.store(static_cast<DirectionConfig::Source>(value));}
 unsigned MovementResponse(){return movementResponse.load();}
 void SetMovementResponse(unsigned value){if(value<=1)movementResponse.store(value);}

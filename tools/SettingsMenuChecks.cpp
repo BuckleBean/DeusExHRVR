@@ -87,8 +87,8 @@ int wmain(int argc,wchar_t** argv) {
     for(int cancel=0;cancel<4;++cancel){
         SettingsMenu::State rc;Transport::MenuState gm{};GamepadMapping::Input input{};input.active=true;
         rc.open=true;rc.draft=45;rc.original=30;
-        rc.Update(true,true,true,1000,643,input,gm,100);
-        input.rightTrigger=1;rc.Update(true,true,true,1000,643,input,gm,200);
+        rc.Update(true,true,true,1000,585,input,gm,100);
+        input.rightTrigger=1;rc.Update(true,true,true,1000,585,input,gm,200);
         assert(rc.recenterAt==3200&&rc.recenterSeconds==3&&!rc.request);
         input.rightTrigger=0;rc.Update(true,true,false,0,0,input,gm,1200);
         assert(rc.recenterSeconds==2&&!rc.recenterPulse);
@@ -113,7 +113,7 @@ int wmain(int argc,wchar_t** argv) {
     auto diagonal=CameraMath::MovementResponse(1,1,true);assert(diagonal.strafe==1&&diagonal.walk==1);
     {SettingsMenu::State ui;Transport::MenuState gm{};gm.degrees=30;GamepadMapping::Input input{};input.active=true;
      ui.Update(true,true,true,1200,450,input,gm);input.rightTrigger=1;ui.Update(true,true,true,1200,450,input,gm);
-     input.rightTrigger=0;ui.Update(true,true,true,1000,460,input,gm);input.rightTrigger=1;ui.Update(true,true,true,1000,460,input,gm);
+     input.rightTrigger=0;ui.Update(true,true,true,1000,435,input,gm);input.rightTrigger=1;ui.Update(true,true,true,1000,435,input,gm);
      assert(ui.draftResponse==1&&ui.Dirty()&&!ui.request);
      ui.Submit();assert(ui.requestedResponse==1);
     }
@@ -204,7 +204,7 @@ int wmain(int argc,wchar_t** argv) {
     assert(s.draft==75&&s.request==3);update(1000,303);assert(s.draft==75);
     in.rightX=0;update(1000,303);in.rightX=-.8f;update(1000,303);assert(s.draft==60);
     // Angle shortcut cannot accidentally edit while pointing at another setting.
-    in.rightX=0;update(1000,460);in.rightX=.8f;update(1000,460);assert(s.draft==60);
+    in.rightX=0;update(1000,435);in.rightX=.8f;update(1000,435);assert(s.draft==60);
     // The centered overlay blocks the native menu even outside its panel.
     in.rightX=0;in.rightTrigger=0;update(80,450);in.rightTrigger=.8f;update(80,450);
     assert(s.open&&s.blocked&&!s.nativeDown);
@@ -219,11 +219,11 @@ int wmain(int argc,wchar_t** argv) {
     assert(s.draftSnap&&s.draft==45);click(1100,770);assert(s.requestedSnap&&s.requested==45);
     // Movement choices never offer native mode; discard and save remain explicit.
     s={};in={};in.active=true;game={};game.snapEnabled=1;game.degrees=30;game.movement=1;
-    click(1200,450);click(1000,370);assert(s.draftMovement==3&&s.request==0);
+    click(1200,450);click(1000,335);assert(s.draftMovement==3&&s.request==0);
     click(700,770);click(1200,450);assert(s.draftMovement==1);
-    click(1000,370);click(1100,770);assert(s.requestedMovement==3&&s.saving);
+    click(1000,335);click(1100,770);assert(s.requestedMovement==3&&s.saving);
     game.acknowledged=game.saved=s.request;game.movement=3;in.rightTrigger=0;update(1100,770);
-    click(1200,450);click(1000,370);assert(s.draftMovement==2);click(1000,370);assert(s.draftMovement==1);
+    click(1200,450);click(1000,335);assert(s.draftMovement==2);click(1000,335);assert(s.draftMovement==1);
     Transport::Tracking directions{};directions.leftController.valid=1;directions.leftController.aim.position.x=-1;
     directions.rightController.valid=1;directions.rightController.aim.position.x=1;
     assert(DirectionConfig::Aim(DirectionConfig::Source::LeftController,directions)->aim.position.x==-1);
@@ -237,14 +237,14 @@ int wmain(int argc,wchar_t** argv) {
     game.bindings[0]=XINPUT_GAMEPAD_RIGHT_SHOULDER;game.holdMs[0]=300;game.bindings[10]=1u<<19;
     game.bindings[2]=XINPUT_GAMEPAD_START;game.holdMs[2]=500;game.bindings[12]=1u<<18;
     game.bindings[4]=game.bindings[3]=XINPUT_GAMEPAD_Y;game.bindings[18]=XINPUT_GAMEPAD_A;
-    click(1200,450);click(1000,575);assert(s.remapping&&s.Area().x==180);
+    click(1200,450);click(1000,535);assert(s.remapping&&s.Area().x==180);
     click(1000,240);assert(s.listening&&!s.captureReady&&!s.confirming); // Jump row
     update(1000,240);assert(s.listening);in.rightTrigger=0;update(1000,240);assert(s.captureReady);
     in.b=true;update(1000,240);assert(s.pressedSlot==1);in.b=false;update(1000,240);
     assert(s.confirming&&s.candidate==1&&s.draftBindings==game.bindings&&!s.request);
     click(1100,770);assert(!s.confirming&&s.draftBindings[1]==XINPUT_GAMEPAD_A&&!s.draftBindings[18]);
     assert(!s.nativeDown&&s.blocked);click(700,770);assert(!s.open&&!s.request); // discard
-    click(1200,450);click(1000,575);assert(s.draftBindings==game.bindings);
+    click(1200,450);click(1000,535);assert(s.draftBindings==game.bindings);
     // Capturing a configured tap preserves its hold assignment.
     click(1000,240);in.rightTrigger=0;s.Update(true,true,true,1000,240,in,game,1000);
     in.x=true;s.Update(true,true,true,1000,240,in,game,1100);
@@ -254,7 +254,7 @@ int wmain(int argc,wchar_t** argv) {
     click(1100,770);assert(s.saving&&(s.requestedBindingMask&(1u<<12))&&(s.requestedBindingMask&(1u<<18)));
     game.acknowledged=game.saved=s.request;in.rightTrigger=0;update(1100,770);assert(!s.open);
     // Existing duplicate assignments are visible and unchanged until confirmed.
-    s={};in={};in.active=true;click(1200,450);click(1000,575);
+    s={};in={};in.active=true;click(1200,450);click(1000,535);
     auto duplicates=SettingsMenu::Assigned(XINPUT_GAMEPAD_Y,s.draftBindings,game);
     assert(duplicates.find(L"LEFT Y")!=std::wstring::npos&&duplicates.find(L"LEFT GRIP")!=std::wstring::npos);
     click(1000,240);in.rightTrigger=0;update(1000,240);in.a=true;
@@ -336,7 +336,8 @@ int wmain(int argc,wchar_t** argv) {
     auto entryPixels=static_cast<const uint32_t*>(draw.Draw(s,game));
     assert(entryPixels[(SettingsMenu::Entry.y+SettingsMenu::Entry.h-2)*SettingsMenu::Width+SettingsMenu::Entry.x+2]==0);
     assert(SettingsMenu::Panel.x==SettingsMenu::ListPanel.x&&SettingsMenu::Panel.w==SettingsMenu::ListPanel.w);s.open=true;s.pointer=true;s.x=1240;s.y=303;
-    assert(draw.Save((out/L"menu-panel.bmp").c_str(),s,game));
+    game.dialogueAvailable=1;assert(draw.Save((out/L"menu-panel.bmp").c_str(),s,game));
+    s.draftDialogue=true;assert(draw.Save((out/L"menu-dialogue.bmp").c_str(),s,game));s.draftDialogue=false;
     auto pixels=static_cast<const uint32_t*>(draw.Draw(s,game));
     assert(pixels[0]==0x90000000u);assert((pixels[300*SettingsMenu::Width+1050]>>24)==255);
     // Pointer remains visible during the approach, outside either clickable area.
@@ -362,7 +363,8 @@ int wmain(int argc,wchar_t** argv) {
             assert(bright(SettingsMenu::Back)>100); // visible button and label
         }else assert(bright(SettingsMenu::Entry)>500);
     }
-    s.open=true;s.draftScale=s.originalScale=game.worldScale=game.activeWorldScale=300;s.draftInteraction=s.originalInteraction=2;assert(draw.Save((out/L"menu-panel.bmp").c_str(),s,game));
+    s.open=true;s.draftScale=s.originalScale=game.worldScale=game.activeWorldScale=300;s.draftInteraction=s.originalInteraction=2;game.dialogueAvailable=1;assert(draw.Save((out/L"menu-panel.bmp").c_str(),s,game));
+    s.draftDialogue=true;assert(draw.Save((out/L"menu-dialogue.bmp").c_str(),s,game));s.draftDialogue=false;
     s.scalePage=true;assert(draw.Save((out/L"menu-world-scale.bmp").c_str(),s,game));s.scalePage=false;
     s.draft=90;s.draftMovement=3;pixels=static_cast<const uint32_t*>(draw.Draw(s,game));assert(pixels);
     assert(bright(SettingsMenu::Save)>500&&bright(SettingsMenu::Discard)>500);
