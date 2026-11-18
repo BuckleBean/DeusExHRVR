@@ -4,6 +4,7 @@
 #include "SettingsPersistence.h"
 #include "SettingsMenu.h"
 #include "NativeMenuPointer.h"
+#include "ThrowAim.h"
 #include <Xinput.h>
 #include <mutex>
 #include <cstring>
@@ -60,6 +61,22 @@ int buttonHoldMs[buttonCount]{};uint64_t buttonDownAt[buttonCount]{};bool button
 // With a hold delay, <Key>Tap sends another button when the input is released
 // before the delay (e.g. tap = jump, hold = grenade). Sent as a 120 ms pulse.
 uint32_t buttonTapTarget[buttonCount]{};uint64_t buttonTapUntil[buttonCount]{};
+// Grenade landing marker: an input whose quick press throws (tap target RB, or
+// RB itself) and whose hold does nothing else becomes hold-to-aim: held past
+// its hold delay it shows the marker, and any release throws (one RB pulse).
+ThrowAim::HoldThrow throwHold[buttonCount]{};
+// A press that starts while a thrown remote device waits for its detonate input
+// sends RB from its first moment until release, with no hold delay (the game's
+// own "hold RB" already needs about a second), whatever the layout's tap/hold
+// targets. Decided once per press, so detonating while still holding never
+// turns the rest of that press into a throw.
+bool plainPress[buttonCount]{};
+bool ThrowInput(size_t i) {
+    constexpr uint32_t rb=XINPUT_GAMEPAD_RIGHT_SHOULDER;
+    return EngineCamera::ThrowMarkerEnabled() && (buttonTapTarget[i]==rb||buttonTarget[i]==rb) &&
+           (buttonTarget[i]==0||buttonTarget[i]==rb);
+}
+void ResetThrowHold(){for(auto& h:throwHold)h.Reset();EngineCamera::SetThrowAiming(false);}
 uint32_t leftTriggerTarget=TargetLT,rightTriggerTarget=TargetRT;
 bool remapActive{};
 // [ScreenButtons]: layout for everything that is not gameplay (menus, readers,
@@ -157,25 +174,45 @@ void ApplyButtons(XINPUT_GAMEPAD& pad) {
     bool gameplay=(EngineCamera::SnapTurnView(gameplayYaw) && !(allReasons&64)) || (allReasons&128)!=0;
     unsigned reasons=gameplay?0:allReasons;
     if(!gameplay && reasons!=16) {
-        for(size_t i=0;i<buttonCount;i++){buttonWasDown[i]=false;buttonTapUntil[i]=0;}
+        for(size_t i=0;i<buttonCount;i++){buttonWasDown[i]=false;buttonTapUntil[i]=0;}ResetThrowHold();
         ApplyScreenButtons(pad);
         return;
     }
-    if(!remapActive)return;
+    if(!remapActive){ResetThrowHold();return;}
     const XINPUT_GAMEPAD in=pad;
     WORD owned=0;for(const auto& s:buttonSources)owned|=s.bit;
     pad.wButtons=in.wButtons&~owned; // D-pad gestures, Back and Start pulses stay as-is
     pad.bLeftTrigger=pad.bRightTrigger=0;
     auto now=GetTickCount64();
     bool wheel=(allReasons&128)!=0;
+    bool aiming=false;
     for(size_t i=0;i<buttonCount;i++) {
         bool on=(in.wButtons&buttonSources[i].bit)!=0;
+        if(on && !buttonWasDown[i])plainPress[i]=EngineCamera::DetonateReady();
+        if(!wheel && ThrowInput(i) && plainPress[i]) {
+            if(on && !buttonWasDown[i])buttonDownAt[i]=now;
+            if(!on && buttonWasDown[i]){plainPress[i]=false;EngineCamera::NoteDetonatePress(now-buttonDownAt[i]);}
+            buttonWasDown[i]=on;buttonTapUntil[i]=0;
+            Emit(pad,XINPUT_GAMEPAD_RIGHT_SHOULDER,on,on?BYTE(255):BYTE(0));
+            continue;
+        }
+        if(!wheel && ThrowInput(i)) {
+            // A quick press throws only if the layout makes a tap throw (RightATap=RB);
+            // with RightA=RB and a hold delay, a tap still does nothing.
+            auto r=throwHold[i].Update(on,now,uint64_t(buttonHoldMs[i]),buttonTapTarget[i]==XINPUT_GAMEPAD_RIGHT_SHOULDER);
+            aiming|=r.aiming;
+            if(r.heldMs)EngineCamera::NoteThrowRelease(r.heldMs);
+            if(r.throwPulse)Emit(pad,XINPUT_GAMEPAD_RIGHT_SHOULDER,true,BYTE(255));
+            buttonWasDown[i]=on;buttonTapUntil[i]=0;
+            continue;
+        }
         if(wheel && buttonSources[i].bit==XINPUT_GAMEPAD_LEFT_THUMB) { // the wheel's deselect
             buttonWasDown[i]=on;buttonTapUntil[i]=0;
             Emit(pad,XINPUT_GAMEPAD_LEFT_THUMB,on,on?BYTE(255):BYTE(0));
             continue;
         }
         if(on && !buttonWasDown[i])buttonDownAt[i]=now;
+        if(!on && buttonWasDown[i])plainPress[i]=false;
         if(!on && buttonWasDown[i] && buttonTapTarget[i] && now-buttonDownAt[i]<uint64_t(buttonHoldMs[i]))
             buttonTapUntil[i]=now+120; // released before the hold delay: it was a tap
         buttonWasDown[i]=on;
@@ -183,6 +220,7 @@ void ApplyButtons(XINPUT_GAMEPAD& pad) {
         if(on && buttonHoldMs[i]>0 && now-buttonDownAt[i]<uint64_t(buttonHoldMs[i]))on=false;
         Emit(pad,buttonTarget[i],on,on?BYTE(255):BYTE(0));
     }
+    EngineCamera::SetThrowAiming(aiming);
     Emit(pad,leftTriggerTarget,in.bLeftTrigger>127,in.bLeftTrigger);
     Emit(pad,rightTriggerTarget,in.bRightTrigger>127,in.bRightTrigger);
 }
@@ -234,6 +272,11 @@ void SnapTurn(XINPUT_GAMEPAD& pad) {
         auto target=ry>0?stickUpTarget:stickDownTarget;
         if(target)Emit(pad,target,true,BYTE(255));
     }
+    // Cover aims with the controller (November 16). The right stick keeps its
+    // first-person up/down buttons and does not aim; the game cannot apply a
+    // direct snap outside first person, so none is queued, and the stick must
+    // return to neutral after cover before the next snap.
+    if(EngineCamera::NativeCoverControls()){snapArmed=false;EngineCamera::CancelDirectSnap();return;}
     if(magnitude<.35){snapArmed=true;return;}
     if(!snapArmed || now<snapCooldown || magnitude<.6 || std::abs(rx)<magnitude*.5)return;
     snapArmed=false;snapCooldown=now+60;
@@ -268,7 +311,7 @@ bool Read(XINPUT_GAMEPAD& pad) {
     if(menuBlocked){
         PublishInteraction(false,0);
         pad={};quickSaveWanted=false;
-        for(size_t i=0;i<buttonCount;i++){buttonWasDown[i]=false;buttonTapUntil[i]=0;}
+        for(size_t i=0;i<buttonCount;i++){buttonWasDown[i]=false;buttonTapUntil[i]=0;}ResetThrowHold();
         snapArmed=false;EngineCamera::CancelDirectSnap();
         connected=true;return true;
     }
@@ -279,7 +322,7 @@ bool Read(XINPUT_GAMEPAD& pad) {
         if(calibrationInputBlocked){
             PublishInteraction(false,0);
             pad={};
-            for(size_t i=0;i<buttonCount;i++){buttonWasDown[i]=false;buttonTapUntil[i]=0;}
+            for(size_t i=0;i<buttonCount;i++){buttonWasDown[i]=false;buttonTapUntil[i]=0;}ResetThrowHold();
             snapArmed=false;EngineCamera::CancelDirectSnap();
             if(!latest.controllerButtons)calibrationInputBlocked=false;
             return true;
@@ -364,9 +407,13 @@ void MenuTick(unsigned screenReasons) {
     // Bit 2 is ScreenMode::Menu (TitleMenu/PauseMenu), not the inventory bit 32.
     m.eligible=SettingsMenu::Eligible(screenReasons);m.gameTick=now;
     m.dialogue=EngineCamera::DialogueEnabled();m.dialogueAvailable=EngineCamera::DialogueAvailable();
+    m.handHud=EngineCamera::HandHudConfigured()?2:1;m.activeHandHud=EngineCamera::HandHudActive()?2:1;
+    m.throwAim=EngineCamera::ThrowAimSetting();m.throwMarker=EngineCamera::ThrowMarkerSetting();
+    m.coverFollow=EngineCamera::CoverFollowSetting();m.immersiveScope=EngineCamera::ImmersiveScopeSetting();
     m.response=EngineCamera::MovementResponse();
     m.interaction=EngineCamera::InteractionAim();
     m.worldScale=EngineCamera::ConfiguredWorldScale();m.activeWorldScale=EngineCamera::ActiveWorldScale();
+    m.scopeZoom=EngineCamera::ScopeMagnification();
     m.snapEnabled=snapEnabled;m.degrees=snapDegrees;m.movement=EngineCamera::MovementDirection();
     if(m.recenterRequest!=m.recenterAck&&Transport::Fresh(m.hostTick,now)){
         m.recenterAck=m.recenterRequest;
@@ -378,10 +425,19 @@ void MenuTick(unsigned screenReasons) {
     m.bindings[18]=stickUpTarget;m.bindings[19]=stickDownTarget;
     if(m.request!=m.acknowledged && Transport::Fresh(m.hostTick,now)) {
         m.acknowledged=m.request;
-        if(m.eligible&&m.blocked&&m.requestedDialogue<=1&&(!m.requestedDialogue||m.dialogueAvailable)&&std::isfinite(m.requestedWorldScale)&&m.requestedWorldScale>=10&&m.requestedWorldScale<=1000&&m.resetBindings<=1&&m.requestedInteraction<=3&&(m.requestedInteraction==1||m.requestedInteraction==2||m.requestedInteraction==m.interaction)&&m.requestedResponse<=2&&m.requestedSnap<=1&&m.requestedMovement<=3&&(m.requestedMovement!=0||m.movement==0)&&ButtonBindings::Valid(m.requestedBindings,m.bindingMask)&&SettingsMenu::ApplyAngle(m.requestedDegrees,snapDegrees,snapCounts)) {
+        if(m.eligible&&m.blocked&&(m.requestedScopeZoom==0||(std::isfinite(m.requestedScopeZoom)&&m.requestedScopeZoom>=1&&m.requestedScopeZoom<=12))&&m.requestedDialogue<=1&&(!m.requestedDialogue||m.dialogueAvailable)&&m.requestedHandHud<=2&&m.requestedThrowAim<=4&&(!m.requestedThrowAim||m.throwAim)&&m.requestedThrowMarker<=2&&(!m.requestedThrowMarker||m.throwMarker)&&m.requestedCoverFollow<=2&&(!m.requestedCoverFollow||m.coverFollow)&&m.requestedImmersiveScope<=2&&(!m.requestedImmersiveScope||m.immersiveScope)&&std::isfinite(m.requestedWorldScale)&&m.requestedWorldScale>=10&&m.requestedWorldScale<=1000&&m.resetBindings<=1&&m.requestedInteraction<=3&&(m.requestedInteraction==1||m.requestedInteraction==2||m.requestedInteraction==m.interaction)&&m.requestedResponse<=2&&m.requestedSnap<=1&&m.requestedMovement<=3&&(m.requestedMovement!=0||m.movement==0)&&ButtonBindings::Valid(m.requestedBindings,m.bindingMask)&&SettingsMenu::ApplyAngle(m.requestedDegrees,snapDegrees,snapCounts)) {
             snapArmed=false;EngineCamera::CancelDirectSnap();
             EngineCamera::SetDialogueEnabled(m.requestedDialogue!=0);m.dialogue=m.requestedDialogue;
+            if(m.requestedHandHud){EngineCamera::SetHandHudConfigured(m.requestedHandHud==2);m.handHud=m.requestedHandHud;}
+            // Menu tabs (transport 24): each applies from the next frame. A throw
+            // change drops any half-made hold so the next press starts clean.
+            if(m.requestedThrowAim){EngineCamera::SetThrowAim(m.requestedThrowAim-1);m.throwAim=m.requestedThrowAim;}
+            if(m.requestedThrowMarker){EngineCamera::SetThrowMarker(m.requestedThrowMarker==2);m.throwMarker=m.requestedThrowMarker;}
+            if(m.requestedThrowAim||m.requestedThrowMarker)ResetThrowHold();
+            if(m.requestedCoverFollow){EngineCamera::SetCoverFollow(m.requestedCoverFollow==2);m.coverFollow=m.requestedCoverFollow;}
+            if(m.requestedImmersiveScope){EngineCamera::SetImmersiveScope(m.requestedImmersiveScope==2);m.immersiveScope=m.requestedImmersiveScope;}
             EngineCamera::SetConfiguredWorldScale(m.requestedWorldScale);m.worldScale=m.requestedWorldScale;
+            if(m.requestedScopeZoom!=0){EngineCamera::SetScopeMagnification(m.requestedScopeZoom);m.scopeZoom=m.requestedScopeZoom;}
             EngineCamera::SetInteractionAim(m.requestedInteraction);m.interaction=m.requestedInteraction;
             if(m.resetBindings)for(auto& hold:buttonHoldMs)hold=0;
             EngineCamera::SetMovementResponse(m.requestedResponse);m.response=m.requestedResponse;
@@ -391,7 +447,7 @@ void MenuTick(unsigned screenReasons) {
             if(m.bindingMask){
                 remapActive=false;
                 for(size_t i=0;i<buttonCount;++i){
-                    buttonTarget[i]=m.bindings[i];buttonTapTarget[i]=m.bindings[10+i];buttonWasDown[i]=false;buttonTapUntil[i]=buttonDownAt[i]=0;
+                    buttonTarget[i]=m.bindings[i];buttonTapTarget[i]=m.bindings[10+i];buttonWasDown[i]=false;buttonTapUntil[i]=buttonDownAt[i]=0;throwHold[i].Reset();
                     if(buttonTarget[i]!=buttonSources[i].bit||buttonHoldMs[i]>0)remapActive=true;
                 }
                 leftTriggerTarget=m.bindings[8];rightTriggerTarget=m.bindings[9];stickUpTarget=m.bindings[18];stickDownTarget=m.bindings[19];
@@ -399,7 +455,9 @@ void MenuTick(unsigned screenReasons) {
                 quickSaveWanted=false;SyncQuickSave();
             }
             m.degrees=snapDegrees;m.result=1;
-            SettingsWriter().Queue(configPath,snapCounts,m.request,snapDegrees,int(snapEnabled),int(m.movement),m.bindings,m.bindingMask,int(m.response),int(m.interaction),m.resetBindings!=0,m.worldScale,int(m.dialogue));
+            SettingsWriter().Queue(configPath,snapCounts,m.request,snapDegrees,int(snapEnabled),int(m.movement),m.bindings,m.bindingMask,int(m.response),int(m.interaction),m.resetBindings!=0,m.worldScale,int(m.dialogue),m.requestedScopeZoom!=0?m.scopeZoom:-1.f,m.requestedHandHud?int(m.requestedHandHud==2):-1,
+                m.requestedThrowAim?int(m.requestedThrowAim)-1:-1,m.requestedThrowMarker?int(m.requestedThrowMarker==2):-1,
+                m.requestedCoverFollow?int(m.requestedCoverFollow==2):-1,m.requestedImmersiveScope?int(m.requestedImmersiveScope==2):-1);
         } else m.result=2;
     }
     auto& writer=SettingsWriter();

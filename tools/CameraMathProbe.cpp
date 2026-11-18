@@ -357,5 +357,143 @@ int main(int argc,char** argv) {
             Check(Near(commonX,x*1.6f),"both HUD eye rays meet the same plane point");
         }
     }
-    puts("PASS tracking mailbox contention/expiry, camera math, asymmetric stereo frustum and binocular HUD alignment");
+    {
+        // Hand panel: a chosen point of the UI rectangle lands on the hand
+        // anchor in both eyes, at the hand's depth, with the HUD plane's proportions.
+        Transport::Tracking h{};
+        h.head.orientation.w=1;h.head.position={1,2,3};
+        for(auto& eye:h.eyes){eye.pose.orientation.w=1;eye.left=-.7f;eye.right=.8f;eye.up=.75f;eye.down=-.65f;}
+        h.eyes[0].pose.position={.968f,2,3};h.eyes[1].pose.position={1.032f,2,3};
+        Transport::Pose anchor{};anchor.orientation.w=1;
+        anchor.position={1-.25f,2-.30f,3-.45f}; // left, below, in front (OpenXR -z)
+        const Transport::Vector offset{.02f,.09f,0};
+        for(unsigned eye=0;eye<2;eye++) {
+            CameraMath::Matrix panel;
+            Check(CameraMath::HudPanelTransform(h,eye,anchor,-.936f,.93f,.3f,offset,panel),"hand panel accepts a hand in front of the head");
+            CameraMath::Matrix depth;depth.m[10]=1;depth.m[14]=-.01f;
+            auto projection=CameraMath::EyeProjection(depth,h,eye,1.f);
+            auto same=[&](float x,float y,float z,float ndcX,float ndcY) {
+                float cx=x*projection.m[0]+y*projection.m[4]+z*projection.m[8]+projection.m[12];
+                float cy=x*projection.m[1]+y*projection.m[5]+z*projection.m[9]+projection.m[13];
+                float cw=x*projection.m[3]+y*projection.m[7]+z*projection.m[11]+projection.m[15];
+                float px=ndcX*panel.m[0]+ndcY*panel.m[4]+panel.m[12];
+                float py=ndcX*panel.m[1]+ndcY*panel.m[5]+panel.m[13];
+                float pw=ndcX*panel.m[3]+ndcY*panel.m[7]+panel.m[15];
+                return Near(cx/cw,px/pw)&&Near(cy/cw,py/pw);
+            };
+            Check(same(-.25f+.02f,-.30f+.09f,.45f,-.936f,.93f),"hand panel centre sits on the hand anchor in each eye");
+            Check(same(-.25f+.02f+.1f*.48f,-.30f+.09f-.2f*.27f,.45f,-.836f,.73f),"hand panel keeps the HUD plane's proportions at the chosen scale");
+            Check(!same(-.25f+.02f,-.30f+.09f,2.f,-.936f,.93f),"hand panel is at the hand's depth, not the HUD plane's");
+            Check(panel.m[2]==0&&panel.m[6]==0&&panel.m[10]==0&&panel.m[14]==0,"hand panel stays an overlay like the HUD plane");
+        }
+        CameraMath::Matrix unused;
+        anchor.position.z=3+.2f;
+        Check(!CameraMath::HudPanelTransform(h,0,anchor,0,0,.3f,{0,0,0},unused),"hand panel refuses a hand behind the head");
+        anchor.position={1,2,3-.05f};
+        Check(!CameraMath::HudPanelTransform(h,0,anchor,0,0,.3f,{0,0,0},unused),"hand panel refuses a hand at the face");
+        anchor.position={1.6f,2,2.95f};
+        Check(CameraMath::HudPanelTransform(h,0,anchor,0,0,.3f,{0,0,0},unused),"tracked hand to the side remains attached outside view");
+        anchor.position={1,2,1};
+        Check(CameraMath::HudPanelTransform(h,0,anchor,0,0,.3f,{0,0,0},unused),"tracked hand beyond old depth cutoff remains attached");
+        const auto hidden=CameraMath::HiddenHudTransform();
+        for(float w:{.01f,1.f,10000.f,-1.f}) {
+            // Test actual homogeneous clip inequalities, independent of eye FOV.
+            const float x=hidden.m[12]*w,y=hidden.m[13]*w,z=hidden.m[14]*w,cw=hidden.m[15]*w;
+            Check(!(x>=-cw && x<=cw && y>=-cw && y<=cw && z>=0 && z<=cw),"hidden HUD is outside clip volume, never at a default screen corner");
+        }
+        // A turned head: the anchor is still found in head space.
+        h.head.orientation={0,std::sqrt(.5f),0,std::sqrt(.5f)}; // 90 degrees about up: forward becomes -x
+        for(auto& eye:h.eyes)eye.pose.orientation=h.head.orientation;
+        anchor.position={1-.45f,2,3};
+        Check(CameraMath::HudPanelTransform(h,0,anchor,0,0,.3f,{0,0,0},unused),"hand panel follows the head's own forward");
+        anchor.position={1+.45f,2,3};
+        Check(!CameraMath::HudPanelTransform(h,0,anchor,0,0,.3f,{0,0,0},unused),"hand panel refuses a hand behind a turned head");
+    }
+    {
+        // Wrist band. Poses are grip poses in the hand model's frame, built
+        // from their axes in OpenXR space (right, up, back); head at the origin
+        // looking forward (-z).
+        auto fromAxes=[](Transport::Vector x,Transport::Vector y,Transport::Vector z) {
+            float m00=x.x,m11=y.y,m22=z.z,trace=m00+m11+m22;Transport::Quaternion q{};
+            if(trace>0){float s=std::sqrt(trace+1)*2;q.w=.25f*s;q.x=(y.z-z.y)/s;q.y=(z.x-x.z)/s;q.z=(x.y-y.x)/s;}
+            else if(m00>m11&&m00>m22){float s=std::sqrt(1+m00-m11-m22)*2;q.w=(y.z-z.y)/s;q.x=.25f*s;q.y=(y.x+x.y)/s;q.z=(z.x+x.z)/s;}
+            else if(m11>m22){float s=std::sqrt(1+m11-m00-m22)*2;q.w=(z.x-x.z)/s;q.x=(y.x+x.y)/s;q.y=.25f*s;q.z=(z.y+y.z)/s;}
+            else {float s=std::sqrt(1+m22-m00-m11)*2;q.w=(x.y-y.x)/s;q.x=(z.x+x.z)/s;q.y=(z.y+y.z)/s;q.z=.25f*s;}
+            return q;
+        };
+        Transport::Tracking h{};
+        h.head.orientation.w=1;
+        for(auto& eye:h.eyes){eye.pose.orientation.w=1;eye.left=-.7f;eye.right=.8f;eye.up=.75f;eye.down=-.75f;}
+        h.eyes[0].pose.position={-.032f,0,0};h.eyes[1].pose.position={.032f,0,0};
+        auto project=[&](unsigned eye,float x,float y,float z,float& u,float& v) {
+            CameraMath::Matrix depth;depth.m[10]=1;depth.m[14]=-.01f;
+            auto p=CameraMath::EyeProjection(depth,h,eye,1.f);
+            float cw=x*p.m[3]+y*p.m[7]+z*p.m[11]+p.m[15];
+            u=(x*p.m[0]+y*p.m[4]+z*p.m[8]+p.m[12])/cw;v=(x*p.m[1]+y*p.m[5]+z*p.m[9]+p.m[13])/cw;
+        };
+        auto map=[](const CameraMath::Matrix& m,float nx,float ny,float& u,float& v) {
+            float w=nx*m.m[3]+ny*m.m[7]+m.m[15];
+            u=(nx*m.m[0]+ny*m.m[4]+m.m[12])/w;v=(nx*m.m[1]+ny*m.m[5]+m.m[13])/w;
+        };
+        // Hands raised in front, backs of the hands toward the face, as in
+        // Mark's 9:45 PM screenshot. Left: +Y (toward the wrist) down, back -X
+        // toward the face, +Z (toward the little finger) to the left.
+        auto leftPose=fromAxes({0,0,-1},{0,-1,0},{-1,0,0});
+        auto rz=CameraMath::Rotate(leftPose,{0,0,1}),ry=CameraMath::Rotate(leftPose,{0,1,0});
+        Check(Near(rz.x,-1)&&Near(ry.y,-1),"test pose built from its axes");
+        const CameraMath::WristLayout layout{-.936f,.93f,.36f,.08f,.04f};
+        const Transport::Vector leftGrip{-.1f,0,-.4f};
+        // Band middle: 8 cm below the palm centre (toward the elbow), 4 cm
+        // toward the face. Head space (right, up, forward).
+        const float sx=-.1f,sy=-.08f,sz=.36f;
+        for(unsigned eye=0;eye<2;eye++) {
+            CameraMath::Matrix panel;
+            Check(CameraMath::WristPanelTransform(h,eye,leftGrip,leftPose,true,layout,false,0,panel),"left band shown with the hand raised");
+            float u,v,eu,ev;
+            map(panel,-.936f,.93f,u,v);project(eye,sx,sy,sz,eu,ev);
+            Check(Near(u,eu)&&Near(v,ev),"band middle sits on the back of the left wrist");
+            float ru,rv;map(panel,-.886f,.93f,ru,rv);
+            Check(ru>u+.01f&&std::abs(rv-v)<.01f,"left band text reads left to right across the wrist");
+            float tu,tv;map(panel,-.936f,.96f,tu,tv);
+            Check(tv>v+.005f&&std::abs(tu-u)<.01f,"left band text is upright, toward the hand");
+            Check(panel.m[2]==0&&panel.m[6]==0&&panel.m[10]==0&&panel.m[14]==0,"band stays an overlay like the HUD plane");
+            // A piece further right wraps round the wrist: it sits on the wrist
+            // 4 cm from its centre line, turned toward the thumb side.
+            const float drawX=-.886f,theta=(drawX+.936f)*1.6f*.36f/.04f;
+            Check(CameraMath::WristPanelTransform(h,eye,leftGrip,leftPose,true,layout,true,drawX,panel),"curved piece shown");
+            map(panel,drawX,.93f,u,v);
+            project(eye,-.1f+.04f*std::sin(theta),-.08f,.4f-.04f*std::cos(theta),eu,ev);
+            Check(Near(u,eu)&&Near(v,ev),"curved piece wraps around the wrist at its own position");
+            CameraMath::Matrix flat;CameraMath::WristPanelTransform(h,eye,leftGrip,leftPose,true,layout,false,0,flat);
+            float fu,fv;map(flat,drawX,.93f,fu,fv);
+            Check(!(Near(u,fu)&&Near(v,fv)),"curved piece differs from the flat block");
+        }
+        // Wrist turned the other way: the band is on the far side, still shown.
+        auto turned=fromAxes({0,0,1},{0,-1,0},{1,0,0});
+        CameraMath::Matrix unused;
+        Check(CameraMath::WristPanelTransform(h,0,leftGrip,turned,true,layout,false,0,unused),"band stays when the wrist turns away");
+        {
+            float u,v,eu,ev;CameraMath::Matrix farSide;
+            CameraMath::WristPanelTransform(h,0,leftGrip,turned,true,layout,false,0,farSide);
+            map(farSide,-.936f,.93f,u,v);project(0,sx,sy,.44f,eu,ev);
+            Check(Near(u,eu)&&Near(v,ev),"turned-away band sits on the far side of the wrist");
+        }
+        Check(!CameraMath::WristPanelTransform(h,0,leftGrip,leftPose,true,layout,true,-.936f+2.4f*.04f/(1.6f*.36f),unused),"piece wrapped past the wrist's far side is hidden");
+        Check(!CameraMath::WristPanelTransform(h,0,{0,.08f,-.05f},leftPose,true,layout,false,0,unused),"band at the face is hidden");
+        Check(!CameraMath::WristPanelTransform(h,0,{0,0,.4f},leftPose,true,layout,false,0,unused),"band behind the head is hidden");
+        // Right hand raised, back toward the face: back +X toward the face,
+        // +Z (toward the little finger) to the right.
+        auto rightPose=fromAxes({0,0,1},{0,-1,0},{1,0,0});
+        const Transport::Vector rightGrip{.1f,0,-.4f};
+        const CameraMath::WristLayout right{.93f,-.892f,.36f,.08f,.04f};
+        for(unsigned eye=0;eye<2;eye++) {
+            CameraMath::Matrix panel;
+            Check(CameraMath::WristPanelTransform(h,eye,rightGrip,rightPose,false,right,false,0,panel),"right band shown with the hand raised");
+            float u,v,eu,ev;map(panel,.93f,-.892f,u,v);project(eye,.1f,-.08f,.36f,eu,ev);
+            Check(Near(u,eu)&&Near(v,ev),"band middle sits on the back of the right wrist");
+            float ru,rv;map(panel,.98f,-.892f,ru,rv);Check(ru>u+.01f&&std::abs(rv-v)<.01f,"right band text reads left to right across the wrist");
+            float tu,tv;map(panel,.93f,-.862f,tu,tv);Check(tv>v+.005f&&std::abs(tu-u)<.01f,"right band text is upright, toward the hand");
+        }
+    }
+    puts("PASS tracking mailbox contention/expiry, camera math, asymmetric stereo frustum, binocular HUD alignment, hand panel placement and wrist band placement");
 }

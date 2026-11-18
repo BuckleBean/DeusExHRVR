@@ -4,6 +4,8 @@
 #include "ControllerInput.h"
 #include "DirectionConfig.h"
 #include "SettingsMenuDraw.h"
+#include "ThrowMarker.h"
+#include "CoverCrosshair.h"
 #include <windows.h>
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
@@ -65,6 +67,88 @@ struct Bridge {
     DXGI_FORMAT menuFormat=DXGI_FORMAT_UNKNOWN;
     std::vector<uint32_t> menuPixels;
     bool menuWasVisible{},menuWasOpen{};
+    // Grenade landing marker (transport 20): a ring texture written once, shown
+    // as a flat quad wherever the game DLL says the throw will first hit.
+    XrSwapchain markerChain{};
+    XrCompositionLayerQuad markerLayer{XR_TYPE_COMPOSITION_LAYER_QUAD};
+    bool markerReady{},markerFailed{},markerWasShown{};
+    bool EnsureMarker() {
+        if(markerReady)return true;
+        if(markerFailed)return false;
+        markerFailed=true;
+        XrSystemProperties props{XR_TYPE_SYSTEM_PROPERTIES};
+        if(XR_FAILED(xrGetSystemProperties(instance,system,&props))||props.graphicsProperties.maxLayerCount<2){Log("Throw marker unavailable: fewer than 2 layers");return false;}
+        uint32_t n{};if(XR_FAILED(xrEnumerateSwapchainFormats(session,0,&n,nullptr)))return false;
+        std::vector<int64_t> formats(n);if(XR_FAILED(xrEnumerateSwapchainFormats(session,n,&n,formats.data())))return false;
+        DXGI_FORMAT format=DXGI_FORMAT_UNKNOWN;
+        for(auto candidate:{DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,DXGI_FORMAT_B8G8R8A8_UNORM_SRGB,
+                            DXGI_FORMAT_R8G8B8A8_UNORM,DXGI_FORMAT_B8G8R8A8_UNORM}) {
+            if(std::find(formats.begin(),formats.end(),int64_t(candidate))!=formats.end()){format=candidate;break;}
+        }
+        if(format==DXGI_FORMAT_UNKNOWN){Log("Throw marker unavailable: no RGBA/BGRA swapchain format");return false;}
+        XrSwapchainCreateInfo ci{XR_TYPE_SWAPCHAIN_CREATE_INFO};ci.usageFlags=XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT|XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
+        ci.format=format;ci.sampleCount=1;ci.width=ci.height=ThrowMarker::Size;ci.faceCount=ci.arraySize=ci.mipCount=1;
+        if(XR_FAILED(xrCreateSwapchain(session,&ci,&markerChain))){Log("Throw marker swapchain creation failed");return false;}
+        if(XR_FAILED(xrEnumerateSwapchainImages(markerChain,0,&n,nullptr)))return false;
+        std::vector<XrSwapchainImageD3D11KHR> images(n,{XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR});
+        if(XR_FAILED(xrEnumerateSwapchainImages(markerChain,n,&n,reinterpret_cast<XrSwapchainImageBaseHeader*>(images.data()))))return false;
+        auto pixels=ThrowMarker::Pixels();
+        if(format==DXGI_FORMAT_B8G8R8A8_UNORM_SRGB||format==DXGI_FORMAT_B8G8R8A8_UNORM)ThrowMarker::SwapRedBlue(pixels);
+        // Every image gets the ring once, so whichever the runtime keeps shows it.
+        for(uint32_t k=0;k<n;k++) {
+            uint32_t index{};XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+            if(XR_FAILED(xrAcquireSwapchainImage(markerChain,&ai,&index)))return false;
+            XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};wi.timeout=XR_INFINITE_DURATION;
+            XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+            if(XR_FAILED(xrWaitSwapchainImage(markerChain,&wi))){xrReleaseSwapchainImage(markerChain,&ri);return false;}
+            if(index<images.size())context->UpdateSubresource(images[index].texture,0,nullptr,pixels.data(),ThrowMarker::Size*4,0);
+            context->Flush();
+            if(XR_FAILED(xrReleaseSwapchainImage(markerChain,&ri)))return false;
+        }
+        markerReady=true;markerFailed=false;
+        Log("Throw marker ready format=%d images=%u transport=%u",int(format),n,Transport::Version);
+        return true;
+    }
+    XrSwapchain crosshairChain{};
+    XrCompositionLayerQuad crosshairLayer{XR_TYPE_COMPOSITION_LAYER_QUAD};
+    bool crosshairReady{},crosshairFailed{},crosshairWasShown{};
+    bool EnsureCrosshair() {
+        if(crosshairReady)return true;
+        if(crosshairFailed)return false;
+        crosshairFailed=true;
+        XrSystemProperties props{XR_TYPE_SYSTEM_PROPERTIES};
+        if(XR_FAILED(xrGetSystemProperties(instance,system,&props))||props.graphicsProperties.maxLayerCount<4){Log("Cover crosshair unavailable: fewer than 4 layers");return false;}
+        uint32_t n{};if(XR_FAILED(xrEnumerateSwapchainFormats(session,0,&n,nullptr)))return false;
+        std::vector<int64_t> formats(n);if(XR_FAILED(xrEnumerateSwapchainFormats(session,n,&n,formats.data())))return false;
+        DXGI_FORMAT format=DXGI_FORMAT_UNKNOWN;
+        for(auto candidate:{DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,DXGI_FORMAT_B8G8R8A8_UNORM_SRGB,
+                            DXGI_FORMAT_R8G8B8A8_UNORM,DXGI_FORMAT_B8G8R8A8_UNORM}) {
+            if(std::find(formats.begin(),formats.end(),int64_t(candidate))!=formats.end()){format=candidate;break;}
+        }
+        if(format==DXGI_FORMAT_UNKNOWN){Log("Cover crosshair unavailable: no RGBA/BGRA swapchain format");return false;}
+        XrSwapchainCreateInfo ci{XR_TYPE_SWAPCHAIN_CREATE_INFO};ci.usageFlags=XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT|XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
+        ci.format=format;ci.sampleCount=1;ci.width=ci.height=CoverCrosshair::Size;ci.faceCount=ci.arraySize=ci.mipCount=1;
+        if(XR_FAILED(xrCreateSwapchain(session,&ci,&crosshairChain))){Log("Cover crosshair swapchain creation failed");return false;}
+        if(XR_FAILED(xrEnumerateSwapchainImages(crosshairChain,0,&n,nullptr)))return false;
+        std::vector<XrSwapchainImageD3D11KHR> images(n,{XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR});
+        if(XR_FAILED(xrEnumerateSwapchainImages(crosshairChain,n,&n,reinterpret_cast<XrSwapchainImageBaseHeader*>(images.data()))))return false;
+        auto pixels=CoverCrosshair::Pixels();
+        if(format==DXGI_FORMAT_B8G8R8A8_UNORM_SRGB||format==DXGI_FORMAT_B8G8R8A8_UNORM)ThrowMarker::SwapRedBlue(pixels);
+        // Every image gets the ring once, so whichever the runtime keeps shows it.
+        for(uint32_t k=0;k<n;k++) {
+            uint32_t index{};XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+            if(XR_FAILED(xrAcquireSwapchainImage(crosshairChain,&ai,&index)))return false;
+            XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};wi.timeout=XR_INFINITE_DURATION;
+            XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+            if(XR_FAILED(xrWaitSwapchainImage(crosshairChain,&wi))){xrReleaseSwapchainImage(crosshairChain,&ri);return false;}
+            if(index<images.size())context->UpdateSubresource(images[index].texture,0,nullptr,pixels.data(),CoverCrosshair::Size*4,0);
+            context->Flush();
+            if(XR_FAILED(xrReleaseSwapchainImage(crosshairChain,&ri)))return false;
+        }
+        crosshairReady=true;crosshairFailed=false;
+        Log("Cover crosshair ready format=%d images=%u transport=%u",int(format),n,Transport::Version);
+        return true;
+    }
     uint32_t menuLastRequest{},menuLastAck{},menuLastResult{},menuLastSaved{};
     bool EnsureMenu() {
         if(menuReady)return true;
@@ -79,6 +163,7 @@ struct Bridge {
             if(std::find(formats.begin(),formats.end(),int64_t(candidate))!=formats.end()){menuFormat=candidate;break;}
         }
         if(menuFormat==DXGI_FORMAT_UNKNOWN){Log("Settings menu unavailable: no RGBA/BGRA swapchain format");return false;}
+        menuDraw.srgb=menuFormat==DXGI_FORMAT_B8G8R8A8_UNORM_SRGB||menuFormat==DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
         XrSwapchainCreateInfo ci{XR_TYPE_SWAPCHAIN_CREATE_INFO};ci.usageFlags=XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT|XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
         ci.format=menuFormat;ci.sampleCount=1;ci.width=SettingsMenu::Width;ci.height=SettingsMenu::Height;ci.faceCount=ci.arraySize=ci.mipCount=1;
         if(XR_FAILED(xrCreateSwapchain(session,&ci,&menuChain)))return false;
@@ -113,6 +198,10 @@ struct Bridge {
             m.requestedResponse=menuUI.requestedResponse;
             m.requestedWorldScale=menuUI.requestedScale;
             m.requestedDialogue=menuUI.requestedDialogue;
+            m.requestedHandHud=menuUI.requestedHandHud;
+            m.requestedThrowAim=menuUI.requestedThrowAim;m.requestedThrowMarker=menuUI.requestedThrowMarker;
+            m.requestedCoverFollow=menuUI.requestedCoverFollow;m.requestedImmersiveScope=menuUI.requestedImmersiveScope;
+            m.requestedScopeZoom=menuUI.requestedZoom;
             m.requestedInteraction=menuUI.requestedInteraction;m.resetBindings=menuUI.requestedReset;
             m.request=menuUI.request;m.requestedDegrees=menuUI.requested;m.requestedSnap=menuUI.requestedSnap;m.requestedMovement=menuUI.requestedMovement;
             m.requestedBindings=menuUI.requestedBindings;m.bindingMask=menuUI.requestedBindingMask;
@@ -200,6 +289,8 @@ struct Bridge {
         history.Reset();historyArmed=false;f10Down=false;
         DestroySwapchain();
         menuImages.clear();if(menuChain)xrDestroySwapchain(menuChain);menuChain=XR_NULL_HANDLE;
+        if(markerChain)xrDestroySwapchain(markerChain);markerChain=XR_NULL_HANDLE;markerReady=markerFailed=markerWasShown=false;
+        if(crosshairChain)xrDestroySwapchain(crosshairChain);crosshairChain=XR_NULL_HANDLE;crosshairReady=crosshairFailed=crosshairWasShown=false;
         menuDraw.Reset();menuUI={};menuGame={};menuRecenterRequest=0;menuReady=menuFailed=false;
         menuFormat=DXGI_FORMAT_UNKNOWN;menuPixels.clear();menuWasVisible=menuWasOpen=false;
         menuLastRequest=menuLastAck=menuLastResult=menuLastSaved=0;
@@ -427,6 +518,7 @@ struct Bridge {
         controller.Sample(session,space,fs.predictedDisplayTime,state==XR_SESSION_STATE_FOCUSED,tracking);
         MenuInput(tracking);
         if(menuUI.recenterPulse){recenter=true;Log("Menu recenter countdown completed");}
+        tracking.reserved=crosshairReady?1u:0u;
         Transport::WriteTracking(trackingChannel,tracking);
         // Low-rate status for an ordinary later session; no calibration gesture needed.
         static uint64_t gripLogTick{};
@@ -443,7 +535,7 @@ struct Bridge {
         XrCompositionLayerQuad quads[2]{{XR_TYPE_COMPOSITION_LAYER_QUAD},{XR_TYPE_COMPOSITION_LAYER_QUAD}};
         XrCompositionLayerProjection projection{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
         XrCompositionLayerProjectionView projectionViews[2]{{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW},{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
-        const XrCompositionLayerBaseHeader* layers[3]{}; uint32_t layerCount=0;
+        const XrCompositionLayerBaseHeader* layers[4]{}; uint32_t layerCount=0;
         if(fs.shouldRender && EnsureSwapchain(d,h)) {
             uint32_t index=0; XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
             if(Good(xrAcquireSwapchainImage(swapchain,&ai,&index),"xrAcquireSwapchainImage")) {
@@ -475,6 +567,48 @@ struct Bridge {
                             }
                             projection.space=space;projection.viewCount=2;projection.views=projectionViews;
                             layers[layerCount++]=reinterpret_cast<XrCompositionLayerBaseHeader*>(&projection);
+
+                            bool crosshair=(renderInfo.coverState&1) && EnsureCrosshair();
+                            if(crosshair) {
+                                const auto& head=renderInfo.tracking.head.position;
+                                float dx=head.x-renderInfo.coverPosition[0],dy=head.y-renderInfo.coverPosition[1],dz=head.z-renderInfo.coverPosition[2];
+                                float distance=std::sqrt(dx*dx+dy*dy+dz*dz);
+                                crosshair=std::isfinite(distance)&&distance>.05f;
+                                if(crosshair) {
+                                    auto o=ThrowMarker::Facing(dx,dy,dz);
+                                    XrPosef pose{{o.x,o.y,o.z,o.w},{renderInfo.coverPosition[0],renderInfo.coverPosition[1],renderInfo.coverPosition[2]}};
+                                    if(frozenShift)pose=Shift(pose);
+                                    crosshairLayer={XR_TYPE_COMPOSITION_LAYER_QUAD};
+                                    crosshairLayer.layerFlags=XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+                                    crosshairLayer.space=space;crosshairLayer.eyeVisibility=XR_EYE_VISIBILITY_BOTH;
+                                    crosshairLayer.pose=pose;
+                                    float size=CoverCrosshair::Width(distance);crosshairLayer.size={size,size};
+                                    crosshairLayer.subImage.swapchain=crosshairChain;
+                                    crosshairLayer.subImage.imageRect={{0,0},{int32_t(CoverCrosshair::Size),int32_t(CoverCrosshair::Size)}};
+                                    layers[layerCount++]=reinterpret_cast<XrCompositionLayerBaseHeader*>(&crosshairLayer);
+                                }
+                            }
+                            if(crosshair!=crosshairWasShown){crosshairWasShown=crosshair;Log("Cover crosshair %s",crosshair?"shown":"hidden");}
+
+                            // The landing marker shares this frame's space and tracking.
+                            bool marker=(renderInfo.markerState&ThrowMarker::StateShow) && EnsureMarker();
+                            if(marker) {
+                                markerLayer={XR_TYPE_COMPOSITION_LAYER_QUAD};markerLayer.layerFlags=XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+                                markerLayer.space=space;markerLayer.eyeVisibility=XR_EYE_VISIBILITY_BOTH;
+                                // Lie on the surface it hits: flat on a floor, upright on a wall.
+                                auto o=(renderInfo.markerState&ThrowMarker::StateNormal)?
+                                    ThrowMarker::Facing(renderInfo.markerNormal[0],renderInfo.markerNormal[1],renderInfo.markerNormal[2]):ThrowMarker::Flat();
+                                XrPosef pose{{o.x,o.y,o.z,o.w},{renderInfo.markerPosition[0],renderInfo.markerPosition[1],renderInfo.markerPosition[2]}};
+                                if(frozenShift)pose=Shift(pose);
+                                markerLayer.pose=pose;markerLayer.size={ThrowMarker::DiameterMetres,ThrowMarker::DiameterMetres};
+                                markerLayer.subImage.swapchain=markerChain;
+                                markerLayer.subImage.imageRect={{0,0},{int32_t(ThrowMarker::Size),int32_t(ThrowMarker::Size)}};
+                                layers[layerCount++]=reinterpret_cast<XrCompositionLayerBaseHeader*>(&markerLayer);
+                            }
+                            if(marker!=markerWasShown){markerWasShown=marker;Log("Throw marker %s at %.2f,%.2f,%.2f facing %s %.2f,%.2f,%.2f",marker?"shown":"hidden",
+                                renderInfo.markerPosition[0],renderInfo.markerPosition[1],renderInfo.markerPosition[2],
+                                (renderInfo.markerState&ThrowMarker::StateNormal)?"surface":"flat",
+                                renderInfo.markerNormal[0],renderInfo.markerNormal[1],renderInfo.markerNormal[2]);}
                         }
                         // The virtual screen handles its own reset through anchorValid.
                         if(!tracked){resetPending=false;frozenShift=false;frozenId=0;}

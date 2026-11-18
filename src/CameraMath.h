@@ -161,4 +161,140 @@ inline Matrix HudClipTransform(const Transport::Tracking& t,unsigned eye) {
     for(int i=0;i<4;i++)result.m[i*4+2]=0;
     return result;
 }
+// A small flat panel that carries one HUD element to a hand. The element keeps
+// the shape it has on the HUD plane, reduced by `scale`. Its point (centreX,
+// centreY) of the UI clip rectangle sits at `anchor` plus `offset`, where the
+// offset is in head space (right, up, forward, metres). The panel stays
+// parallel to the HUD plane, so it faces the head, and it is projected through
+// each eye from its real position, so it has the hand's depth. Returns false
+// when the panel is too near the face or behind the viewing plane. The caller
+// hides it, never returns it to the normal HUD plane.
+// Wrist HUD, worn like a watch band (Mark, November 12: "wrapped around the
+// wrist"; "like a watch ... is more about how the element is worn on the
+// wrist"; text "upright" with the hand raised, back of the hand toward him).
+// Each block's long side wraps around the wrist; its text reads across the
+// wrist, upright toward the hand. Input: the OpenXR GRIP pose, which the game's
+// hand model is aligned to axis for axis (ModelHandAlignment::GripTarget,
+// BuildLeftFrame / BuildRightFrame): +Y knuckles toward the wrist, +Z index
+// toward little finger, back of the hand -X (left) / +X (right). The band's
+// middle is on the back of the wrist, `along` metres from the palm centre
+// toward the elbow, `radius` from the forearm's centre line.
+struct WristLayout { float centreX,centreY,scale,along,radius; };
+inline Vector HeadDirection(const Transport::Tracking& t,Vector v) {
+    auto r=Rotate(Inverse(t.head.orientation),v);return {r.x,r.y,-r.z};
+}
+// `curved`: the piece being drawn sits on the wrist at its own horizontal
+// position `drawX` in the HUD's clip rectangle, so the block bends around the
+// wrist piece by piece; otherwise at the block's middle. Returns false (hide
+// this piece) when it is within 15 cm of the head or behind it.
+inline bool WristPanelTransform(const Transport::Tracking& t,unsigned eye,Vector gripPosition,Quaternion grip,
+        bool left,const WristLayout& w,bool curved,float drawX,Matrix& result) {
+    auto x=Rotate(grip,{1,0,0}),y=Rotate(grip,{0,1,0}),z=Rotate(grip,{0,0,1});
+    Vector axis{gripPosition.x+y.x*w.along-t.head.position.x,gripPosition.y+y.y*w.along-t.head.position.y,gripPosition.z+y.z*w.along-t.head.position.z};
+    auto a=HeadDirection(t,axis);
+    auto back=HeadDirection(t,left?Vector{-x.x,-x.y,-x.z}:x);   // back of the model's hand
+    // Left to right across the back of the wrist, seen with the back of the
+    // hand toward you and the hand up: from the little finger to the thumb on
+    // the left hand, from the thumb to the little finger on the right.
+    auto across=HeadDirection(t,left?Vector{-z.x,-z.y,-z.z}:z);
+    auto up=HeadDirection(t,{-y.x,-y.y,-y.z});                  // toward the hand
+    const float halfWidth=1.6f*w.scale,halfHeight=.9f*w.scale;
+    const float xRef=curved?drawX:w.centreX;
+    float theta=(xRef-w.centreX)*halfWidth/w.radius;
+    if(!std::isfinite(theta) || std::abs(theta)>2.2f)return false;
+    const float c=std::cos(theta),s=std::sin(theta);
+    Vector normal{c*back.x+s*across.x,c*back.y+s*across.y,c*back.z+s*across.z};
+    Vector tangent{-s*back.x+c*across.x,-s*back.y+c*across.y,-s*back.z+c*across.z};
+    Vector p{a.x+w.radius*normal.x,a.y+w.radius*normal.y,a.z+w.radius*normal.z};
+    const float distance=std::sqrt(p.x*p.x+p.y*p.y+p.z*p.z);
+    if(!std::isfinite(distance) || distance<.15f || p.z<=.01f)return false;
+    Matrix plane;
+    plane.m[0]=halfWidth*tangent.x;plane.m[1]=halfWidth*tangent.y;plane.m[2]=halfWidth*tangent.z;
+    plane.m[4]=halfHeight*up.x;plane.m[5]=halfHeight*up.y;plane.m[6]=halfHeight*up.z;
+    plane.m[12]=p.x-xRef*halfWidth*tangent.x-w.centreY*halfHeight*up.x;
+    plane.m[13]=p.y-xRef*halfWidth*tangent.y-w.centreY*halfHeight*up.y;
+    plane.m[14]=p.z-xRef*halfWidth*tangent.z-w.centreY*halfHeight*up.z;
+    plane.m[15]=1;
+    Matrix depth;depth.m[10]=1;depth.m[14]=-.01f;
+    result=Multiply(plane,EyeProjection(depth,t,eye,1.f));
+    // An overlay like the HUD plane: preserve UI stencil ordering.
+    for(int i=0;i<4;i++)result.m[i*4+2]=0;
+    return true;
+}
+// Smooth wrist band (Mark: the per-piece bend above "peels"). The band's
+// geometry for the replacement vertex shader shaders/HandBand.hlsl, which
+// bends every vertex. Same placement as WristPanelTransform.
+// Since November 13 the band works in the HUD's flat layout units (the X, Y
+// rows the game's shader computes before it tilts the HUD panel): middleX/Y
+// are in those units, metresX/Y are metres per unit (signed), and xShift is
+// added to X to bring a parked element home.
+struct BandFrame {
+    Vector axis{},back{},across{},up{};   // head space (right, up, forward)
+    float radius{},metresX{},metresY{},middleX{},middleY{},maxTheta{},xShift{};
+    Matrix eyeProjection;
+};
+inline bool WristBandFrame(const Transport::Tracking& t,unsigned eye,Vector gripPosition,Quaternion grip,
+        bool left,const WristLayout& w,BandFrame& f) {
+    auto x=Rotate(grip,{1,0,0}),y=Rotate(grip,{0,1,0}),z=Rotate(grip,{0,0,1});
+    Vector axis{gripPosition.x+y.x*w.along-t.head.position.x,gripPosition.y+y.y*w.along-t.head.position.y,gripPosition.z+y.z*w.along-t.head.position.z};
+    f.axis=HeadDirection(t,axis);
+    f.back=HeadDirection(t,left?Vector{-x.x,-x.y,-x.z}:x);
+    f.across=HeadDirection(t,left?Vector{-z.x,-z.y,-z.z}:z);
+    f.up=HeadDirection(t,{-y.x,-y.y,-y.z});
+    f.radius=w.radius;f.metresX=1.6f*w.scale;f.metresY=.9f*w.scale;f.middleX=w.centreX;f.middleY=w.centreY;f.maxTheta=2.2f;
+    Vector p{f.axis.x+f.radius*f.back.x,f.axis.y+f.radius*f.back.y,f.axis.z+f.radius*f.back.z};
+    const float distance=std::sqrt(p.x*p.x+p.y*p.y+p.z*p.z);
+    if(!std::isfinite(distance) || distance<.15f || p.z<=.01f)return false;
+    Matrix depth;depth.m[10]=1;depth.m[14]=-.01f;
+    f.eyeProjection=EyeProjection(depth,t,eye,1.f);
+    return true;
+}
+// Where a point of the band's flat HUD layout (X as the game computes it,
+// before xShift) lands in head space: the CPU mirror of BandPosition in
+// shaders/HandBand.hlsl, for the offline checks.
+inline bool BandPoint(const BandFrame& f,float layoutX,float layoutY,Vector& head) {
+    const float theta=(layoutX+f.xShift-f.middleX)*f.metresX/f.radius;
+    if(!std::isfinite(theta) || std::abs(theta)>f.maxTheta)return false;
+    const float c=std::cos(theta),s=std::sin(theta),v=(layoutY-f.middleY)*f.metresY;
+    head={f.axis.x+f.radius*(c*f.back.x+s*f.across.x)+v*f.up.x,
+          f.axis.y+f.radius*(c*f.back.y+s*f.across.y)+v*f.up.y,
+          f.axis.z+f.radius*(c*f.back.z+s*f.across.z)+v*f.up.z};
+    return true;
+}
+// Positive where that point of the band faces the head (shown), negative on
+// the far side of the wrist (clipped): the shader's SV_ClipDistance.
+inline float BandFacing(const BandFrame& f,float layoutX,float layoutY) {
+    Vector h;if(!BandPoint(f,layoutX,layoutY,h))return -1;
+    const float theta=(layoutX+f.xShift-f.middleX)*f.metresX/f.radius,c=std::cos(theta),s=std::sin(theta);
+    const Vector n{c*f.back.x+s*f.across.x,c*f.back.y+s*f.across.y,c*f.back.z+s*f.across.z};
+    const float l=std::sqrt(h.x*h.x+h.y*h.y+h.z*h.z);
+    return -(n.x*h.x+n.y*h.y+n.z*h.z)/(l>1e-4f?l:1e-4f);
+}
+inline bool BandClip(const BandFrame& f,float layoutX,float layoutY,float clip[4]) {
+    Vector h;if(!BandPoint(f,layoutX,layoutY,h))return false;
+    const auto& m=f.eyeProjection.m;
+    for(int j=0;j<4;++j)clip[j]=h.x*m[j]+h.y*m[4+j]+h.z*m[8+j]+m[12+j];
+    clip[2]=0;
+    return true;
+}
+// Collapse all vertices outside the clip volume, retaining native draw order.
+inline Matrix HiddenHudTransform() {
+    Matrix m;m.m[12]=2;m.m[13]=2;m.m[15]=1;return m;
+}
+inline bool HudPanelTransform(const Transport::Tracking& t,unsigned eye,const Pose& anchor,
+        float centreX,float centreY,float scale,Vector offset,Matrix& result) {
+    auto p=Rotate(Inverse(t.head.orientation),{anchor.position.x-t.head.position.x,anchor.position.y-t.head.position.y,anchor.position.z-t.head.position.z});
+    // Head space as in EyeWorld: right/up/forward.
+    float x=p.x+offset.x,y=p.y+offset.y,z=-p.z+offset.z;
+    if(!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z) || z<=.01f || x*x+y*y+z*z<.15f*.15f)return false;
+    Matrix depth;depth.m[10]=1;depth.m[14]=-.01f;
+    auto projection=EyeProjection(depth,t,eye,1.f);
+    float halfWidth=1.6f*scale,halfHeight=.9f*scale;
+    Matrix plane;plane.m[0]=halfWidth;plane.m[5]=halfHeight;
+    plane.m[12]=x-centreX*halfWidth;plane.m[13]=y-centreY*halfHeight;plane.m[14]=z;plane.m[15]=1;
+    result=Multiply(plane,projection);
+    // An overlay like the HUD plane: preserve UI stencil ordering.
+    for(int i=0;i<4;i++)result.m[i*4+2]=0;
+    return true;
+}
 }

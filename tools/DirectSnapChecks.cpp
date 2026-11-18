@@ -12,9 +12,13 @@ DWORD TestWindowThread(HWND,DWORD* pid){*pid=testFocus?GetCurrentProcessId():0;r
 #undef GetForegroundWindow
 #undef GetWindowThreadProcessId
 namespace EngineCamera {
+bool nativeCover{};bool NativeCoverControls(){return nativeCover;}
 bool view=true;float requestedAngle{};unsigned requests{},cancels{};
 bool DialogueEnabled(){return false;}bool DialogueAvailable(){return true;}void SetDialogueEnabled(bool){}
-float ConfiguredWorldScale(){return 300;}float ActiveWorldScale(){return 300;}void SetConfiguredWorldScale(float){}
+bool HandHudConfigured(){return true;}bool HandHudActive(){return true;}void SetHandHudConfigured(bool){}
+unsigned ThrowAimSetting(){return 0;}void SetThrowAim(unsigned){}unsigned ThrowMarkerSetting(){return 0;}void SetThrowMarker(bool){}
+unsigned CoverFollowSetting(){return 0;}void SetCoverFollow(bool){}unsigned ImmersiveScopeSetting(){return 0;}void SetImmersiveScope(bool){}
+float ConfiguredWorldScale(){return 300;}float ActiveWorldScale(){return 300;}void SetConfiguredWorldScale(float){}float ScopeMagnification(){return 4;}bool SetScopeMagnification(float){return true;}
 unsigned InteractionAim(){return 0;}void SetInteractionAim(unsigned){}
 unsigned MovementResponse(){return 0;}void SetMovementResponse(unsigned){}
 unsigned MovementDirection(){return 0;}void SetMovementDirection(unsigned){}
@@ -24,6 +28,7 @@ void SetDirectSnapEnabled(bool){}void CancelDirectSnap(){++cancels;}
 bool RequestDirectSnap(float degrees){requestedAngle=degrees;++requests;return true;}
 int QuickBarAutoHide(bool){assert(false);return 0;}
 bool ImmersiveScopeButton(){return false;}void ArmHandCalibration(){}void Recenter(){}
+bool ThrowMarkerEnabled(){return false;}void SetThrowAiming(bool){}void NoteThrowRelease(uint64_t){}bool DetonateReady(){return false;}void NoteDetonatePress(uint64_t){}
 }
 int main(){
     DirectSnap::Request q;
@@ -61,5 +66,25 @@ int main(){
     EngineCamera::view=true;tick(30000,0);assert(EngineCamera::requests==2);
     tick(0,0);testFocus=false;tick(30000,0);assert(!GamepadBridge::snapArmed);
     testFocus=true;tick(30000,0);assert(EngineCamera::requests==2&&EngineCamera::cancels>=2);
+    EngineCamera::nativeCover=true;
+    GamepadBridge::stickUpTarget=XINPUT_GAMEPAD_A;GamepadBridge::stickDownTarget=XINPUT_GAMEPAD_B;
+    const unsigned previousRequests=EngineCamera::requests;
+    // Cover aims with the controller: the right stick never reaches the game
+    // as look/aim, keeps its up/down buttons, and queues no snap.
+    GamepadBridge::snapArmed=true;tick(28000,17000);
+    assert(pad.sThumbRX==0&&pad.sThumbRY==0&&!GamepadBridge::snapArmed);
+    assert(EngineCamera::requests==previousRequests);
+    GamepadBridge::snapCooldown=0;tick(0,0);assert(!GamepadBridge::snapArmed);tick(30000,0);
+    assert(pad.sThumbRX==0&&EngineCamera::requests==previousRequests&&!GamepadBridge::snapArmed);
+    pad.wButtons=0;tick(0,30000);assert(pad.sThumbRY==0&&(pad.wButtons&XINPUT_GAMEPAD_A));
+    pad.wButtons=0;tick(0,-30000);assert(pad.sThumbRY==0&&(pad.wButtons&XINPUT_GAMEPAD_B));
+    pad={};pad.sThumbRX=-11000;pad.sThumbRY=30000;GamepadBridge::StickButtons(pad);
+    assert(pad.sThumbRX==0&&pad.sThumbRY==0&&(pad.wButtons&XINPUT_GAMEPAD_A));
+    pad={};pad.sThumbRX=-30000;pad.sThumbRY=2000;GamepadBridge::StickButtons(pad);
+    assert(pad.sThumbRX==-30000&&pad.sThumbRY==0&&pad.wButtons==0);
+    EngineCamera::nativeCover=false;pad={};pad.sThumbLX=12345;pad.sThumbLY=-23456;
+    GamepadBridge::snapCooldown=0;tick(30000,0);assert(EngineCamera::requests==previousRequests);
+    tick(0,0);tick(30000,0);assert(EngineCamera::requests==previousRequests+1);
+    puts("PASS cover stick: no stick aiming, no queued snap, first-person up/down buttons kept, smooth-turn axis kept, return to first person requires neutral rearm");
     puts("PASS direct snap: one-shot/expiry/ownership/cancel, yaw direction/wrap, actual bridge rearm/focus/menu and untouched left stick");
 }

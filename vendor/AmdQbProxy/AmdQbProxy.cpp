@@ -53,6 +53,7 @@
 // DLLs delay-loaded — see SR.hpp for the rationale and the vcxproj's
 // DelayLoadDLLs entries that pair with it.
 #include "NativeBridge.h"
+#include "HudIsolationCheck.h"
 
 // ============================================================
 // Diagnostic log
@@ -683,10 +684,15 @@ static HRESULT STDMETHODCALLTYPE HookedResizeTarget(
 // Neither eye is retained from an earlier Present. DXGI_PRESENT_TEST is inert.
 static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* sc, UINT sync, UINT flags)
 {
+    if (!(flags & DXGI_PRESENT_TEST) && HudIsolationCheck::desktopMode) {
+        DXGI_SWAP_CHAIN_DESC desc{};
+        if(SUCCEEDED(sc->GetDesc(&desc)))HudIsolationCheck::DesktopFrame(desc.OutputWindow);
+    }
     if (!(flags & DXGI_PRESENT_TEST) && g_bStereoActive) {
         auto it = g_scShadow.find(sc);
         if (it != g_scShadow.end() && it->second.pTex && it->second.origH) {
-            NativeBridge::Present(sc, it->second.pTex, it->second.origH, g_bSwapEyes);
+            if(!HudIsolationCheck::desktopMode)
+                NativeBridge::Present(sc, it->second.pTex, it->second.origH, g_bSwapEyes);
             // Flat monitor mirror: current left eye, full size; no shader state changes.
             ID3D11Texture2D* bb = nullptr;
             if (g_pfnOrigGetBuffer && SUCCEEDED(g_pfnOrigGetBuffer(sc, 0,
@@ -1053,6 +1059,9 @@ extern "C"
     HRESULT __cdecl AmdDxExtCreate(ID3D10Device* /*pDevice*/, IAmdDxExt** ppExt)
     {
         if (!ppExt) return E_INVALIDARG;
+        // Runs outside loader lock, independently of stereo/companion startup.
+        if(GetFileAttributesW(L"DeusExHRVR-desktop-hud.enable")!=INVALID_FILE_ATTRIBUTES)
+            HudIsolationCheck::Install(reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr)),false,false); // desktop test only; no hand HUD
         *ppExt = new (std::nothrow) FakeAmdDxExt();
         return *ppExt ? S_OK : E_OUTOFMEMORY;
     }
@@ -1061,6 +1070,9 @@ extern "C"
     HRESULT __cdecl AmdDxExtCreate11(ID3D11Device* pDevice, IAmdDxExt** ppExt)
     {
         if (!ppExt) return E_INVALIDARG;
+        // Runs outside loader lock, independently of stereo/companion startup.
+        if(GetFileAttributesW(L"DeusExHRVR-desktop-hud.enable")!=INVALID_FILE_ATTRIBUTES)
+            HudIsolationCheck::Install(reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr)),false,false); // desktop test only; no hand HUD
 
         char buf[128];
         wsprintfA(buf, "[AmdQbProxy] AmdDxExtCreate11 called (pDevice=%p)\n", pDevice);
@@ -1076,6 +1088,7 @@ extern "C"
             // extension request. Never retain/release a probe context across it.
             // This borrowed pointer is used only by immediate hook installation.
             g_pDevice11 = pDevice;
+            if(HudIsolationCheck::desktopMode)InstallPresentHook();
             WriteLog("[AmdQbProxy]   borrowed device for hook installation\n");
         }
 

@@ -2,6 +2,9 @@
 #include "SettingsMenu.h"
 #include <vector>
 #include <cstdio>
+#include <cstdint>
+#include <cmath>
+#include <algorithm>
 
 // Small native raster UI; no game assets. The same pixels feed preview and XR.
 class SettingsMenuDraw {
@@ -38,8 +41,27 @@ public:
             auto old=SelectObject(dc,stripe);MoveToEx(dc,r.x+10+i,r.y+5,nullptr);LineTo(dc,r.x+18+i,r.y+13);
             SelectObject(dc,old);DeleteObject(stripe);
         }
-        Text(label,r.x,r.y,r.w,r.h);
+        if(label)Text(label,r.x,r.y,r.w,r.h);
     }
+    // The game's PC menu buttons (ComponentsLibrary.Classes.PCButton) draw their
+    // background plate at alpha x0.75 and their label solid (pause-menu movie
+    // 87518 sprite 258, also 87474/87475). The closed shortcut copies that.
+    // The game blends that 75% on its own (presumably sRGB-encoded) values, so 25%
+    // of the background's encoded brightness shows through. The XR layer is
+    // premultiplied (BLEND_TEXTURE_SOURCE_ALPHA without UNPREMULTIPLIED): stored
+    // colour = 0.75 x colour on either swapchain. A linear swapchain blends like
+    // the game (alpha 0.75). An sRGB swapchain blends in linear light, where
+    // alpha 0.75 would let far more through; there alpha is chosen so the plate
+    // (stored red 26) over a mid-grey background (sRGB 0.5) gives the game's
+    // result 26 + 0.25 x 127.5: 1 - (lin(57.875/255) - lin(26/255)) / lin(0.5)
+    // = 0.851 -> 217. Darker backgrounds come through a little less than in the
+    // game, brighter ones a little more.
+    static constexpr float ShortcutOpacity=.75f;
+    static constexpr uint32_t ShortcutAlphaLinear=191,ShortcutAlphaSrgb=217;
+    static constexpr COLORREF ShortcutEdge=RGB(115,89,34); // Button() border, not hovered
+    static constexpr uint8_t Premultiply(uint8_t c){return uint8_t((c*3u+2u)/4u);} // round(0.75 x c)
+    bool srgb=true; // set by NativeBridge from the swapchain format
+    std::vector<uint32_t> plate; // closed shortcut before its label, Entry+-2
     const void* Draw(const SettingsMenu::State& s,const Transport::MenuState& live) {
         auto game=live;if(s.draftReset)for(auto& hold:game.holdMs)hold=0;
         if(!Init())return nullptr;
@@ -55,7 +77,21 @@ public:
             auto edge=CreateSolidBrush(RGB(115,89,34));FrameRect(dc,&r,edge);DeleteObject(edge);
         }
         auto hovered=[&](SettingsMenu::Rect rect){return s.pointer&&rect.Has(s.x,s.y);};
-        if(!s.open)Button(SettingsMenu::Entry,L"VR SETTINGS",hovered(SettingsMenu::Entry));
+        const bool shortcutTranslucent=!s.open&&!hovered(SettingsMenu::Entry);
+        if(!s.open){
+            Button(SettingsMenu::Entry,nullptr,hovered(SettingsMenu::Entry));
+            if(shortcutTranslucent){
+                // Remember the plate so pixels the label changes stay solid.
+                if(!GdiFlush())return nullptr;
+                const auto e=SettingsMenu::Entry;const int w=e.w+4;plate.assign(size_t(w)*(e.h+4),0);
+                auto data=static_cast<const uint32_t*>(pixels);
+                for(int y=0;y<e.h+4;++y)for(int x=0;x<w;++x){
+                    int cx=e.x-2+x,cy=e.y-2+y;
+                    if(cx>=0&&cy>=0&&cx<SettingsMenu::Width&&cy<SettingsMenu::Height)plate[size_t(y)*w+x]=data[cy*SettingsMenu::Width+cx]&0xffffffu;
+                }
+            }
+            Text(L"VR SETTINGS",SettingsMenu::Entry.x,SettingsMenu::Entry.y,SettingsMenu::Entry.w,SettingsMenu::Entry.h);
+        }
         else if(s.recenterAt){
             Text(L"RECENTER VIEW",240,120,1120,60,true);
             Text(L"Face forward and get comfortable.",240,300,1120,50);
@@ -97,7 +133,7 @@ public:
             Button(SettingsMenu::ListDiscard,s.committed?L"BACK":L"DISCARD & BACK",!s.saving&&hovered(SettingsMenu::ListDiscard));
             Button(SettingsMenu::ListSave,s.saving?L"SAVING...":s.Dirty()?L"SAVE & BACK":L"NO CHANGES",!s.saving&&s.Dirty()&&hovered(SettingsMenu::ListSave));
             if(s.listening||s.confirming||s.resetConfirm){
-                RECT dialog{210,170,1390,815};auto brush=CreateSolidBrush(RGB(16,17,14));FillRect(dc,&dialog,brush);DeleteObject(brush);
+                RECT dialog{210,170,1390,865};auto brush=CreateSolidBrush(RGB(16,17,14));FillRect(dc,&dialog,brush);DeleteObject(brush);
                 brush=CreateSolidBrush(RGB(210,150,30));FrameRect(dc,&dialog,brush);DeleteObject(brush);
                 if(s.resetConfirm){
                     Text(L"RESTORE DEFAULT BINDINGS?",300,290,1000,60,true);
@@ -126,27 +162,57 @@ public:
         }
         else {
             const wchar_t* heading=s.saving?L"SAVING...":s.committed&&game.result==3?L"SAVE FAILED - RETRY":s.committed&&game.result==2?L"CHANGE REFUSED":L"VR SETTINGS";
-            Text(heading,240,110,1120,55,true,true);
-            Text(L"Turning",240,210,470,50,false,true);
-            Text(s.draftSnap?L"Snap-turn angle":L"Snap-turn angle (inactive)",240,260,470,50,false,true);
-            Text(L"Movement direction",240,310,470,50,false,true);
-            Text(L"Walking response",240,410,470,50,false,true);
-            Text(L"Interaction aim",240,360,470,50,false,true);
-            Text(L"World scale",240,460,470,50,false,true);
-            wchar_t scaleLabel[64];swprintf_s(scaleLabel,L"%.6g / ADJUST",double(s.draftScale));Button(SettingsMenu::WorldScale,scaleLabel,!s.saving&&hovered(SettingsMenu::WorldScale));
-            Text(L"Gameplay controls",240,510,470,50,false,true);
-            Text(L"Conversation camera",240,610,470,50,false,true);
-            Button(SettingsMenu::Dialogue,!game.dialogueAvailable?L"UNAVAILABLE":s.draftDialogue?L"STAY IN FIRST PERSON":L"GAME CAMERA",!s.saving&&game.dialogueAvailable&&hovered(SettingsMenu::Dialogue));
-            Text(L"Recenter view",240,560,470,50,false,true);
-            Button(SettingsMenu::TurnMode,s.draftSnap?L"SNAP":L"SMOOTH",!s.saving&&hovered(SettingsMenu::TurnMode));
-            wchar_t value[40];swprintf_s(value,L"%.6g\u00b0",double(s.draft));Text(value,870,260,310,50,true);
-            Button(SettingsMenu::Minus,L"-",s.draftSnap&&!s.saving&&hovered(SettingsMenu::Minus));Button(SettingsMenu::Plus,L"+",s.draftSnap&&!s.saving&&hovered(SettingsMenu::Plus));
-            Button(SettingsMenu::Movement,s.draftMovement==1?L"HEAD":s.draftMovement==3?L"LEFT HAND":s.draftMovement==2?L"RIGHT HAND":L"FROM CONFIG",!s.saving&&hovered(SettingsMenu::Movement));
-            Button(SettingsMenu::Response,s.draftResponse==2?L"GENTLER":s.draftResponse==1?L"GENTLE":L"NORMAL",!s.saving&&hovered(SettingsMenu::Response));
-            Button(SettingsMenu::Interaction,s.draftInteraction==1?L"HEAD":s.draftInteraction==2?L"RIGHT HAND":L"FROM CONFIG",!s.saving&&hovered(SettingsMenu::Interaction));
-            Button(SettingsMenu::Remap,L"BUTTON REMAPPING",!s.saving&&hovered(SettingsMenu::Remap));
-            Button(SettingsMenu::Recenter,L"RECENTER (3 SECONDS)",!s.saving&&hovered(SettingsMenu::Recenter));
-            Text(s.Dirty()?L"Changes apply when you choose Save & Back.":game.worldScale!=game.activeWorldScale?L"World scale saved. Resume to apply it.":L"Select a value to change it.",240,685,1120,40);
+            using SettingsMenu::MainRowY;
+            Text(heading,240,60,1120,55,true,true);
+            // Tabs: the shown one is drawn lit, with a gold bar under it.
+            static const wchar_t* tabNames[SettingsMenu::Tabs]{L"MOVEMENT",L"CONTROLS",L"VIEW"};
+            for(int i=0;i<SettingsMenu::Tabs;++i){
+                const auto r=SettingsMenu::Tab(i);
+                Button(r,tabNames[i],s.tab==i||(!s.saving&&hovered(r)));
+                if(s.tab==i){RECT bar{r.x+20,r.y+r.h+4,r.x+r.w-20,r.y+r.h+9};auto b=CreateSolidBrush(RGB(241,188,68));FillRect(dc,&bar,b);DeleteObject(b);}
+            }
+            auto label=[&](int row,const wchar_t* text){Text(text,240,MainRowY(row),470,52,false,true);};
+            auto row=[&](SettingsMenu::Rect r,bool available,const wchar_t* text){Button(r,available?text:L"UNAVAILABLE",!s.saving&&available&&hovered(r));};
+            if(s.tab==SettingsMenu::TabMovement){
+                label(0,L"Turning");
+                label(1,s.draftSnap?L"Snap-turn angle":L"Snap-turn angle (inactive)");
+                label(2,L"Movement direction");
+                label(3,L"Walking response");
+                label(4,L"World scale");
+                label(5,L"Recenter view");
+                Button(SettingsMenu::TurnMode,s.draftSnap?L"SNAP":L"SMOOTH",!s.saving&&hovered(SettingsMenu::TurnMode));
+                wchar_t value[40];swprintf_s(value,L"%.6g\u00b0",double(s.draft));Text(value,870,MainRowY(1),310,52,true);
+                Button(SettingsMenu::Minus,L"-",s.draftSnap&&!s.saving&&hovered(SettingsMenu::Minus));Button(SettingsMenu::Plus,L"+",s.draftSnap&&!s.saving&&hovered(SettingsMenu::Plus));
+                Button(SettingsMenu::Movement,s.draftMovement==1?L"HEAD":s.draftMovement==3?L"LEFT HAND":s.draftMovement==2?L"RIGHT HAND":L"FROM CONFIG",!s.saving&&hovered(SettingsMenu::Movement));
+                Button(SettingsMenu::Response,s.draftResponse==2?L"GENTLER":s.draftResponse==1?L"GENTLE":L"NORMAL",!s.saving&&hovered(SettingsMenu::Response));
+                wchar_t scaleLabel[64];swprintf_s(scaleLabel,L"%.6g / ADJUST",double(s.draftScale));Button(SettingsMenu::WorldScale,scaleLabel,!s.saving&&hovered(SettingsMenu::WorldScale));
+                Button(SettingsMenu::Recenter,L"RECENTER (3 SECONDS)",!s.saving&&hovered(SettingsMenu::Recenter));
+            }else if(s.tab==SettingsMenu::TabControls){
+                label(0,L"Interaction aim");
+                label(1,L"Grenade aim");
+                label(2,s.draftThrowAim==1?L"Grenade landing ring (inactive)":L"Grenade landing ring");
+                label(3,L"Gameplay controls");
+                Button(SettingsMenu::Interaction,s.draftInteraction==1?L"HEAD":s.draftInteraction==2?L"RIGHT HAND":L"FROM CONFIG",!s.saving&&hovered(SettingsMenu::Interaction));
+                row(SettingsMenu::ThrowAimRow,s.originalThrowAim!=0,s.draftThrowAim==2?L"HEAD":s.draftThrowAim==3?L"RIGHT HAND":s.draftThrowAim==4?L"LEFT HAND":L"DEFAULT");
+                row(SettingsMenu::ThrowMarkerRow,s.throwMarkerAvailable,s.draftThrowMarker?L"ON":L"OFF");
+                Button(SettingsMenu::Remap,L"BUTTON REMAPPING",!s.saving&&hovered(SettingsMenu::Remap));
+            }else{
+                label(0,L"HUD");
+                label(1,L"Immersive scope");
+                label(2,s.scopeAvailable&&!s.draftScope?L"Scope zoom (inactive)":L"Scope zoom");
+                label(3,L"Cover camera");
+                label(4,L"Conversation camera");
+                row(SettingsMenu::HandHud,s.handHudAvailable,s.draftHandHud?L"HANDS":L"DEFAULT");
+                row(SettingsMenu::ScopeRow,s.scopeAvailable,s.draftScope?L"ON":L"OFF");
+                if(game.scopeZoom>=1){
+                    wchar_t zoom[40];swprintf_s(zoom,L"%.6gx",double(s.draftZoom));Text(zoom,870,MainRowY(2),310,52,true);
+                    Button(SettingsMenu::ZoomMinus,L"-",!s.saving&&s.draftZoom>SettingsMenu::ZoomMin&&hovered(SettingsMenu::ZoomMinus));
+                    Button(SettingsMenu::ZoomPlus,L"+",!s.saving&&s.draftZoom<SettingsMenu::ZoomMax&&hovered(SettingsMenu::ZoomPlus));
+                }else Text(L"UNAVAILABLE",870,MainRowY(2),310,52,true);
+                row(SettingsMenu::CoverFollowRow,s.coverFollowAvailable,s.draftCoverFollow?L"FOLLOWS AIM":L"STILL");
+                row(SettingsMenu::Dialogue,game.dialogueAvailable!=0,s.draftDialogue?L"STAY IN FIRST PERSON":L"GAME CAMERA");
+            }
+            Text(s.Dirty()?L"Changes apply when you choose Save & Back.":game.worldScale!=game.activeWorldScale?L"World scale saved. Resume to apply it.":game.handHud&&game.activeHandHud&&game.handHud!=game.activeHandHud?L"HUD saved. Restart the game to apply it.":L"Select a value to change it.",240,SettingsMenu::StatusY,1120,40);
             if(s.Dirty())Button(SettingsMenu::Discard,s.committed?L"BACK":L"DISCARD & BACK",!s.saving&&hovered(SettingsMenu::Discard));
             else Button(SettingsMenu::Back,L"BACK",hovered(SettingsMenu::Back));
             Button(SettingsMenu::Save,s.saving?L"SAVING...":s.Dirty()?L"SAVE & BACK":L"NO CHANGES",!s.saving&&s.Dirty()&&hovered(SettingsMenu::Save));
@@ -156,7 +222,20 @@ public:
         for(int y=std::max(0,area.y-2);y<std::min(SettingsMenu::Height,area.y+area.h+2);++y)for(int x=std::max(0,area.x-2);x<std::min(SettingsMenu::Width,area.x+area.w+2);++x){
             auto& pixel=data[y*SettingsMenu::Width+x];
             if(s.open&&area.Has(float(x),float(y)))pixel|=0xff000000;
-            else if(!s.open&&pixel)pixel|=0xff000000; // only the shortcut silhouette is opaque
+            else if(!s.open&&pixel){
+                // Only the shortcut silhouette is drawn. Pointed at, it is solid as
+                // before (covering the game's cursor beneath); otherwise its plate
+                // is translucent like the game's buttons, label and edge solid.
+                const uint32_t rgb=pixel&0xffffffu;
+                const auto e=SettingsMenu::Entry;
+                constexpr uint32_t edge=0x735922u; // ShortcutEdge RGB(115,89,34) as the DIB stores it
+                static_assert(ShortcutEdge==0x225973u);
+                const bool platePixel=shortcutTranslucent&&rgb!=edge&&
+                    plate[size_t(y-(e.y-2))*(e.w+4)+size_t(x-(e.x-2))]==rgb;
+                if(!platePixel)pixel=rgb|0xff000000u;
+                else pixel=(srgb?ShortcutAlphaSrgb:ShortcutAlphaLinear)<<24|uint32_t(Premultiply(uint8_t(rgb>>16)))<<16|
+                           uint32_t(Premultiply(uint8_t(rgb>>8)))<<8|Premultiply(uint8_t(rgb));
+            }
         }
         // The native cursor continues moving underneath the XR panel. Draw its
         // gold-arrow counterpart only where this opaque layer would cover it.

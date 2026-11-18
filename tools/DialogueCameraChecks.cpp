@@ -38,11 +38,11 @@ int wmain(int argc,wchar_t** argv){
     GamepadMapping::Input input{};input.active=true;
     SettingsMenu::State ui;
     auto click=[&](SettingsMenu::Rect r){input.rightTrigger=0;ui.Update(true,true,true,float(r.x+5),float(r.y+5),input,game,100);input.rightTrigger=1;ui.Update(true,true,true,float(r.x+5),float(r.y+5),input,game,110);};
-    click(SettingsMenu::Entry);click(SettingsMenu::Dialogue);assert(ui.draftDialogue&&ui.Dirty());
+    click(SettingsMenu::Entry);click(SettingsMenu::Tab(SettingsMenu::TabView));click(SettingsMenu::Dialogue);assert(ui.draftDialogue&&ui.Dirty()); // View tab (Nov 17)
     click(SettingsMenu::Discard);assert(!ui.open&&ui.request==0&&game.dialogue==0);
     click(SettingsMenu::Entry);assert(!ui.draftDialogue);
     click(SettingsMenu::Dialogue);click(SettingsMenu::Save);assert(ui.requestedDialogue&&ui.request==1);
-    ui={};game.dialogueAvailable=0;click(SettingsMenu::Entry);click(SettingsMenu::Dialogue);assert(!ui.draftDialogue&&!ui.Dirty());
+    ui={};game.dialogueAvailable=0;click(SettingsMenu::Entry);click(SettingsMenu::Tab(SettingsMenu::TabView));click(SettingsMenu::Dialogue);assert(!ui.draftDialogue&&!ui.Dirty());
 
     assert(argc==2);auto file=std::filesystem::absolute(std::filesystem::path(argv[1])/L"dialogue.ini");
     std::filesystem::create_directories(file.parent_path());

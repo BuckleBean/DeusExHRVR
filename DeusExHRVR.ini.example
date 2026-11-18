@@ -56,7 +56,10 @@ NativeLookHeadingMaxDeg=5
 ; Headset VR and Headset direction settings still work. Restart to apply.
 MotionControls=1
 ; Optional full-headset scope with right-controller aiming; requires weapon motion.
+; Also available in VR Settings > View > Immersive scope.
 ImmersiveScope=0
+; Scope zoom, 1-12. The VR settings menu (Scope zoom) offers 3-12: below 3 the
+; game's black scope surround leaves the edges of the view uncovered.
 ScopeMagnification=4
 
 ; Left thumbstick click waits this long (ms) before a hold registers, so the
@@ -68,6 +71,28 @@ LeftStickClickDelayMs=150
 ; Mouse retains native mouse/gamepad look direction. Restart after editing.
 ; Interaction selects doors/items; it does not change weapon aiming.
 InteractionAim=Mouse
+; Thrown grenades: Controller (default) throws where your right hand points,
+; so pointing higher throws farther. Headset throws where you look,
+; LeftController follows the left hand, and Mouse keeps the game's own throw
+; along the camera's facing. Only the direction changes; throw strength,
+; release point and gravity stay the game's. Each throw writes one line to
+; DeusExHRVR-throw.log. Restart after editing.
+; Also available in VR Settings > Controls > Grenade aim.
+ThrowAim=Controller
+; Landing marker: hold the throw button and, after its hold delay (RightAHoldMs
+; for a throw on right A), a ring shows where the grenade should first hit;
+; let go to throw. A quick press throws at once as before. The point uses the
+; game's own throw setup and collision; the game's small random spread is not
+; shown, and the ring is not hidden by things in front of it. 0 turns it off
+; and restores press-to-throw. Restart after editing.
+; VR Settings > Controls > Grenade landing ring (inactive with default game aim).
+ThrowMarker=1
+; Rockets (and any other gun whose shot is a flying object): 1 (default)
+; fires them straight along the gun barrel in your hand. 0 keeps the game's
+; own aim, toward where the body faces. Only the direction changes; speed,
+; spread, damage and the explosion stay the game's. Each shot writes one line
+; to DeusExHRVR-projectile.log. Restart after editing.
+ProjectileAim=1
 ; Walking uses horizontal heading only, including W/A/S/D and gamepad movement.
 ; MovementDirection also accepts LeftController (left-hand aim). Controller
 ; retains its existing right-hand meaning; RightController is an alias.
@@ -139,6 +164,17 @@ LevelScreen=1
 ; Aiming, the gun and virtual-screen modes are unaffected. Restart to apply.
 YawOnlyCamera=0
 
+; HUD: 1 shows the game's HUD on your hands and wrist; 0 keeps the game's own
+; HUD on the screen. Also in the VR settings menu (HUD: DEFAULT / HANDS), where
+; a change applies as soon as it is saved.
+HandHud=1
+; Cover: 1 (default) swings the cover camera around Jensen to follow where your
+; right hand aims, left-right and up-down, once the aim moves past a small dead
+; zone, as the mouse does. The gun stays in Jensen's hands and aims where the
+; controller points. 0 keeps the cover camera still. Needs MotionControls=1.
+; Restart after editing.
+; VR Settings > View > Cover camera; applies when saved.
+CoverCameraFollow=1
 ; Keep the view at Jensen's eyes during conversations instead of following the
 ; game's shot cuts between the NPC and Jensen; turn your head to look around.
 ; Jensen's own model is hidden while the view is held. Restart to apply.

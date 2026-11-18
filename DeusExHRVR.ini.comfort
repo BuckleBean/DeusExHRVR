@@ -118,8 +118,8 @@ WorldUnitsPerMetre=300
 ; Off on purpose
 ; ---------------------------------------------------------------------------
 ; Holds the view at Jensen's eyes through a conversation instead of letting the
-; game cut between shots. It can leave the view at the wrong height in some
-; conversations, so it is off until that is fixed. Set it to 1 to try it.
+; game cut between shots. Off here; set it to 1, or choose Stay in first person
+; in the VR settings menu, to try it.
 FixedDialogueCamera=0
 
 ; No [Buttons] or [ScreenButtons] sections: the stock button layout is kept.

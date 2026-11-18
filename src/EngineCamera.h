@@ -6,9 +6,16 @@ namespace EngineCamera {
 bool DialogueEnabled();
 bool DialogueAvailable();
 void SetDialogueEnabled(bool enabled);
+// HUD on the hands: the saved HandHud setting ([VR], default 1) and whether the
+// hand HUD is running now. SetHandHudConfigured also switches it live.
+bool HandHudConfigured();
+bool HandHudActive();
+void SetHandHudConfigured(bool enabled);
 Transport::RenderInfo OnPresent(uint64_t frame, bool capture);
 void SetChannel(Transport::Header* header);
 bool SnapTurnView(float& yaw);
+// Separate from gameplay classification: cover retains gameplay button bindings.
+bool NativeCoverControls();
 void SetDirectSnapEnabled(bool enabled);
 void CancelDirectSnap();
 bool RequestDirectSnap(float rightDegrees);
@@ -19,6 +26,16 @@ bool ImmersiveScopeButton();
 // Arms hands calibration. Called from GamepadBridge so the trigger can be a
 // bindable [Buttons] target instead of a pose gesture or an INI edit.
 void ArmHandCalibration();
+// Grenade landing marker (ThrowAim.h). GamepadBridge reports while the throw
+// button is held past its hold delay, and how long it was held at release.
+bool ThrowMarkerEnabled();
+void SetThrowAiming(bool aiming);
+void NoteThrowRelease(uint64_t heldMs);
+// True while the game offers to detonate a thrown remote device (the condition
+// behind its "Weapon_Detonate" prompt). A press of the throw input that starts
+// then is passed to the game as a plain held RB, not a throw.
+bool DetonateReady();
+void NoteDetonatePress(uint64_t heldMs);
 void Recenter();
 // Local patch: bit mask of active virtual-screen reasons (1 interaction, 2 menu, 4 video, 8 game over, 16 scope,
 // 32 in-game menu, 64 e-reader/news reader: buttons only, the display stays tracked;
@@ -31,6 +48,21 @@ unsigned InteractionAim();
 float ConfiguredWorldScale();
 float ActiveWorldScale();
 void SetConfiguredWorldScale(float value);
+// Immersive scope magnification (ScopeMagnification, 1-12); applies on the next frame.
+float ScopeMagnification();
+bool SetScopeMagnification(float value);
+// VR settings menu tabs (transport 24). Each returns 0 when the feature could
+// not start (its hook was refused); otherwise ThrowAimSetting is the
+// DirectionConfig::Source + 1 and the others 1 off / 2 on. The setters apply
+// from the next frame; an unavailable feature ignores them.
+unsigned ThrowAimSetting();
+void SetThrowAim(unsigned source);
+unsigned ThrowMarkerSetting();
+void SetThrowMarker(bool enabled);
+unsigned CoverFollowSetting();
+void SetCoverFollow(bool enabled);
+unsigned ImmersiveScopeSetting();
+void SetImmersiveScope(bool enabled);
 void SetInteractionAim(unsigned value);
 void SetMovementResponse(unsigned value);
 void SetMovementDirection(unsigned value);

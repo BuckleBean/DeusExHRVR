@@ -5,7 +5,7 @@
 #include <cstddef>
 #include "ButtonBindings.h"
 namespace Transport {
-inline constexpr uint32_t Magic=0x52485844, Version=19;
+inline constexpr uint32_t Magic=0x52485844, Version=24;
 struct alignas(8) MenuState {
     uint64_t gameTick,hostTick;
     uint32_t eligible,blocked,snapEnabled,request;
@@ -20,10 +20,23 @@ struct alignas(8) MenuState {
     uint32_t recenterRequest,recenterAck;
     uint32_t response,requestedResponse;
     uint32_t interaction,requestedInteraction,resetBindings,reserved;
-    float worldScale,requestedWorldScale,activeWorldScale,scaleReserved;
-    uint32_t dialogue,requestedDialogue,dialogueAvailable,dialogueReserved;
+    // scopeZoom: the game's live ScopeMagnification (0 from a DLL that predates it).
+    // requestedScopeZoom: 1-12 (the menu offers 3-12), or 0 = keep (what a companion that predates it sends).
+    // Both reuse former reserved slots, so the layout and Version are unchanged.
+    float worldScale,requestedWorldScale,activeWorldScale,scopeZoom;
+    uint32_t dialogue,requestedDialogue,dialogueAvailable;float requestedScopeZoom;
+    // Hand HUD (transport 23): handHud = the saved HandHud setting, 1 off / 2 on;
+    // activeHandHud = the HUD running now, 1 game HUD / 2 hand HUD (switched live
+    // when saved; differs only if the hand HUD could not start); requestedHandHud 0 = keep.
+    uint32_t handHud,activeHandHud,requestedHandHud,handHudReserved; // from offset 372 (former tail padding)
+    // Transport 24, menu tabs (Mark, Nov 17): four more settings, each applied
+    // when saved. Game side: 0 = unavailable. Requests: 0 = keep.
+    // throwAim = DirectionConfig::Source + 1 (1 game's own, 2 head, 3 right hand,
+    // 4 left hand); the others 1 off / 2 on.
+    uint32_t throwAim,requestedThrowAim,throwMarker,requestedThrowMarker;
+    uint32_t coverFollow,requestedCoverFollow,immersiveScope,requestedImmersiveScope;
 };
-static_assert(sizeof(MenuState)==376);
+static_assert(sizeof(MenuState)==424 && offsetof(MenuState,throwAim)==388);
 struct Quaternion {float x,y,z,w;};
 struct Vector {float x,y,z;};
 struct Pose {Quaternion orientation;Vector position;};
@@ -45,12 +58,15 @@ struct alignas(8) Tracking {
     Controller rightController;
     Gamepad gamepad;
     uint32_t controllerButtons; // Raw stick clicks: bit 0 left, bit 1 right (focused input only).
-    uint32_t reserved;
+    uint32_t reserved; // Transport 22: bit 0 = companion cover-crosshair texture ready.
     Controller leftController; // Left aim pose, independent of grip/weapon alignment.
     GripPose leftGrip,rightGrip; // Unmodified OpenXR grip poses, same space/time as aim.
 };
-struct RenderInfo {Tracking tracking;uint32_t mode,eyeMask;};
-static_assert(sizeof(Tracking)==288 && sizeof(RenderInfo)==296);
+// marker*: the grenade landing marker for this frame (transport 21), in the
+// same OpenXR space as tracking. markerState bit 0 = show it; bit 1 =
+// markerNormal holds the facing of the surface it lies on (unit, OpenXR).
+struct RenderInfo {Tracking tracking;uint32_t mode,eyeMask;float markerPosition[3];uint32_t markerState;float markerNormal[3];uint32_t markerReserved;float coverPosition[3];uint32_t coverState;};
+static_assert(sizeof(Tracking)==288 && sizeof(RenderInfo)==344);
 static_assert(offsetof(Tracking,rightController)==136 && offsetof(Tracking,gamepad)==168);
 static_assert(offsetof(Tracking,leftController)==192 && offsetof(Tracking,leftGrip)==224 && offsetof(Tracking,rightGrip)==256);
 // Identical ABI in the x86 game and x64 companion. GPU keyed mutex protects
@@ -71,7 +87,7 @@ struct alignas(8) Header {
     uint32_t menuPadding;
     MenuState menu;
 };
-static_assert(sizeof(Header)==1040);
+static_assert(sizeof(Header)==1136);
 static_assert(offsetof(Header,tracking)==72 && offsetof(Header,rendered)==360);
 inline bool Compatible(const Header* h,DWORD pid) {
     return h && h->magic==Magic && h->version==Version && h->pid==pid;

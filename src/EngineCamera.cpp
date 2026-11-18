@@ -1,4 +1,10 @@
+#include "ModelWristHud.h"
+#include "NativeCover.h"
+#include "CoverCrosshair.h"
+#include "CoverFollow.h"
 #include "WorldScaleConfig.h"
+#include "HudIsolationCheck.h"
+#include "HandBand.h"
 #include "EngineCamera.h"
 #include "DialogueCamera.h"
 #include "CameraMath.h"
@@ -7,6 +13,8 @@
 #include "DirectSnap.h"
 #include "CameraPosition.h"
 #include "DirectionConfig.h"
+#include "ThrowAim.h"
+#include "ProjectileAim.h"
 #include "NativeBounds.h"
 #include "SceneCache.h"
 #include "EngineShaderTrace.h"
@@ -56,8 +64,9 @@ Transport::Header* channel{};
 Transport::TrackingReader trackingReader;
 bool requested=true,referenceValid{},recenterRequested{},f6Down{},f9Down{},f7Down{},effectsFix=true,f4Down{},eyeViewFix=true,f3Down{},instanceFix=true;
 bool interactionScreen{},scopeScreen{};
-bool immersiveScope{},immersiveScopeActive{};
-float scopeMagnification=4.f;
+// ImmersiveScope: atomic since the VR settings menu switches it (transport 24).
+std::atomic<bool> immersiveScope{},immersiveScopeReady{};bool immersiveScopeActive{};
+std::atomic<float> scopeMagnification{4.f}; // also set from the VR settings menu
 ImmersiveScope::Gesture scopeGesture;
 std::atomic<uint64_t> scopePulseUntil{};
 uint64_t scopeToggleAfter{};
@@ -84,6 +93,36 @@ DialogueCamera::State dialogueState;
 std::atomic<void*> conversationCamera{}; // conversation that last picked a camera track
 
 bool dialogueCamera{},holdingPlayerBase{};
+// Published after the held camera is validated; never suppress a cinematic
+// fallback just because the menu option is selected. The native camera update
+// can run DOF before this publication, so entry can retain one native DOF frame.
+std::atomic<bool> dialogueDofHeld{};
+std::atomic<uint64_t> dialogueDofSkipped{},dialogueDofPassed{};
+using AnimationDof=void(__thiscall*)(void*,uintptr_t);
+AnimationDof originalAnimationDof{};
+void __fastcall AnimationDofHook(void* self,void*,uintptr_t argument) {
+    // One opaque stack argument, forwarded bit-for-bit (native returns ret 4).
+    // This operation only submits animation DOF and its parameters. The game
+    // clears the effect list each render; no global graphics option is changed.
+    if(fixedDialogueCamera.load() && dialogueDofHeld.load()) {
+        if(dialogueDofSkipped.fetch_add(1)==0) {
+            FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")) {
+                fprintf(f,"dialogue DOF: first native operation suppressed frame=%llu\n",frameId.load());fclose(f);
+            }
+        }
+        return;
+    }
+    ++dialogueDofPassed;
+    originalAnimationDof(self,argument);
+}
+void PublishDialogueDof(bool held) {
+    if(dialogueDofHeld.exchange(held)!=held) {
+        FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")) {
+            fprintf(f,"dialogue DOF: held=%d frame=%llu suppressed=%llu passed=%llu\n",
+                int(held),frameId.load(),dialogueDofSkipped.load(),dialogueDofPassed.load());fclose(f);
+        }
+    }
+}
 void NoteConversation(const char* event,void* conversation) {
     FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")){fprintf(f,"conversation %s %p\n",event,conversation);fclose(f);}
 }
@@ -257,6 +296,11 @@ std::atomic<int> cameraModeIndex{-1};
 int cameraModeLast=-2;
 uint32_t cameraModeUnknownLogged{};
 std::atomic<bool> handsSuspendedByMode{false};
+// True while the immersive scope is active with ControllerHands on. The scope
+// then aims from the weapon's own grip/calibrated muzzle, as in cover, not the
+// native hand pair (LOBO report, Nov 15). The hands are still drawn: hiding the
+// player actor here (Nov 16 build AF8A7C17) was followed by a render crash.
+std::atomic<bool> handsAsideForScope{false};
 // Set ONLY on positive evidence that the camera is away from the body. Every
 // failure path leaves it false, so the hands keep working.
 std::atomic<bool> handsFarFromBody{false};
@@ -1193,6 +1237,36 @@ void WriteHandsStatus() {
 std::atomic<DirectionConfig::Source> interactionAim{};
 std::atomic<DirectionConfig::Source> movementDirection{DirectionConfig::Source::Mouse};
 thread_local bool senseQueries{};
+// Set on the game thread only while SecondaryWeapon's throw (0x75D560) runs;
+// see ThrowAim.h for why the PlayerCamera matrix is what aims the grenade.
+thread_local bool throwQueries{};
+thread_local ThrowAim::Sample throwSample{};
+std::atomic<DirectionConfig::Source> throwAim{DirectionConfig::Source::Controller};
+std::atomic<unsigned> throwCount{};
+// Landing marker (ThrowMarker, default on). throwPreview makes PlayerWorldHook
+// answer exactly as during a throw, for a prediction made outside one.
+thread_local bool throwPreview{};
+// throwAimReady / throwMarkerReady: the hook and the launch setup it needs were
+// accepted at startup (availability). ThrowAim and the marker are switched live
+// from the VR settings menu (transport 24).
+std::atomic<bool> throwAiming{},throwMarkerWanted{true},throwMarkerReady{},throwAimReady{};
+// The marker shows only when it is available and wanted and the throw follows a
+// hand or the head: with ThrowAim=Mouse the throw is the game's own.
+bool MarkerOn(){return throwMarkerReady.load()&&throwMarkerWanted.load()&&throwAim.load()!=DirectionConfig::Source::Mouse;}
+std::atomic<bool> handHudSetting{true}; // HandHud in [VR]; see Install
+std::atomic<uint64_t> throwHeldMs{};
+struct ThrowMarkerState {bool valid{},normalValid{};float point[3]{},normal[3]{};uint64_t tick{};};
+std::mutex throwMarkerMutex;
+ThrowMarkerState throwMarker;
+std::atomic<unsigned> markerNotes{};
+// Player projectiles (ProjectileAim.h, default on). While 0x763D90 builds the
+// launch frame of a player shot, projectileShot records it and, when the
+// barrel aim applies, projectileCamera is the camera PlayerWorldHook returns.
+std::atomic<bool> projectileAim{true};
+thread_local const float* projectileCamera{};
+thread_local ProjectileAim::Shot* projectileShot{};
+std::atomic<unsigned> projectileCount{};
+thread_local void* gunFiring{};   // the PrimaryWeapon whose fire (0x752D10) is running
 std::atomic<uint64_t> interactionQueries{},movementAxes{};
 std::atomic<void*> walkAction{},strafeAction{};
 std::atomic<unsigned> movementResponse{};
@@ -1469,6 +1543,7 @@ struct Snapshot {
     uint32_t inputIndex=~0u;
     bool active{};
     bool nativeHeading{};
+    bool coverTargetValid{};float coverTarget[3]{};
     CameraMath::Matrix tiltedWorld; // world before LevelFrozenView, still accepted by CreateHook
     bool leveled{};
 };
@@ -1495,11 +1570,11 @@ std::atomic<bool> wheelOpen{};
 // controllerRaw is the muzzle BEFORE fubar's per-weapon grip offset is applied.
 // muzzle carries that offset, which is right for the gun and wrong for the
 // hand: the offset is a property of the weapon, not of where Mark's hand is.
-struct WeaponPose {void* weapon{};void* instance{};CameraMath::Matrix muzzle;uint64_t tick{};bool active{};void* owner{};CameraMath::Matrix controllerRaw;bool nativeRequested{},nativeValid{};CameraMath::Matrix gripTarget{},nativeSkin{},delta{};uint64_t equippedTick{};uint32_t buttons{};Transport::Gamepad diagnosticPad{};float scale=LiveWorldScale::Default;void* holder{};};
+struct WeaponPose {void* weapon{};void* instance{};CameraMath::Matrix muzzle;uint64_t tick{};bool active{};void* owner{};CameraMath::Matrix controllerRaw;bool nativeRequested{},nativeValid{},nativeCover{};CameraMath::Matrix gripTarget{},nativeSkin{},delta{};uint64_t equippedTick{};uint32_t buttons{};Transport::Gamepad diagnosticPad{};float scale=LiveWorldScale::Default;void* holder{};};
 WeaponPose weaponPose;
 void* diagnosticWeapon{};void* diagnosticInstance{};uint64_t diagnosticEquippedTick{};
 std::atomic<uint64_t> controllerDraws{},controllerMuzzles{};
-std::atomic<uint64_t> controllerAimQueries{},controllerHiddenArms{};
+std::atomic<uint64_t> controllerAimQueries{},controllerHiddenArms{},coverPointingQueries{};
 std::atomic<uint64_t> controllerAttachments{},controllerBounds{};
 thread_local bool nativeWeaponQuery{};
 struct AttachmentTrace {uintptr_t caller{};int bone{};bool owner{};uint64_t queries{},corrected{};};
@@ -1518,6 +1593,40 @@ thread_local unsigned drawnEyes{};
 thread_local Snapshot lastWorld;
 thread_local Snapshot uiSnapshot;
 thread_local bool uiDrawing{};
+// Hand HUD (HandHud setting; was the quiet marker). 0 = the draw in progress
+// is ordinary HUD; 1 health, 2 energy, 3 ammo = a parked element that
+// HudIsolationCheck recognised and translated back to its home position.
+thread_local int uiHandTag{};
+// The owned draw's own origin (X, Y, depth translation) when it could be read
+// before the draw; used to lay each piece on the wrist at its own height.
+thread_local float uiHandOrigin[3]{};
+thread_local bool uiHandOriginValid{};
+// The owned draw's home shift in layout X (parked elements) and its region's
+// layout-X-to-depth ratio, for the band's flat layout (November 13).
+thread_local float uiHandShift{}, uiHandRatio{};
+// Each band's size on the normal HUD per layout unit, smoothed over its
+// pieces so all pieces of a band share one scale. Render thread only.
+float bandPerUnit[6][2]{};bool bandPerUnitSet[6]{};
+namespace HandHud {
+// Where each group's middle sits in the UI clip rectangle. Taken from the
+// positions of its draws in the November 12 desktop preview log; the VR layout
+// is assumed to match and has not been measured.
+constexpr float leftCentreX=-.936f,leftCentreY=.930f;   // health and energy, one block
+constexpr float rightCentreX=.930f,rightCentreY=-.892f; // ammo
+// Size relative to the HUD plane (1 = the plane's 3.2 m x 1.8 m at 2 m), and
+// where the block sits relative to the grip, in head space (right, up,
+// forward, metres). First guesses, to be adjusted from what Mark sees.
+constexpr float scale=.30f;
+// Radar centre estimated from the normal HUD layout; size/placement need VR review.
+constexpr float radarCentreX=-.86f,radarCentreY=-.80f,radarScale=.24f;
+constexpr Transport::Vector radarOffset{0,.19f,0};
+constexpr Transport::Vector leftOffset{0,.065f,0},rightOffset{.045f,.04f,0};
+// Wrist layout. Radius: forearm axis to the display surface. Along: from the
+// grip (palm centre) toward the elbow. First estimates for Mark to judge.
+constexpr float wristRadius=.04f;
+constexpr float wristScale=.36f,wristAlong=.08f;
+constexpr float radarWristScale=.30f,radarWristAlong=.14f;
+}
 bool effectsCapture{};
 EngineShaderTrace shaderTrace;
 struct EffectTrace {
@@ -1596,6 +1705,33 @@ InputAxis originalInputAxis{};
 // changes the native aiming state, before the animated camera is composed.
 bool nativeLookPitchLock{};
 bool nativeLookHeading{};
+// Cover camera follows controller aim (CoverFollow.h). [VR] CoverCameraFollow
+// (default 1); off = the still cover camera of the cover-pointing build.
+// While held (stateMutex), the VR view keeps the heading it had on entering
+// cover, so the camera's swing moves the viewpoint around Jensen without
+// turning the view; aim, shots and crosshair use that same held base.
+// coverFollowReady: the native look hook it needs was accepted at startup;
+// coverFollowWanted: the setting (CoverCameraFollow / VR settings menu, transport 24).
+// Turned off while held, the hold releases through its normal path.
+std::atomic<bool> coverCameraFollow{true},coverFollowReady{},coverFollowWanted{true};
+constexpr float coverFollowLeash=15.f*CoverFollow::Pi/180,coverFollowRate=180.f*CoverFollow::Pi/180;
+// Up/down (Mark: peeking over and looking down, as the mouse does): the
+// camera's measured pitch is pulled toward the aim's pitch beyond a 12 degree
+// leash at up to 120 degrees/second. Look pitch +1 = camera up (measured).
+constexpr float coverPitchLeash=12.f*CoverFollow::Pi/180,coverPitchRate=120.f*CoverFollow::Pi/180;
+constexpr float coverPitchLimit=75.f*CoverFollow::Pi/180;
+struct CoverCameraState {
+    bool held{};CameraMath::Matrix heading{}; // rows 0-2 of the view base at entry
+    // Scope opened from cover (Mark, November 16: "difficult to activate it
+    // and it was quick to exit"). The game's scope camera (IronSight) is part
+    // of the cover stay: the hold continues, the left stick stays native so
+    // the lean is kept, and the look is not pushed while scoped.
+    bool scoped{};
+    bool entryYawValid{},restore{};float entryYaw{},followYaw{};
+    uint64_t releaseAt{};double lastStep{};
+    uint64_t lookCalls{},sets{},pitchSets{},scopedFrames{};float maxFollowDeg{},maxCameraTurnDeg{},minCameraPitchDeg{},maxCameraPitchDeg{};
+} coverCamera;
+bool CoverScopedFromCover(){std::lock_guard lock(stateMutex);return coverCamera.held&&coverCamera.scoped;}
 bool nativeCameraPosition{};
 uint64_t nativePositionUsed{},nativePositionFallback{},nativePositionLogTick{};
 float nativePositionPeak{},nativePositionSprintPeak{};
@@ -1657,6 +1793,16 @@ bool DirectSnapEligible(uint64_t now){ // stateMutex held
 std::atomic<uint64_t> nativeLookCalls{},nativeLookApplied{};
 std::atomic<float> nativeLookBefore{},nativeLookAfter{},nativeLookYaw{};
 
+bool NativeCoverActiveLocked() { // stateMutex held
+    auto now=GetTickCount64();
+    if(!requested || !current.active || screenReasons || gameMenuOpen || wheelOpen ||
+       immersiveScopeActive || scopeScreen || !current.tracking.rightController.valid ||
+       now<current.tracking.tick || now-current.tracking.tick>=250)return false;
+    return NativeCover::Mode(base,current.managerAddress,reinterpret_cast<uintptr_t>(current.playerInstance),HandMeshDiagnostic::Read);
+}
+bool NativeCoverActive() {
+    std::lock_guard lock(stateMutex);return NativeCoverActiveLocked();
+}
 bool NativeCombatCamera(void* instance,uintptr_t manager) {
     __try {
         if(!instance || !manager)return false;
@@ -1671,7 +1817,8 @@ bool NativeCombatCamera(void* instance,uintptr_t manager) {
 }
 // Validate live ownership and current camera mode, not just last frame's mode.
 // No retained engine object pointers and no engine calls while holding our lock.
-bool NativeLookOwner(void* self,void* context,void* instance,uintptr_t manager) {
+// The player's own look controller (any camera mode).
+bool NativeLookPlayer(void* self,void* context,void* instance,uintptr_t manager) {
     __try {
         auto p=static_cast<unsigned char*>(self);
         if(!p || !context || !instance || !manager ||
@@ -1684,8 +1831,60 @@ bool NativeLookOwner(void* self,void* context,void* instance,uintptr_t manager) 
         if(entry[0]&2)return false;
         auto owner=*reinterpret_cast<unsigned char**>(entry+4);
         if(!owner || owner!=context || *reinterpret_cast<void**>(owner+0x20)!=instance)return false;
-        return NativeCombatCamera(instance,manager);
+        return true;
     } __except(EXCEPTION_EXECUTE_HANDLER) {return false;}
+}
+bool NativeLookOwner(void* self,void* context,void* instance,uintptr_t manager) {
+    return NativeLookPlayer(self,context,instance,manager) && NativeCombatCamera(instance,manager);
+}
+bool CoverPointingFrame(CameraMath::Matrix& frame);
+// In cover (view base held), turn the player's look yaw toward the controller's
+// aim with a 15 degree leash and a 180 degree/second cap. Pitch untouched.
+void CoverLookFollow(void* self,float* result) {
+    for(int i=0;i<4;i++)if(!std::isfinite(result[i]))return;
+    {std::lock_guard lock(stateMutex);if(!coverCamera.held||coverCamera.restore||coverCamera.scoped)return;}
+    CameraMath::Matrix aim;float desired{},desiredPitch{};
+    const bool framed=CoverPointingFrame(aim);
+    const bool pointing=framed && CoverFollow::YawFromForward(aim.m+8,desired);
+    const bool pitching=framed && CoverFollow::PitchFromForward(aim.m+8,desiredPitch);
+    alignas(16) float angles[4];memcpy(angles,result,sizeof(angles));
+    bool set=false;
+    {
+        std::lock_guard lock(stateMutex);
+        if(!coverCamera.held||coverCamera.restore||coverCamera.scoped)return;
+        ++coverCamera.lookCalls;
+        const double ms=PreciseMs();
+        if(!coverCamera.entryYawValid){coverCamera.entryYaw=coverCamera.followYaw=angles[2];coverCamera.entryYawValid=true;coverCamera.lastStep=ms;}
+        double dt=(ms-coverCamera.lastStep)/1000.;coverCamera.lastStep=ms;
+        if(!(dt>0)||dt>.1)dt=.1;
+        // Start from the game's own current yaw every time, so its own turns
+        // (rounding a corner, swapping cover, the mouse) are kept; push only
+        // when the aim is past the leash.
+        coverCamera.followYaw=angles[2];
+        if(pointing) {
+            const float next=CoverFollow::Follow(angles[2],desired,coverFollowLeash,float(coverFollowRate*dt));
+            if(next!=angles[2]) {
+                coverCamera.followYaw=next;angles[2]=next;set=true;++coverCamera.sets;
+                coverCamera.maxFollowDeg=std::max(coverCamera.maxFollowDeg,std::abs(CoverFollow::Wrap(next-coverCamera.entryYaw))*57.2957795f);
+            }
+        }
+        float cameraPitch{};
+        if(pitching && CoverFollow::PitchFromForward(current.originalWorld.m+8,cameraPitch)) {
+            const float need=CoverFollow::PitchNeed(cameraPitch,desiredPitch,coverPitchLeash,float(coverPitchRate*dt));
+            // Look pitch +1 tilts the camera up: measured in play (camera log,
+            // "pitch sign learned sign=1 ... flips=0", camera -63..67 degrees).
+            // Learning it per session failed when the game held the camera
+            // level before leaning out (it gave up; Mark could not look down).
+            // The look is kept within +/-coverPitchLimit so it cannot wind up
+            // while the game holds the camera level.
+            float next=angles[0]+need;
+            next=std::clamp(next,-coverPitchLimit,coverPitchLimit);
+            if(need!=0 && std::isfinite(next) && next!=angles[0]){angles[0]=next;set=true;++coverCamera.pitchSets;}
+            coverCamera.minCameraPitchDeg=std::min(coverCamera.minCameraPitchDeg,cameraPitch*57.2957795f);
+            coverCamera.maxCameraPitchDeg=std::max(coverCamera.maxCameraPitchDeg,cameraPitch*57.2957795f);
+        }
+    }
+    if(set){reinterpret_cast<NativeLookSet>(base+0x7a90a0-0x400000)(self,angles);memcpy(result,angles,sizeof(angles));}
 }
 float* __fastcall NativeLookInputHook(void* self,void*,float* out,void* context) {
     ++nativeLookCalls;
@@ -1700,8 +1899,22 @@ float* __fastcall NativeLookInputHook(void* self,void*,float* out,void* context)
            now<current.tracking.tick || now-current.tracking.tick>=250){directSnapRequest.Clear();return result;}
         instance=current.playerInstance;manager=current.managerAddress;
     }
-    if(!NativeLookOwner(self,context,instance,manager)){CancelDirectSnap();return result;}
+    if(!NativeLookOwner(self,context,instance,manager)){
+        CancelDirectSnap();
+        if(coverCameraFollow && NativeLookPlayer(self,context,instance,manager))CoverLookFollow(self,result);
+        return result;
+    }
     for(int i=0;i<4;i++)if(!std::isfinite(result[i])){CancelDirectSnap();return result;}
+    {
+        // Leaving cover: turn the look back to where it faced on entry, so the
+        // first-person view continues at the held heading without a jump.
+        std::lock_guard lock(stateMutex);
+        if(coverCamera.restore && coverCamera.entryYawValid && std::isfinite(coverCamera.entryYaw)) {
+            alignas(16) float back[4];memcpy(back,result,sizeof(back));back[2]=coverCamera.entryYaw;
+            reinterpret_cast<NativeLookSet>(base+0x7a90a0-0x400000)(self,back);
+            memcpy(result,back,sizeof(back));coverCamera.restore=false;
+        }
+    }
     float snapDegrees=0;
     {
         bool focused=SnapForeground();
@@ -1743,9 +1956,20 @@ bool DirectionWorld(DirectionConfig::Source source,CameraMath::Matrix& result,Ca
     if(source==DirectionConfig::Source::Headset){result=current.world;return true;}
     auto aim=DirectionConfig::Aim(source,current.tracking);
     if(!motionControls || !aim)return false;
-    auto baseWorld=current.nativeHeading?current.controllerBase:RenderBase(current.originalWorld);
+    auto baseWorld=(current.nativeHeading||coverCamera.held)?current.controllerBase:RenderBase(current.originalWorld);
     result=CameraMath::HeadWorld(baseWorld,reference,aim->aim,current.scale);
     return true;
+}
+// Cover aiming (November 16): the gun stays in Jensen's hands, the right
+// controller aims. One frame, the controller's own pointing ray in the game's
+// camera axes (row 2 forward, row 3 position), is given to the gun's shot
+// ray, a rocket's launch ray and the cover crosshair, so all three meet at
+// the same point. No frame (tracking lost, menus) = the game's own aim.
+bool CoverPointingFrame(CameraMath::Matrix& frame) {
+    if(!DirectionWorld(DirectionConfig::Source::Controller,frame))return false;
+    const float* f=frame.m+8;const float n=f[0]*f[0]+f[1]*f[1]+f[2]*f[2];
+    return std::isfinite(n) && std::abs(n-1.f)<.02f &&
+        std::isfinite(frame.m[12]) && std::isfinite(frame.m[13]) && std::isfinite(frame.m[14]);
 }
 
 // Optional, read-only DXSense diagnostics for the supported executable. Never
@@ -1852,15 +2076,228 @@ void __fastcall SenseUpdateHook(void* self,void*,float dt) {
     originalSenseUpdate(self,dt);senseQueries=previous;
     if(sample){interactionSample.active=false;++interactionSampleCount;WriteInteractionSample();}
 }
+uintptr_t VA(uintptr_t preferred);
 void* __fastcall PlayerWorldHook(void* self,void*) {
+    if(projectileShot) {
+        // A player rocket's launch frame is asking where the player camera
+        // looks (see ProjectileAim.h). Answer with the gun barrel, but only
+        // for a real PlayerCamera; anything else keeps the native answer.
+        auto native=static_cast<float*>(originalPlayerWorld(self));
+        auto shot=projectileShot;
+        if(++shot->queries==1 && native)for(int i=0;i<3;i++)shot->nativeForward[i]=native[8+i];
+        if(projectileCamera && native && *reinterpret_cast<uintptr_t*>(self)==VA(ProjectileAim::playerCameraVtable)) {
+            ++shot->applied;return const_cast<float*>(projectileCamera);
+        }
+        return native;
+    }
+    if(throwQueries || throwPreview) {
+        // A grenade throw is asking which way the player camera faces. The game
+        // keeps only this matrix's orientation (the release point is the hand
+        // bone), so answering with the chosen aim turns the throw and nothing
+        // else. DirectionWorld refuses a camera that is not the current
+        // manager's PlayerCamera, and every unavailable case (menus, scope,
+        // tracking loss, ThrowAim=Mouse) keeps the native answer.
+        // A prediction for the marker asks the same question; it is not counted.
+        const bool sample=throwQueries && !throwPreview;
+        auto native=static_cast<float*>(originalPlayerWorld(self));
+        if(sample)++throwSample.queries;
+        thread_local CameraMath::Matrix throwTarget;
+        if(native && DirectionWorld(throwAim,throwTarget,nullptr,ThrowAim::ManagerOf(self))) {
+            if(sample && throwSample.applied++==0){ThrowAim::CopyRows(throwSample.native,native);ThrowAim::CopyRows(throwSample.used,throwTarget.m);}
+            return throwTarget.m;
+        }
+        if(sample && native && throwSample.queries==1){ThrowAim::CopyRows(throwSample.native,native);ThrowAim::CopyRows(throwSample.used,native);}
+        return native;
+    }
     if(senseQueries) {
         thread_local CameraMath::Matrix target;
         if(DirectionWorld(interactionAim,target)){RecordInteractionTransform(target);++interactionQueries;return target.m;}
     }
     return originalPlayerWorld(self);
 }
+using ThrowFunction=uintptr_t(__thiscall*)(void*,void*,void*,void*,void*);
+ThrowFunction originalThrow{};
+uintptr_t VA(uintptr_t preferred);
+// Where the player's next throw should first hit, with the game's own launch
+// setup and collision (see ThrowAim.h). Game thread only. No C++ objects with
+// destructors here, so a fault inside a game call is caught and reported.
+struct ThrowPrediction {
+    unsigned reason{}; // 0 ok; 1 no player, 2 no inventory, 3 not the player's grenade slot, 4 no grenade selected,
+                       // 5 none left, 6 placed type (mine), 7 launch setup gave nothing, 8 no collision world,
+                       // 9 no contact within the game's range, 10 fault inside a game call
+    float start[3]{},dir[3]{},landing[3]{};float angle{},speed{};unsigned segments{};
+    float normal[3]{};bool normalValid{};   // facing of the surface at the landing (game axes)
+};
+using CollisionQuery=bool(__thiscall*)(void*,uint32_t,const float*,const float*,void*,void*);
+// One segment through the game's collision query, as 0x75C370 asks it.
+bool QuerySegment(CollisionQuery query,void* world,void* owner,const float* p0,const float* p1,float* hit) {
+    alignas(16) unsigned char out[0x200];
+    memset(out,0,sizeof(out));
+    if(!query(world,ThrowAim::collisionHash,p0,p1,out,owner))return false;
+    memcpy(hit,out+0x10,12);return true;
+}
+bool PredictThrowRaw(void* instance,ThrowPrediction& p) {
+    __try {
+        if(!instance){p.reason=1;return false;}
+        using InventoryOf=unsigned char*(__cdecl*)(void*);
+        auto inventory=reinterpret_cast<InventoryOf>(VA(ThrowAim::inventoryOf))(instance);
+        if(!inventory){p.reason=2;return false;}
+        auto weapon=*reinterpret_cast<unsigned char**>(inventory+0x18);
+        if(!weapon || *reinterpret_cast<uintptr_t*>(weapon)!=VA(ThrowAim::secondaryVtable) ||
+           *reinterpret_cast<void**>(weapon+0x64)!=instance){p.reason=3;return false;}
+        auto data=*reinterpret_cast<unsigned char**>(weapon+0x88);
+        if(!data){p.reason=4;return false;}
+        if(*reinterpret_cast<uint32_t*>(data+8)==2){p.reason=6;return false;}
+        using Count=int(__thiscall*)(void*);
+        if(reinterpret_cast<Count>(VA(ThrowAim::grenadeCount))(weapon)<=0){p.reason=5;return false;}
+        alignas(16) float angles[16]{};alignas(16) float target[4]{};alignas(16) float frame[16]{};
+        float speed=0;
+        using Setup=int(__thiscall*)(void*,float*,float*,float*,float*,int);
+        // Same call as the real throw at 0x75DB80 (bone selector 0).
+        int count=reinterpret_cast<Setup>(VA(ThrowAim::launchSetup))(weapon,angles,target,frame,&speed,0);
+        if(count<1 || !(speed>0)){p.reason=7;return false;}
+        // 0x75DB85-0x75DBA4: 45 degrees unless the stored index picks a candidate.
+        // That angle is the game's random spread around the aim (see ThrowAim.h),
+        // so it is logged only; the marker launches along the aim, its centre.
+        float angle=45.f;
+        auto index=*reinterpret_cast<uint32_t*>(weapon+0x84);
+        if(index<16 && index+1<=uint32_t(count))angle=angles[index];
+        alignas(16) float v[4];ThrowAim::LaunchVelocity(frame,0.f,speed,v);
+        auto world=*reinterpret_cast<unsigned char**>(VA(ThrowAim::collisionWorld));
+        if(!world){p.reason=8;return false;}
+        auto query=reinterpret_cast<CollisionQuery>((*reinterpret_cast<uintptr_t**>(world))[0x58/4]);
+        for(int i=0;i<3;i++){p.start[i]=frame[12+i];p.dir[i]=v[i]/speed;}
+        p.angle=angle;p.speed=speed;
+        auto collide=[query,world,instance](const float* p0,const float* p1,float* hit){return QuerySegment(query,world,instance,p0,p1,hit);};
+        alignas(16) float hitFrom[4],hitTo[4];
+        if(!ThrowAim::PredictLanding(frame+12,v,collide,p.landing,&p.segments,hitFrom,hitTo)){p.reason=9;return false;}
+        p.normalValid=ThrowAim::SurfaceNormal(hitFrom,hitTo,p.landing,collide,p.normal);
+        p.reason=0;return true;
+    } __except(EXCEPTION_EXECUTE_HANDLER) {p.reason=10;return false;}
+}
+bool PredictThrow(void* instance,ThrowPrediction& p) {
+    const bool previous=throwPreview;throwPreview=true;
+    bool ok=PredictThrowRaw(instance,p);
+    throwPreview=previous;return ok;
+}
+void NoteMarker(const char* what,unsigned reason) {
+    if(markerNotes.fetch_add(1)>=200)return;
+    FILE* f{};if(fopen_s(&f,"DeusExHRVR-throw.log","a"))return;
+    fprintf(f,"marker %s tick=%llu reason=%u\n",what,GetTickCount64(),reason);fclose(f);
+}
+// Remote detonate: the game's own test 0x66BC70 (see ThrowAim.h), read each
+// camera update on the game thread. Only used while the marker owns the throw
+// input (with ThrowMarker=0 the layout already sends a held RB).
+std::atomic<bool> detonateReady{};std::atomic<unsigned> detonateNotes{};
+void NoteDetonate(const char* what,uint64_t heldMs) {
+    if(detonateNotes.fetch_add(1)>=200)return;
+    FILE* f{};if(fopen_s(&f,"DeusExHRVR-throw.log","a"))return;
+    fprintf(f,"detonate %s tick=%llu heldMs=%llu\n",what,GetTickCount64(),heldMs);fclose(f);
+}
+bool ReadDetonateReady(void* instance) {
+    __try {
+        if(!instance)return false;
+        using InventoryOf=unsigned char*(__cdecl*)(void*);
+        auto inventory=reinterpret_cast<InventoryOf>(VA(ThrowAim::inventoryOf))(instance);
+        return inventory && *reinterpret_cast<uint32_t*>(inventory+ThrowAim::detonateField)!=0;
+    } __except(EXCEPTION_EXECUTE_HANDLER) {return false;}
+}
+// Called at the end of each camera update; the marker works only while the throw button is held.
+void UpdateThrowMarker() {
+    thread_local unsigned lastReason=~0u;thread_local bool wasAiming=false;
+    void* instance{};
+    {std::lock_guard lock(stateMutex);if(current.active)instance=current.playerInstance;}
+    {
+        const bool ready=MarkerOn() && ReadDetonateReady(instance);
+        if(ready!=detonateReady.exchange(ready))NoteDetonate(ready?"ready":"cleared",0);
+    }
+    const bool aiming=MarkerOn() && throwAiming.load();
+    if(!aiming) {
+        if(wasAiming){std::lock_guard lock(throwMarkerMutex);throwMarker.valid=false;}
+        wasAiming=false;lastReason=~0u;return;
+    }
+    ThrowPrediction p{};
+    bool ok=instance && PredictThrow(instance,p);
+    if(!instance)p.reason=1;
+    {
+        std::lock_guard lock(throwMarkerMutex);
+        throwMarker.valid=ok;throwMarker.tick=GetTickCount64();
+        throwMarker.normalValid=ok && p.normalValid;
+        if(ok)memcpy(throwMarker.point,p.landing,sizeof(throwMarker.point));
+        if(ok)memcpy(throwMarker.normal,p.normal,sizeof(throwMarker.normal));
+    }
+    // One line when aiming starts and whenever the outcome changes, not per frame.
+    if(!wasAiming || p.reason!=lastReason)NoteMarker(ok?"shown":"hidden",p.reason);
+    wasAiming=true;lastReason=p.reason;
+}
+// The game's launch frame for a real throw (0x763D90's result), logged only.
+using LaunchFrameFunction=float*(__cdecl*)(float*,void*,void*,void*,float,void*,void*);
+LaunchFrameFunction originalLaunchFrame{};
+// Outside a throw the same function builds every other projectile's launch
+// frame (rockets); ProjectileLaunch handles the player's own shots.
+float* ProjectileLaunch(float* out,void* owner,void* b,void* c,float speed,void* d,void* target);
+float* __cdecl LaunchFrameHook(float* out,void* a,void* b,void* c,float angle,void* d,void* e) {
+    if(!throwQueries && !throwPreview)return ProjectileLaunch(out,a,b,c,angle,d,e);
+    auto result=originalLaunchFrame(out,a,b,c,angle,d,e);
+    if(throwQueries && !throwPreview && result && !throwSample.actualSeen) {
+        throwSample.actualSeen=true;
+        for(int i=0;i<3;i++){throwSample.actualStart[i]=result[12+i];throwSample.actualForward[i]=result[8+i];}
+    }
+    return result;
+}
+// One line per throw, written the moment it happens (DeusExHRVR-throw.log).
+// queries=0 means the game never asked the player camera: an NPC throw, or a
+// path this build does not change.
+void WriteThrowLine(const ThrowAim::Sample& s) {
+    auto n=throwCount.fetch_add(1)+1;
+    if(n>ThrowAim::maxLogLines)return;
+    FILE* f{};if(fopen_s(&f,"DeusExHRVR-throw.log","a"))return;
+    fprintf(f,"throw %u tick=%llu aim=%s queries=%u applied=%u handsSuspended=%d rowAnglesDeg=%.1f,%.1f,%.1f"
+              " native=%.3f,%.3f,%.3f|%.3f,%.3f,%.3f|%.3f,%.3f,%.3f used=%.3f,%.3f,%.3f|%.3f,%.3f,%.3f|%.3f,%.3f,%.3f%s\n",
+        n,GetTickCount64(),DirectionConfig::Name(throwAim),s.queries,s.applied,int(handsSuspendedByMode.load()),
+        ThrowAim::RowAngleDeg(s.native,s.used),ThrowAim::RowAngleDeg(s.native+4,s.used+4),ThrowAim::RowAngleDeg(s.native+8,s.used+8),
+        s.native[0],s.native[1],s.native[2],s.native[4],s.native[5],s.native[6],s.native[8],s.native[9],s.native[10],
+        s.used[0],s.used[1],s.used[2],s.used[4],s.used[5],s.used[6],s.used[8],s.used[9],s.used[10],
+        n==ThrowAim::maxLogLines?" (last line this launch)":"");
+    if(s.predicted || s.actualSeen) {
+        // The marker's model against what the game built: start points and
+        // launch directions should agree; dirAngleDeg is the gap between them.
+        fprintf(f,"  marker throw %u heldMs=%llu predicted=%d landed=%d angleDeg=%.2f speed=%.3f start=%.1f,%.1f,%.1f dir=%.4f,%.4f,%.4f landing=%.1f,%.1f,%.1f"
+                  " | game start=%.1f,%.1f,%.1f forward=%.4f,%.4f,%.4f seen=%d dirAngleDeg=%.2f surface=%d %.3f,%.3f,%.3f\n",
+            n,s.heldMs,int(s.predicted),int(s.landed),s.angleDeg,s.speed,
+            s.predictedStart[0],s.predictedStart[1],s.predictedStart[2],s.predictedDir[0],s.predictedDir[1],s.predictedDir[2],
+            s.predictedLanding[0],s.predictedLanding[1],s.predictedLanding[2],
+            s.actualStart[0],s.actualStart[1],s.actualStart[2],s.actualForward[0],s.actualForward[1],s.actualForward[2],int(s.actualSeen),
+            s.actualSeen&&s.predicted?ThrowAim::RowAngleDeg(s.predictedDir,s.actualForward):-1.f,
+            int(s.normalValid),s.normal[0],s.normal[1],s.normal[2]);
+    }
+    fclose(f);
+}
+uintptr_t __fastcall ThrowHook(void* self,void*,void* a,void* b,void* c,void* d) {
+    const bool previous=throwQueries;
+    throwSample={};throwQueries=true;
+    throwSample.heldMs=throwHeldMs.exchange(0);
+    if(MarkerOn()) {
+        // What the marker would have shown at this exact moment, for the log.
+        void* instance{};
+        {std::lock_guard lock(stateMutex);if(current.active)instance=current.playerInstance;}
+        ThrowPrediction p{};
+        if(instance && *reinterpret_cast<void**>(static_cast<unsigned char*>(self)+0x64)==instance) {
+            throwSample.landed=PredictThrow(instance,p);
+            throwSample.predicted=p.reason==0||p.reason==9;
+            memcpy(throwSample.predictedStart,p.start,12);memcpy(throwSample.predictedDir,p.dir,12);
+            memcpy(throwSample.predictedLanding,p.landing,12);throwSample.angleDeg=p.angle;throwSample.speed=p.speed;
+            memcpy(throwSample.normal,p.normal,12);throwSample.normalValid=p.normalValid;
+        }
+    }
+    auto result=originalThrow(self,a,b,c,d);
+    throwQueries=previous;
+    WriteThrowLine(throwSample);
+    return result;
+}
 float __fastcall InputAxisHook(void* self,void*,uint32_t index,bool requireActive) {
     float value=originalInputAxis(self,index,requireActive);
+    if(NativeCoverActive()||CoverScopedFromCover())return value; // native cover movement/peeking axes, also scoped from cover
     auto walk=walkAction.load(),strafe=strafeAction.load();
     const auto source=movementDirection.load();
     const unsigned response=motionControls?movementResponse.load():0;
@@ -1893,9 +2330,10 @@ WeaponPose ReadWeaponPose(bool resolve=true,MuzzleQueryDiagnostic::Site site=Muz
         auto now=GetTickCount64();
         pose.active=pose.active && (!drawing.active || drawing.scale==pose.scale) && current.active && requested && !screenReasons && now>=pose.tick && now-pose.tick<250;
     }
+    pose.nativeCover=NativeCoverActive();
     // Native animation is read at consumption time, not retained as a learned
     // grip or a previous-frame offset. No state mutex held during engine calls.
-    if(resolve && pose.active && pose.nativeRequested &&
+    if(resolve && pose.active && pose.nativeRequested && !pose.nativeCover &&
        (controllerHandsForceFallback.load() || !ResolveNativePair(pose,site,subject))) {
         // A rejected hand model must not disable the original floating weapon
         // or its firing ray. Use the uncalibrated controller muzzle consistently.
@@ -1950,6 +2388,83 @@ uintptr_t NativeWeaponMuzzle(void* weapon,CameraMath::Matrix* out,int barrel,boo
     auto previous=nativeWeaponQuery;nativeWeaponQuery=true;
     auto result=originalWeaponMuzzle(weapon,out,barrel,firstPerson);
     nativeWeaponQuery=previous;return result;
+}
+// One line per player projectile, written when it is launched
+// (DeusExHRVR-projectile.log, at most 300 per launch of the game).
+void WriteProjectileLine(const ProjectileAim::Shot& s) {
+    auto n=projectileCount.fetch_add(1)+1;
+    if(n>ProjectileAim::maxLogLines)return;
+    FILE* f{};if(fopen_s(&f,"DeusExHRVR-projectile.log","a"))return;
+    fprintf(f,"shot %u tick=%llu aim=%s queries=%u applied=%u handsSuspended=%d barrelGapDeg=%.1f"
+              " native=%.3f,%.3f,%.3f used=%.3f,%.3f,%.3f launch=%.3f,%.3f,%.3f start=%.1f,%.1f,%.1f"
+              " nativeToLaunchDeg=%.1f usedToLaunchDeg=%.1f%s\n",
+        n,GetTickCount64(),ProjectileAim::ReasonName(s.reason),s.queries,s.applied,int(handsSuspendedByMode.load()),s.barrelGapDeg,
+        s.nativeForward[0],s.nativeForward[1],s.nativeForward[2],s.usedForward[0],s.usedForward[1],s.usedForward[2],
+        s.launchForward[0],s.launchForward[1],s.launchForward[2],s.start[0],s.start[1],s.start[2],
+        ProjectileAim::AngleDeg(s.nativeForward,s.launchForward),ProjectileAim::AngleDeg(s.usedForward,s.launchForward),
+        n==ProjectileAim::maxLogLines?" (last line this launch)":"");
+    fclose(f);
+}
+// Launch frame (0x763D90) of a projectile that is not a throw. Only the
+// player's own shots with no explicit target are changed (ProjectileAim.h):
+// the hand must be driving the gun and the launch matrix must be that gun's
+// barrel. NPC shots pass straight through and are not logged.
+float* ProjectileLaunch(float* out,void* owner,void* b,void* c,float speed,void* d,void* target) {
+    void* player{};
+    {std::lock_guard lock(stateMutex);if(current.active)player=current.playerInstance;}
+    if(!owner || owner!=player || !projectileAim.load())return originalLaunchFrame(out,owner,b,c,speed,d,target);
+    const bool cover=NativeCoverActive();
+    ProjectileAim::Shot shot{};
+    alignas(16) float camera[16]{};
+    if(!gunFiring)shot.reason=ProjectileAim::NotGunFire;
+    else if(target)shot.reason=ProjectileAim::HasTarget;
+    else if(!c)shot.reason=ProjectileAim::NotRigid;
+    else if(cover) {
+        // In cover the rocket leaves Jensen's own barrel (the game's launch
+        // position). Its ray comes from the right controller, so it flies to
+        // the point the cover crosshair marks. No controller frame = native.
+        auto pose=ReadWeaponPose(false);
+        CameraMath::Matrix frame;
+        if(!experimentalMotionControls || !pose.active || pose.owner!=owner || pose.weapon!=gunFiring || !CoverPointingFrame(frame))
+            return originalLaunchFrame(out,owner,b,c,speed,d,target);
+        std::memcpy(camera,frame.m,sizeof(camera));
+        for(int i=0;i<3;i++)shot.usedForward[i]=camera[8+i];
+        shot.reason=ProjectileAim::CoverPointing;
+    }
+    else {
+        auto pose=ReadWeaponPose(false);
+        CameraMath::Matrix launch;std::memcpy(launch.m,c,sizeof(launch.m));
+        if(!experimentalMotionControls || !pose.active || pose.owner!=owner || pose.weapon!=gunFiring)shot.reason=ProjectileAim::HandsInactive;
+        else if(!RigidWeaponMatrix(launch))shot.reason=ProjectileAim::NotRigid;
+        else {
+            // The barrel points along -row 1 of the muzzle (FiringFromMuzzle).
+            const float hand[3]{-pose.muzzle.m[4],-pose.muzzle.m[5],-pose.muzzle.m[6]};
+            const float barrel[3]{-launch.m[4],-launch.m[5],-launch.m[6]};
+            shot.barrelGapDeg=ProjectileAim::AngleDeg(hand,barrel);
+            if(shot.barrelGapDeg<0 || shot.barrelGapDeg>ProjectileAim::maxBarrelGapDeg)shot.reason=ProjectileAim::BarrelMismatch;
+            else {
+                ProjectileAim::CameraFromMuzzle(launch.m,camera);
+                for(int i=0;i<3;i++)shot.usedForward[i]=camera[8+i];
+                shot.reason=ProjectileAim::Applied;
+            }
+        }
+    }
+    auto previousShot=projectileShot;auto previousCamera=projectileCamera;
+    projectileShot=&shot;projectileCamera=(shot.reason==ProjectileAim::Applied||shot.reason==ProjectileAim::CoverPointing)?camera:nullptr;
+    auto result=originalLaunchFrame(out,owner,b,c,speed,d,target);
+    projectileShot=previousShot;projectileCamera=previousCamera;
+    if(result)for(int i=0;i<3;i++){shot.launchForward[i]=result[8+i];shot.start[i]=result[12+i];}
+    WriteProjectileLine(shot);
+    return result;
+}
+// PrimaryWeapon fire (0x752D10, thiscall, no stack arguments, result in eax):
+// marks which gun is firing so ProjectileLaunch changes only its shots.
+using GunFireFunction=uintptr_t(__thiscall*)(void*);
+GunFireFunction originalGunFire{};
+uintptr_t __fastcall GunFireHook(void* self,void*) {
+    auto previous=gunFiring;gunFiring=self;
+    auto result=originalGunFire(self);
+    gunFiring=previous;return result;
 }
 // Frame and pivot are immutable model data. The live bone/muzzle are never cached.
 bool NativeModelFrame(void* model,const std::shared_ptr<const HandOnlyGeometry::Plan>& plan,
@@ -2020,7 +2535,7 @@ bool ReadNativePalm(WeaponPose& pose,CameraMath::Matrix& skin,CameraMath::Matrix
 bool ResolveNativePair(WeaponPose& pose,MuzzleQueryDiagnostic::Site site,void* subject) {
     pose.nativeValid=false;
     auto fail=[](){if(DiagnosticOptions::hands)++nativePairFailed;return false;};
-    if(nativePairFault.load() || handsSuspendedByMode.load() || handsFarFromBody.load() ||
+    if(nativePairFault.load() || handsSuspendedByMode.load() || handsAsideForScope.load() || handsFarFromBody.load() ||
        !activeCameraIsPlayer.load())return fail();
     CameraMath::Matrix skin{},delta{},native{};
     if(!ReadNativePalm(pose,skin,delta))return fail();
@@ -2106,7 +2621,7 @@ uintptr_t __cdecl AttachmentHook(void* source,void* instance,int bone,CameraMath
                 }
             }
         }
-        if(pose.active && instance==pose.instance && RigidWeaponMatrix(*out)) {
+        if(pose.active && !pose.nativeCover && instance==pose.instance && RigidWeaponMatrix(*out)) {
             CameraMath::Matrix nativeMuzzle;
             NativeWeaponMuzzle(pose.weapon,&nativeMuzzle,0,true);
             if(RigidWeaponMatrix(nativeMuzzle)) {
@@ -2147,7 +2662,7 @@ uintptr_t __fastcall WeaponMuzzleHook(void* self,void*,CameraMath::Matrix* out,i
     if(senseQueries)return result;
     if(experimentalMotionControls && out) {
         auto pose=ReadWeaponPose(true,MuzzleQueryDiagnostic::Muzzle,self);
-        if(pose.active && pose.weapon==self){
+        if(pose.active && !pose.nativeCover && pose.weapon==self){
             *out=pose.nativeValid?CameraMath::Multiply(*out,pose.delta):pose.muzzle;++controllerMuzzles;
         }
     }
@@ -2167,10 +2682,95 @@ CameraMath::Matrix* __fastcall WeaponAimHook(void* self,void*,CameraMath::Matrix
         // Player hit calculation 0x763370 and aim-ray getter 0x750ef0 both
         // use this matrix, bypassing WeaponMuzzle for ordinary player shots.
         // Keep the game's spread, collision and damage calculation intact.
-        if(pose.active && pose.weapon==self){*out=CameraMath::FiringFromMuzzle(pose.muzzle);++controllerAimQueries;}
+        if(pose.active && !pose.nativeCover && pose.weapon==self){*out=CameraMath::FiringFromMuzzle(pose.muzzle);++controllerAimQueries;}
+        // Cover: Jensen's gun, mesh and muzzle effects stay native; the shot
+        // ray (spread, collision and damage still the game's) is the
+        // controller's pointing ray, the same one the cover crosshair uses.
+        else if(pose.active && pose.nativeCover && pose.weapon==self) {
+            CameraMath::Matrix frame;
+            if(CoverPointingFrame(frame)){*out=frame;++coverPointingQueries;}
+        }
     }
     return result;
 }
+
+// Cover crosshair target: where the right controller's pointing ray meets the
+// world, using the collision filter and two ignored instances of the native
+// reticle at 804850 (the player and the gun) and the gun's own range.
+// Does not run the firing function, random spread, damage or projectile logic.
+bool CoverTargetRaw(void* owner,const CameraMath::Matrix& aim,float* target) {
+    __try {
+        using Inventory=unsigned char*(__cdecl*)(void*);
+        auto inventory=reinterpret_cast<Inventory>(VA(0x66af40))(owner);
+        auto weapon=inventory?*reinterpret_cast<unsigned char**>(inventory+0x14):nullptr;
+        if(!weapon || *reinterpret_cast<uintptr_t*>(weapon)!=VA(0xab1944) ||
+           *reinterpret_cast<void**>(weapon+0x64)!=owner || (weapon[0x50]&4))return false;
+        using Enabled=bool(__thiscall*)(void*);
+        if(!reinterpret_cast<Enabled>((*reinterpret_cast<uintptr_t**>(weapon))[7])(weapon))return false;
+        using Range=float(__thiscall*)(void*);
+        const float range=reinterpret_cast<Range>(VA(0x74ec80))(weapon);
+        alignas(16) float end[4]{};
+        if(!CoverCrosshair::Endpoint(aim.m,range,end))return false;
+        void* ignored[2]={owner,nullptr};
+        auto handle=*reinterpret_cast<uint32_t*>(weapon+0x6c);
+        if(handle!=0x7fffffff) {
+            using Instance=void*(__cdecl*)(uint32_t);
+            ignored[1]=reinterpret_cast<Instance>(VA(0x6082a0))(handle);
+        }
+        auto world=*reinterpret_cast<void**>(VA(0x1c7bf64));
+        if(!world)return false;
+        using Query=bool(__thiscall*)(void*,uint32_t,const float*,const float*,void*,void**,unsigned);
+        auto query=reinterpret_cast<Query>((*reinterpret_cast<uintptr_t**>(world))[0x54/4]);
+        alignas(16) unsigned char hit[0x200]{};
+        alignas(16) float start[4]{aim.m[12],aim.m[13],aim.m[14],1};
+        bool contact=query(world,0xc72c1ba3,start,end,hit,ignored,2);
+        memcpy(target,contact?reinterpret_cast<float*>(hit+0x10):end,12);
+        return CoverCrosshair::Valid(target);
+    } __except(EXCEPTION_EXECUTE_HANDLER) {return false;}
+}
+void UpdateCoverTarget() {
+    bool ok=false,pointing=false;float point[3]{};void* owner{};
+    const bool cover=NativeCoverActive();
+    if(cover) {
+        {std::lock_guard lock(stateMutex);owner=current.playerInstance;}
+        CameraMath::Matrix aim;
+        pointing=CoverPointingFrame(aim);
+        ok=owner && pointing && CoverTargetRaw(owner,aim,point);
+    }
+    static int previous=-1;const int status=cover?(ok?2:pointing?1:3):0;
+    if(previous!=status) {
+        previous=status;FILE* f{};
+        if(!fopen_s(&f,"DeusExHRVR-camera.log","a")) {
+            fprintf(f,"cover controls=%s target=%s point=%.2f,%.2f,%.2f\n",cover?(pointing?"controller":"no-controller"):"off",
+                ok?"valid":"unavailable",point[0],point[1],point[2]);fclose(f);
+        }
+    }
+    std::lock_guard lock(stateMutex);
+    current.coverTargetValid=ok;
+    if(ok)memcpy(current.coverTarget,point,sizeof(point));
+}
+// The game's own crosshair would mark where Jensen's camera looks, not where
+// the controller points. 0x804A30 (called only by the reticle controller's
+// update, 0x805230) gives the reticle type to show; 0 is the answer the game
+// itself gives with Show Reticle turned off. While the controller crosshair
+// is valid and the companion has it ready, cover gets that 0. Every other
+// state gets the game's own answer.
+using ReticleType=uint32_t(__thiscall*)(void*,void*);
+ReticleType originalReticleType{};
+uint32_t __fastcall ReticleTypeHook(void* self,void*,void* descriptor) {
+    bool hide{};
+    {
+        std::lock_guard lock(stateMutex);
+        hide=current.coverTargetValid && (current.tracking.reserved&1) && NativeCoverActiveLocked();
+    }
+    static int last=-1;
+    if(last!=int(hide)) {
+        last=int(hide);FILE* f{};
+        if(!fopen_s(&f,"DeusExHRVR-camera.log","a")){fprintf(f,"cover reticle native hidden=%d\n",int(hide));fclose(f);}
+    }
+    return hide?0u:originalReticleType(self,descriptor);
+}
+
 void __fastcall ActorDrawHook(void* self,void*,void* matrix,void* args) {
     if(fixedDialogueCamera) {
         // Held at Jensen's eyes in a conversation: his own head and body would
@@ -2200,10 +2800,10 @@ void __fastcall ActorDrawHook(void* self,void*,void* matrix,void* args) {
             // a conversation, where FixedDialogueCamera holds the render base at
             // Jensen's own eyes - the view is at his eyes even though the active
             // camera is not his, so the hands belong there and stay.
-            if(controllerHands &&
+            if(pose.nativeCover || (controllerHands &&
                (handsSuspendedByMode.load() ||
                 (!activeCameraIsPlayer.load() && !holdingPlayerBase) ||
-                (handsFarFromBody.load() && !holdingPlayerBase))) {
+                (handsFarFromBody.load() && !holdingPlayerBase)))) {
 
                 originalActorDraw(self,matrix,args);
                 return;
@@ -2737,7 +3337,7 @@ void __cdecl SkeletonHook(void* model,void* bones,uint32_t flags,uint32_t count,
                                                     }
                                                     // Sticky: any suspension that was
                                                     // active at ANY point in the window.
-                                                    if(handsSuspendedByMode.load())handGripWindowFlags|=1u;
+                                                    if(handsSuspendedByMode.load()||handsAsideForScope.load())handGripWindowFlags|=1u;
                                                     if(handsFarFromBody.load())handGripWindowFlags|=2u;
                                                     if(!activeCameraIsPlayer.load())handGripWindowFlags|=4u;
                                                     for(int k=0;k<16;k++)handGripAccum.m[k]+=cand.m[k];
@@ -3267,7 +3867,7 @@ void __fastcall WeaponDrawHook(void* self,void*,void* matrix,void* args) {
     if(experimentalMotionControls) {
         auto drawable=static_cast<unsigned char*>(self);
         auto pose=ReadWeaponPose(true,MuzzleQueryDiagnostic::Draw,*reinterpret_cast<void**>(drawable+8));
-        if(pose.active && *reinterpret_cast<void**>(drawable+8)==pose.instance) {
+        if(pose.active && !pose.nativeCover && *reinterpret_cast<void**>(drawable+8)==pose.instance) {
             CameraMath::Matrix nativeMuzzle;
             NativeWeaponMuzzle(pose.weapon,&nativeMuzzle,0,true);
             if(RigidWeaponMatrix(nativeMuzzle)) {
@@ -3374,6 +3974,8 @@ void __fastcall RenderStateHook(void* self,void*) {
         }
     }
     originalRenderState(self);
+    // Hand HUD band: the engine has bound its vertex shader for this draw.
+    HandBand::renderer.Apply(*reinterpret_cast<uintptr_t*>(state+0x19c));
     if(effectsCapture && shaderSwap.Active())
         shaderSwap.CaptureDraw(static_cast<uint32_t>(frameId.load()), lumaHash, state[0x5ea]?0:1);
     // Luma port: the engine has just bound its pixel shader. If substitution
@@ -3484,6 +4086,7 @@ void __fastcall UpdateHook(void* self,void*) {
         }
         if(!scopeWeapon){autoScopeOwned=false;scopePulseUntil=0;}
         immersiveScopeActive=scopeAllowed && nativeScope;
+        handsAsideForScope.store(controllerHands && immersiveScopeActive);
         scopeScreen=nativeScope&&!immersiveScopeActive;
         // Supported build: PlayerCamera embeds CameraMode_Hacking at +0x430.
         // Its enter/leave methods (0x6a1c50 / 0x6a1dc0) set/clear +0x104.
@@ -3786,6 +4389,44 @@ void __fastcall UpdateHook(void* self,void*) {
                     renderBase.m[0]=y;renderBase.m[1]=-x;renderBase.m[2]=0;
                     renderBase.m[8]=x;renderBase.m[9]=y;renderBase.m[10]=0;
                 }
+                {
+                    auto coverInstance=*reinterpret_cast<void**>(active+0xaa0);
+                    auto& cc=coverCamera;
+                    const bool gate=coverCameraFollow && motionControls && t.rightController.valid &&
+                        !gameMenuOpen && !wheelOpen && !dialogue;
+                    const auto mgr=reinterpret_cast<uintptr_t>(manager);const auto who=reinterpret_cast<uintptr_t>(coverInstance);
+                    const bool coverMode=gate && NativeCover::Mode(base,mgr,who,HandMeshDiagnostic::Read);
+                    const bool scopeMode=gate && cc.held && NativeCover::IronSight(base,mgr,who,HandMeshDiagnostic::Read);
+                    // Entering the scope from cover keeps the stay; a scope
+                    // that was not entered from cover never starts one.
+                    const bool cover=coverMode ? (!immersiveScopeActive || cc.held) : scopeMode;
+                    const bool scoped=cover && (scopeMode || immersiveScopeActive);
+                    if(cc.held && scoped!=cc.scoped) {
+                        FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")){fprintf(f,"cover camera follow scoped=%d immersive=%d frame=%llu\n",int(scoped),int(immersiveScopeActive),frameId.load());fclose(f);}
+                    }
+                    if(cc.held){cc.scoped=scoped;if(scoped)++cc.scopedFrames;}
+                    if(cover && (!cc.held || cc.restore)) {
+                        if(!cc.held){cc={};cc.held=true;cc.heading=renderBase;
+                            FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")){fprintf(f,"cover camera follow hold frame=%llu\n",frameId.load());fclose(f);}}
+                        cc.restore=false;
+                    }
+                    if(cc.held && !cover && !cc.restore && cc.releaseAt==0) {
+                        cc.restore=cc.entryYawValid;cc.releaseAt=now+500;
+                    }
+                    if(cc.held && !cover && (!cc.restore || now>=cc.releaseAt)) {
+                        FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")) {
+                            fprintf(f,"cover camera follow release lookCalls=%llu sets=%llu maxFollowDeg=%.1f maxCameraTurnDeg=%.1f pitchSets=%llu cameraPitchDeg=%.1f..%.1f pitchSign=%d scopedFrames=%llu restored=%d frame=%llu\n",
+                                cc.lookCalls,cc.sets,cc.maxFollowDeg,cc.maxCameraTurnDeg,cc.pitchSets,cc.minCameraPitchDeg,cc.maxCameraPitchDeg,1,cc.scopedFrames,
+                                int(cc.entryYawValid&&!cc.restore),frameId.load());fclose(f);
+                        }
+                        cc={};
+                    }
+                    if(cc.held) {
+                        if(cover)cc.releaseAt=0;
+                        cc.maxCameraTurnDeg=std::max(cc.maxCameraTurnDeg,std::abs(CameraMath::HeadingDelta(cc.heading,current.originalWorld))*57.2957795f);
+                        for(int i=0;i<12;i++)renderBase.m[i]=cc.heading.m[i];
+                    }
+                }
                 if(bobTrace)BobTrace(ms,current.originalWorld,renderBase.m+12,t);
                 if(fixedDialogueCamera.load()){
                 auto entity=*reinterpret_cast<const unsigned char* const*>(active+0xaa0);
@@ -3847,7 +4488,7 @@ void __fastcall UpdateHook(void* self,void*) {
                         auto key=*reinterpret_cast<uint32_t*>(weapon+0x58);
                         CameraMath::Matrix modelTarget{};
                         bool nativeRequested=controllerHandsModelAlignment.load() && controllerHands && controllerHandsWeapon &&
-                            controllerHandsMode==15 && !handsSuspendedByMode.load() && activeCameraIsPlayer.load() && !handsFarFromBody.load();
+                            controllerHandsMode==15 && !handsSuspendedByMode.load() && !handsAsideForScope.load() && activeCameraIsPlayer.load() && !handsFarFromBody.load();
                         bool targetValid=nativeRequested && ModelHandAlignment::GripTarget(t,now,renderBase,reference,worldScale,modelTarget);
                         const CameraMath::Matrix* grip=
                             (controllerHandsWeapon && controllerHands)?FindHandGrip(key):nullptr;
@@ -3924,7 +4565,7 @@ void __fastcall UpdateHook(void* self,void*) {
             }
             current.presentationTracking=t;
             current.immersiveScoped=immersiveScopeActive;
-            current.tracking=immersiveScopeActive?ImmersiveScope::Zoom(t,scopeMagnification):t;
+            current.tracking=immersiveScopeActive?ImmersiveScope::Zoom(t,scopeMagnification.load()):t;
             current.active=true;current.managerAddress=reinterpret_cast<uintptr_t>(self);
             current.playerInstance=active==manager+0x6f0?*reinterpret_cast<void**>(active+0xaa0):nullptr;
             if(current.playerInstance && movementDirection!=DirectionConfig::Source::Mouse) {
@@ -3935,8 +4576,12 @@ void __fastcall UpdateHook(void* self,void*) {
 
         }
         if(!current.active){dialogueState.Reset(dialogue);holdingPlayerBase=false;}
+        PublishDialogueDof(fixedDialogueCamera.load() && holdingPlayerBase && current.active &&
+            requested && !screenReasons && !gameMenuOpen && !wheelOpen);
         if(!calibrationUpdated)calibration.Cancel();
     }
+    UpdateCoverTarget();
+    UpdateThrowMarker();
     if(budget.load()<=0)return;
     std::lock_guard lock(output);
     FILE* f{};if(fopen_s(&f,"DeusExHRVR-camera.log","a"))return;
@@ -4051,6 +4696,45 @@ void InstallHandDrawDiagnostic() {
     }
     HandDrawDiagnostic::hookStatus=1;
 }
+// Hand the landing point to the companion with this frame, in the OpenXR
+// space of the frame's own tracking (see ThrowAim::WorldToTracking). Not in
+// the immersive scope, where the frame is drawn from the rifle.
+
+void ExportCoverTarget(Transport::RenderInfo& info,const Snapshot& frame) {
+    info.coverState=0;
+    // Called with stateMutex held. A cached scene must not keep the crosshair
+    // alive after cover, tracking, a menu or a scope transition.
+    if(!NativeCoverActiveLocked() || !frame.coverTargetValid || frame.immersiveScoped ||
+       frame.playerInstance!=current.playerInstance || !frame.tracking.valid || !(frame.scale>0))return;
+    const auto& h=frame.tracking.head;
+    auto x=ThrowAim::WorldToTracking(frame.coverTarget,frame.world.m,{h.position.x,h.position.y,h.position.z},
+        {h.orientation.x,h.orientation.y,h.orientation.z,h.orientation.w},frame.scale);
+    float point[3]={x.x,x.y,x.z};
+    if(!CoverCrosshair::Valid(point))return;
+    memcpy(info.coverPosition,point,sizeof(point));info.coverState=1;
+}
+
+void ExportThrowMarker(Transport::RenderInfo& info,const Snapshot& frame) {
+    info.markerState=0;
+    if(frame.immersiveScoped || !frame.tracking.valid || !(frame.scale>0))return;
+    float point[3],normal[3];bool normalValid;
+    {
+        std::lock_guard lock(throwMarkerMutex);
+        auto now=GetTickCount64();
+        if(!throwMarker.valid || now<throwMarker.tick || now-throwMarker.tick>200)return;
+        memcpy(point,throwMarker.point,sizeof(point));memcpy(normal,throwMarker.normal,sizeof(normal));
+        normalValid=throwMarker.normalValid;
+    }
+    const auto& h=frame.tracking.head;
+    auto x=ThrowAim::WorldToTracking(point,frame.world.m,{h.position.x,h.position.y,h.position.z},
+        {h.orientation.x,h.orientation.y,h.orientation.z,h.orientation.w},frame.scale);
+    if(!std::isfinite(x.x)||!std::isfinite(x.y)||!std::isfinite(x.z))return;
+    info.markerPosition[0]=x.x;info.markerPosition[1]=x.y;info.markerPosition[2]=x.z;info.markerState=1;
+    if(normalValid) {
+        auto n=ThrowAim::DirectionToTracking(normal,frame.world.m,{h.orientation.x,h.orientation.y,h.orientation.z,h.orientation.w});
+        if(std::isfinite(n.x)&&std::isfinite(n.y)&&std::isfinite(n.z)){info.markerNormal[0]=n.x;info.markerNormal[1]=n.y;info.markerNormal[2]=n.z;info.markerState|=2;}
+    }
+}
 void __fastcall DrawHook(void* self,void*,uint32_t pass,void* other) {
     auto previous=drawing;auto previousEyes=drawnEyes;
     {
@@ -4067,7 +4751,7 @@ void __fastcall DrawHook(void* self,void*,uint32_t pass,void* other) {
     if(drawing.active && drawnEyes) {
         lastWorld=drawing;
         std::lock_guard lock(stateMutex);
-        if(pairInfo.mode==0){pairInfo.mode=1;pairInfo.tracking=drawing.immersiveScoped?drawing.presentationTracking:drawing.tracking;}
+        if(pairInfo.mode==0){pairInfo.mode=1;pairInfo.tracking=drawing.immersiveScoped?drawing.presentationTracking:drawing.tracking;ExportThrowMarker(pairInfo,drawing);ExportCoverTarget(pairInfo,drawing);}
         if(pairInfo.tracking.id!=drawing.tracking.id)pairInfo.mode=2;
         pairInfo.eyeMask|=drawnEyes;
     }
@@ -4082,7 +4766,114 @@ void __fastcall MatricesHook(void* self,void*) {
     // Scaleform uses a perspective override here too. The correction operates
     // on its resulting clip coordinates, so the source projection may be either.
     unsigned eye=state[0x5ea]?0:1;
-    auto projected=CameraMath::Multiply(source,CameraMath::HudClipTransform(uiSnapshot.tracking,eye));
+    auto clipTransform=CameraMath::HudClipTransform(uiSnapshot.tracking,eye);
+    if(uiHandTag) {
+        // Carry this element on a tracked hand. Without a usable pose, hide
+        // the block rather than jumping it back to the original screen corner.
+        const auto& t=uiSnapshot.tracking;
+        // 3 ammo, 4 consumable, 6 aug cross: right wrist; 1 health, 2 energy,
+        // 5 radar, 7 Mark & Track: left.
+        const bool right=uiHandTag==3 || uiHandTag==4 || uiHandTag==6;
+        const bool radar=uiHandTag==5;
+        const auto& grip=right?t.rightGrip:t.leftGrip;
+        const auto& controller=right?t.rightController:t.leftController;
+        CameraMath::Matrix panel;
+        bool placed=false;
+        // On the back of the wrist: position and orientation from the grip
+        // pose, which the game's hand model is aligned to. Without it the
+        // block hides.
+        (void)controller;
+        if(grip.valid) {
+            // This piece's own position in the HUD's clip rectangle: its origin
+            // through World (which holds the restore translation), View and
+            // the HUD's projection.
+            // The band works in the HUD's flat layout units (before the game
+            // tilts its HUD panels). This piece's home layout position, and how
+            // far one layout unit moves on the normal HUD (its clip units),
+            // measured at the piece through World (restore translation), View
+            // and the HUD's projection, with depth following X by the region's
+            // ratio as the game's shader computes it.
+            // Measured middles: 0 health/energy, 1 ammo, 2 radar, 3 consumable,
+            // 4 aug cross, 5 Mark & Track.
+            const int band=uiHandTag==6?4:uiHandTag==7?5:radar?2:right?(uiHandTag==4?3:1):0;
+            const auto piece=uiHandTag==6?ModelWristHud::Piece::AugCross:uiHandTag==7?ModelWristHud::Piece::MarkTrack:
+                             radar?ModelWristHud::Piece::Radar:!right?ModelWristHud::Piece::HealthEnergy:
+                             uiHandTag==4?ModelWristHud::Piece::Consumable:ModelWristHud::Piece::Ammo;
+            bool layout=false;float homeX=0,homeY=0;
+            if(uiHandOriginValid) {
+                homeX=uiHandOrigin[0]+uiHandShift;homeY=uiHandOrigin[1];
+                float ratio=uiHandRatio;
+                if(!(std::abs(ratio)>0)) {
+                    const auto& known=HudIsolationCheck::ratios[HudIsolationCheck::Region(source.m)];
+                    ratio=known.known?known.value:0.f;
+                }
+                auto wvp=CameraMath::Multiply(CameraMath::Multiply(CameraMath::Load(state+0x500),CameraMath::Load(state+0x480)),source);
+                auto ndc=[&](float x,float y,float z,float& u,float& v) {
+                    float o[4];
+                    for(int j=0;j<4;++j)o[j]=x*wvp.m[j]+y*wvp.m[4+j]+z*wvp.m[8+j]+wvp.m[12+j];
+                    if(!(std::isfinite(o[0]) && std::isfinite(o[1]) && std::isfinite(o[3]) && o[3]>1e-6f))return false;
+                    u=o[0]/o[3];v=o[1]/o[3];return true;
+                };
+                float u0,v0,ux,vx,uy,vy;
+                const float x=uiHandOrigin[0],y=uiHandOrigin[1],z=uiHandOrigin[2];
+                if(ndc(x,y,z,u0,v0) && ndc(x+100,y,z+(std::abs(ratio)>0?100/ratio:0),ux,vx) && ndc(x,y+100,z,uy,vy)) {
+                    const float perX=(ux-u0)/100,perY=(vy-v0)/100;
+                    if(std::isfinite(perX) && std::isfinite(perY) && std::abs(perX)>0 && std::abs(perY)>0) {
+                        auto& k=bandPerUnit[band];
+                        if(!bandPerUnitSet[band]){k[0]=perX;k[1]=perY;bandPerUnitSet[band]=true;}
+                        else {k[0]+=.01f*(perX-k[0]);k[1]+=.01f*(perY-k[1]);}
+                        layout=std::isfinite(homeX) && std::isfinite(homeY);
+                    }
+                }
+            }
+            float centreX=homeX,centreY=homeY;
+            // Not while the piece plays an animation (reload, empty): see BandSteady.
+            if(layout && HudIsolationCheck::BandSteady(band))HudIsolationCheck::BandSample(band,homeX,homeY);
+            // On the wrist ends each piece is centred on its own artwork
+            // (ModelWristHud: offsets from the game file).
+            if(piece==ModelWristHud::Piece::Radar) {
+                if(HudIsolationCheck::BandMinOf(band,centreX,centreY)){centreX+=ModelWristHud::kRadarFromMin[0];centreY+=ModelWristHud::kRadarFromMin[1];}
+            } else if(piece==ModelWristHud::Piece::MarkTrack) {
+                if(HudIsolationCheck::BandMaxOf(band,centreX,centreY)){centreX+=ModelWristHud::kMarkTrackFromMax[0];centreY+=ModelWristHud::kMarkTrackFromMax[1];}
+            } else {
+                HudIsolationCheck::BandMiddleOf(band,centreX,centreY);
+                if(piece==ModelWristHud::Piece::Ammo){centreX+=ModelWristHud::kAmmoFromMiddle[0];centreY+=ModelWristHud::kAmmoFromMiddle[1];}
+                if(piece==ModelWristHud::Piece::Consumable){centreX+=ModelWristHud::kConsumableFromMiddle[0];centreY+=ModelWristHud::kConsumableFromMiddle[1];}
+                if(piece==ModelWristHud::Piece::AugCross){centreX+=ModelWristHud::kAugFromMiddle[0];centreY+=ModelWristHud::kAugFromMiddle[1];}
+            }
+            if(HandBand::renderer.Ready() && layout) {
+                // Smooth band: the replacement vertex shader (HandBand.h) bends
+                // every vertex round the wrist from its flat layout position.
+                CameraMath::BandFrame frame;
+                if(ModelWristHud::Frame(t,eye,grip.pose,piece,uiSnapshot.scale,centreX,centreY,frame,
+                        bandPerUnit[band][0],bandPerUnit[band][1],uiHandShift)) {
+                    HandBand::renderer.Prepare(HandBand::Pack(frame));
+                    // Fail-safe: the game's own shader is given the hiding
+                    // transform. Only the band shader, which places vertices
+                    // from its own constants (b11) and ignores this matrix,
+                    // makes the piece visible, on the wrist. If the swap does
+                    // not happen the piece is hidden, never drawn at its
+                    // normal screen corner (Mark, November 13: the HUD
+                    // "reverted to defaults after hacking", twice). The
+                    // engine's X and Y rows (b5), which the band shader reads,
+                    // come from the piece's own parameters, not this matrix.
+                    panel=CameraMath::HiddenHudTransform();
+                    placed=true;
+                } else ++HudIsolationCheck::pieceNoFrame[uiHandTag-1];
+            } else {
+                if(!layout)++HudIsolationCheck::pieceNoLayout[uiHandTag-1];
+                else ++HudIsolationCheck::pieceNoRenderer[uiHandTag-1];
+                ++HudIsolationCheck::flatPieces;
+                // No old guessed placement when the replacement shaders or the
+                // piece's layout position are unavailable: hidden.
+                placed=false;
+            }
+            if(layout)++HudIsolationCheck::curvedPieces;
+        } else ++HudIsolationCheck::pieceNoGrip[uiHandTag-1];
+        if(placed){clipTransform=panel;++HudIsolationCheck::handPanels[right?1:0];++HudIsolationCheck::placedTags[uiHandTag-1];}
+        else {clipTransform=CameraMath::HiddenHudTransform();++HudIsolationCheck::handFallbacks[right?1:0];++HudIsolationCheck::hiddenTags[uiHandTag-1];}
+    }
+    auto projected=CameraMath::Multiply(source,clipTransform);
     auto stereoEnabled=state[0x5e9];
     overrideMatrix=projected.m;state[0x5e9]=0;state[0x546]=1;
     originalMatrices(self);
@@ -4115,14 +4906,50 @@ void __fastcall PrimitiveHook(void* self,void*,void* stream,bool backBeforeFront
         auto projection=*reinterpret_cast<float**>(state+0x540);t.projection=CameraMath::Load(projection?projection:reinterpret_cast<float*>(state+0x440));
         t.view=CameraMath::Load(state+0x480);t.world=CameraMath::Load(state+0x500);
     }
-    if(!isUI){originalPrimitive(self,stream,backBeforeFront,flags);return;}
+    // Hand HUD test: health, energy and ammo are parked far off screen by
+    // HudIsolationCheck. A parked draw is recognised here and given a World
+    // translation that puts it back at its home position (measured exact on
+    // the desktop, November 12). Everything else is untouched.
+    HudIsolationCheck::Fix handFix;handFix.state=nullptr;handFix.tag=0;handFix.applied=false;handFix.ratio=0;
+    const bool handHud=stream && HudIsolationCheck::handHudActive.load(std::memory_order_relaxed);
+    if(!isUI) {
+        // No tracking snapshot: owned blocks stay hidden, not on a flat HUD.
+        if(handHud)HudIsolationCheck::PrepareFix(self,handFix);
+        if(handFix.tag) {
+            ++HudIsolationCheck::hiddenTags[handFix.tag-1];
+            if(handFix.applied){HudIsolationCheck::RestoreWorld(handFix);originalMatrices(handFix.state);}
+            return;
+        }
+        if(handFix.applied)originalMatrices(handFix.state);
+        originalPrimitive(self,stream,backBeforeFront,flags);
+        if(handHud)HudIsolationCheck::Learn(self);
+        if(handFix.applied){HudIsolationCheck::RestoreWorld(handFix);originalMatrices(handFix.state);}
+        return;
+    }
     auto device=*reinterpret_cast<unsigned char**>(VA(0x12ab940));
     auto state=*reinterpret_cast<unsigned char**>(device+0x150);
-    auto previousUI=uiDrawing;auto previousSnapshot=uiSnapshot;
-    uiDrawing=true;uiSnapshot=snapshot;
+    if(handHud)HudIsolationCheck::PrepareFix(self,handFix);
+    if(handHud && !handFix.tag && HudIsolationCheck::verbose)HudIsolationCheck::RadarAreaSample(self);
+    auto previousUI=uiDrawing;auto previousSnapshot=uiSnapshot;auto previousHand=uiHandTag;
+    const bool previousOriginValid=uiHandOriginValid;
+    float previousOrigin[3];memcpy(previousOrigin,uiHandOrigin,sizeof(previousOrigin));
+    const float previousShift=uiHandShift,previousRatio=uiHandRatio;
+    uiHandShift=handFix.applied?handFix.d[0]:0;uiHandRatio=handFix.applied?handFix.ratio:0;
+    uiDrawing=true;uiSnapshot=snapshot;uiHandTag=handFix.applied?handFix.tag:0;
+    uiHandOriginValid=handFix.applied && HudIsolationCheck::DrawOrigin(self,uiHandOrigin,handFix.tag>=5 || handFix.backup)!=0;
     MatricesHook(state,nullptr);
     originalPrimitive(self,stream,backBeforeFront,flags);
-    uiDrawing=previousUI;uiSnapshot=previousSnapshot;
+    HandBand::renderer.Restore();
+    if(handHud) {
+        // The engine's buffer now holds this draw's X row: learn the region's
+        // ratio from it, then put World back before the matrices are rebuilt.
+        HudIsolationCheck::Learn(self);
+        HudIsolationCheck::RestoreWorld(handFix);
+        HudIsolationCheck::HandStatus();
+    }
+    uiDrawing=previousUI;uiSnapshot=previousSnapshot;uiHandTag=previousHand;
+    uiHandOriginValid=previousOriginValid;memcpy(uiHandOrigin,previousOrigin,sizeof(previousOrigin));
+    uiHandShift=previousShift;uiHandRatio=previousRatio;
     state[0x546]=1;originalMatrices(state);
     ++hudDraws;
 }
@@ -4239,6 +5066,18 @@ void InstallScreenHooks() {
     if(f)fclose(f);
 }
 #endif
+// The launch-frame hook (0x763D90) serves both the throw log and player
+// projectiles; installed once, by whichever needs it first.
+bool InstallLaunchFrameHook() {
+    static bool hooked{},tried{};
+    if(tried)return hooked;
+    tried=true;
+    auto target=reinterpret_cast<void*>(VA(ThrowAim::launchFrame));
+    hooked=!memcmp(target,ThrowAim::launchFrameBytes,sizeof(ThrowAim::launchFrameBytes)) &&
+        MH_CreateHook(target,reinterpret_cast<void*>(&LaunchFrameHook),reinterpret_cast<void**>(&originalLaunchFrame))==MH_OK;
+    if(hooked && MH_EnableHook(target)!=MH_OK){MH_RemoveHook(target);hooked=false;}
+    return hooked;
+}
 void Install() {
     base=reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
     auto dos=reinterpret_cast<IMAGE_DOS_HEADER*>(base);
@@ -4268,6 +5107,7 @@ void Install() {
         ,{0x986b40,(void*)&VideoDestroyHook,(void**)&originalVideoDestroy,"\x56\x8b\xf1\x57",4}
         ,{0x71bb20,(void*)&BillboardsHook,(void**)&originalBillboards,"\x55\x8b\xec\x83\xe4\xf0",6}
         ,{0x74f3e0,(void*)&WeaponMuzzleHook,(void**)&originalWeaponMuzzle,"\x53\x56\x8b\xf1\x8b\x46\x78",7}
+        ,{0x804a30,(void*)&ReticleTypeHook,(void**)&originalReticleType,"\x8b\x44\x24\x04\x85\xc0",6}
         ,{0x750dc0,(void*)&WeaponAimHook,(void**)&originalWeaponAim,"\x55\x8b\xec\x83\xe4\xf0",6}
         ,{0x720930,(void*)&ActorDrawHook,(void**)&originalActorDraw,"\x56\x8b\xf1\x8b\x46\x08",6}
         ,{0x723190,(void*)&WeaponDrawHook,(void**)&originalWeaponDraw,"\x8b\x44\x24\x08\x56",5}
@@ -4288,6 +5128,13 @@ void Install() {
 #if defined(_M_IX86)
     if(enabled)InstallInteractionProbes();
     if(enabled)InstallScreenHooks(); // after, and independent of, the camera hooks
+    if(enabled) {
+        // HandHud in [VR] (default 1): HUD on the hands (1) or the game's own (0).
+        // The hooks are installed either way; the VR settings menu switches it live.
+        wchar_t hudConfig[MAX_PATH]{};GetFullPathNameW(L"DeusExHRVR.ini",MAX_PATH,hudConfig,nullptr);
+        handHudSetting=GetPrivateProfileIntW(L"VR",L"HandHud",1,hudConfig)!=0;
+        HudIsolationCheck::Install(base,true,handHudSetting.load());
+    }
 #endif
     wchar_t config[MAX_PATH]{};GetFullPathNameW(L"DeusExHRVR.ini",MAX_PATH,config,nullptr);
     wchar_t scaleText[32];
@@ -4314,6 +5161,17 @@ void Install() {
         if(!ok){for(int i=0;i<created;i++){MH_DisableHook((void*)VA(conversation[i].address));MH_RemoveHook((void*)VA(conversation[i].address));}fixedDialogueCamera=false;}
         dialogueHooksReady.store(ok);
         FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")){fprintf(f,"conversation hooks: %s\n",ok?"hooked":"skipped");fclose(f);}
+        // Optional and independent: a mismatch leaves normal DOF and the
+        // existing conversation camera intact. Installed even if option is off
+        // at startup, so the menu can enable it without a restart.
+        auto dof=reinterpret_cast<void*>(VA(0x6a4a10));
+        bool dofOk=false;
+        if(ok && !memcmp(dof,"\x55\x8b\xec\x83\xe4\xf0\x81\xec\x38\x01\x00\x00",12) &&
+            MH_CreateHook(dof,(void*)&AnimationDofHook,(void**)&originalAnimationDof)==MH_OK) {
+            dofOk=MH_EnableHook(dof)==MH_OK;
+            if(!dofOk)MH_RemoveHook(dof);
+        }
+        if(!fopen_s(&f,"DeusExHRVR-camera.log","a")){fprintf(f,"dialogue DOF hook: %s\n",dofOk?"hooked":"skipped");fclose(f);}
     }
     bobTrace=GetPrivateProfileIntW(L"VR",L"BobTrace",0,config)!=0;
     // Optional stutter fix from HRDCfix (github.com/imring/HRDCfix, MIT).
@@ -4364,6 +5222,7 @@ void Install() {
     DiagnosticOptions::runtime=GetPrivateProfileIntW(L"VR",L"RuntimeDiagnosticLog",0,config)!=0;
     DiagnosticOptions::liveHandConfig=GetPrivateProfileIntW(L"VR",L"HandConfigLiveReload",0,config)!=0;
     HandWeaponMotionDiagnostic::enabled=GetPrivateProfileIntW(L"VR",L"HandWeaponMotionLog",0,config)!=0;
+    coverCameraFollow=false;
     if(enabled && (motionControls || nativeLookPitchLock || nativeLookHeading)) {
         auto target=reinterpret_cast<void*>(VA(0x7ac8c0));
         const char inputBytes[]="\x55\x8b\xec\x83\xe4\xf0\x81\xec\x74\x01\x00\x00";
@@ -4378,11 +5237,14 @@ void Install() {
         directSnapReady=ok;
         nativeLookPitchLock=nativeLookPitchLock && ok;
         nativeLookHeading=nativeLookHeading && ok;
+        coverFollowWanted=GetPrivateProfileIntW(L"VR",L"CoverCameraFollow",1,config)!=0;
+        coverFollowReady=ok;
+        coverCameraFollow=coverFollowWanted.load() && ok;
         FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")) {
             fprintf(f,"nativeLookPitchLock hook=%s controllerOnly=1 combatOnly=1\n",ok?"ready":"failed");fclose(f);
         }
         FILE* headingLog{};if(!fopen_s(&headingLog,"DeusExHRVR-camera.log","a")) {
-            fprintf(headingLog,"nativeLookHeading enabled=%d sameEngineFrame=1 combatOnly=1\n",nativeLookHeading);
+            fprintf(headingLog,"nativeLookHeading enabled=%d sameEngineFrame=1 combatOnly=1 coverCameraFollow=%d\n",nativeLookHeading,int(coverCameraFollow.load()));
             fclose(headingLog);
         }
     }
@@ -4464,9 +5326,54 @@ void Install() {
     if(!(controllerHandsRadius>0)||controllerHandsRadius>500)controllerHandsRadius=15.f;
     interactionAim=DirectionConfig::Read(config,L"InteractionAim");
     movementDirection=DirectionConfig::Read(config,L"MovementDirection");
+    // Grenades follow the right hand unless ThrowAim says otherwise. The hook
+    // is installed whatever ThrowAim says so the VR settings menu can change it
+    // live (transport 24); with Mouse its camera answer is the game's own
+    // (DirectionWorld refuses Mouse), so throws stay exactly native. Hooked on
+    // its own: a mismatch or failure only turns this option off.
+    throwAim=DirectionConfig::Read(config,L"ThrowAim",DirectionConfig::Source::Controller);
+    throwMarkerWanted=GetPrivateProfileIntW(L"VR",L"ThrowMarker",1,config)!=0;
+    if(enabled) {
+        auto target=reinterpret_cast<void*>(VA(ThrowAim::throwAddress));
+        bool ok=!memcmp(target,ThrowAim::throwBytes,sizeof(ThrowAim::throwBytes));
+        const char* result=ok?"hooked":"skipped: unexpected bytes";
+        if(ok && MH_CreateHook(target,reinterpret_cast<void*>(&ThrowHook),reinterpret_cast<void**>(&originalThrow))!=MH_OK){ok=false;result="skipped: create failed";}
+        else if(ok && MH_EnableHook(target)!=MH_OK){MH_RemoveHook(target);ok=false;result="skipped: enable failed";}
+        if(!ok)throwAim=DirectionConfig::Source::Mouse;
+        throwAimReady=ok;
+        FILE* f{};if(!fopen_s(&f,"DeusExHRVR-throw.log","a")){fprintf(f,"startup throw hook %s aim=%s\n",result,DirectionConfig::Name(throwAim));fclose(f);}
+        // Landing marker: needs the throw hook (for the aim) and the launch
+        // setup the prediction calls. The launch-frame hook only feeds the log.
+        // Checked whatever ThrowMarker says, so the menu can turn it on.
+        if(ok) {
+            bool setup=!memcmp(reinterpret_cast<void*>(VA(ThrowAim::launchSetup)),ThrowAim::launchSetupBytes,sizeof(ThrowAim::launchSetupBytes));
+            bool frameHook=InstallLaunchFrameHook();
+            throwMarkerReady=setup;
+            FILE* m{};if(!fopen_s(&m,"DeusExHRVR-throw.log","a")){fprintf(m,"startup marker %s wanted=%d launchFrameLog=%s\n",setup?"ready":"skipped: unexpected launch setup bytes",int(throwMarkerWanted.load()),frameHook?"hooked":"skipped");fclose(m);}
+        }
+    }
+    // Player rockets (and other flying shots) follow the gun barrel unless
+    // ProjectileAim=0, which installs nothing for them. Shares the launch-frame
+    // hook with the throw log; a mismatch or failure only turns this off.
+    projectileAim=GetPrivateProfileIntW(L"VR",L"ProjectileAim",1,config)!=0;
+    if(projectileAim.load()) {
+        const char* result="hooked";
+        bool ok=enabled;
+        if(!ok)result="skipped: mod disabled";
+        auto fire=reinterpret_cast<void*>(VA(ProjectileAim::fireAddress));
+        if(ok && memcmp(fire,ProjectileAim::fireBytes,sizeof(ProjectileAim::fireBytes))){ok=false;result="skipped: unexpected fire bytes";}
+        if(ok && MH_CreateHook(fire,reinterpret_cast<void*>(&GunFireHook),reinterpret_cast<void**>(&originalGunFire))!=MH_OK){ok=false;result="skipped: fire hook create failed";}
+        else if(ok && MH_EnableHook(fire)!=MH_OK){MH_RemoveHook(fire);ok=false;result="skipped: fire hook enable failed";}
+        // Without the fire hook gunFiring stays null and no shot is changed.
+        if(ok && !InstallLaunchFrameHook()){ok=false;result="skipped: launch frame not hooked";}
+        if(!ok)projectileAim=false;
+        FILE* f{};if(!fopen_s(&f,"DeusExHRVR-projectile.log","a")){fprintf(f,"startup projectile hook %s\n",result);fclose(f);}
+    }
     const unsigned configuredResponse=GetPrivateProfileIntW(L"VR",L"MovementResponse",0,config);
     movementResponse=configuredResponse<=2?configuredResponse:0;
     immersiveScope=GetPrivateProfileIntW(L"VR",L"ImmersiveScope",0,config)!=0;
+    // The immersive scope needs the right-hand weapon pose (as scopeAllowed checks).
+    immersiveScopeReady=motionControls && experimentalMotionControls;
     GetPrivateProfileStringW(L"VR",L"ScopeMagnification",L"4",scaleText,32,config);
     {float value=static_cast<float>(_wtof(scaleText));if(std::isfinite(value)&&value>=1&&value<=12)scopeMagnification=value;}
     GetPrivateProfileStringW(L"VR",L"ControllerMuzzleForwardMetres",L"0.25",scaleText,32,config);
@@ -4563,6 +5470,7 @@ Transport::RenderInfo OnPresent(uint64_t frame,bool capture) {
     // is paused. Refresh here as well, before the following frame is built.
     RefreshScreenMode();if(screenReasons)current.active=false;
     if(screenReasons || !requested || recenterRequested){dialogueState.Reset(conversationCamera.load()!=nullptr);holdingPlayerBase=false;}
+    if(screenReasons || gameMenuOpen || wheelOpen || !requested || recenterRequested || !fixedDialogueCamera.load())PublishDialogueDof(false);
     if(screenReasons || gameMenuOpen || !requested || recenterRequested)calibration.Cancel();
     LevelFrozenView(frame);
     if(effectsCapture){SaveEffects(frame);effectCount=0;shaderTrace.End();}effectsCapture=capture;
@@ -4586,7 +5494,7 @@ Transport::RenderInfo OnPresent(uint64_t frame,bool capture) {
                 controllerDraws.load(),controllerMuzzles.load(),controllerAimQueries.load(),controllerHiddenArms.load(),weaponPose.owner,
                 controllerAttachments.load(),controllerBounds.load());
             Matrix(motion,"controllerMuzzle",weaponPose.muzzle.m);
-            fprintf(motion,"immersiveScope enabled=%d active=%d owned=%d zoom=%g\n",immersiveScope,immersiveScopeActive,autoScopeOwned,scopeMagnification);
+            fprintf(motion,"immersiveScope enabled=%d active=%d owned=%d zoom=%g\n",int(immersiveScope.load()),immersiveScopeActive,autoScopeOwned,scopeMagnification.load());
             fprintf(motion,"nativeLookPitchLock enabled=%d calls=%llu applied=%llu pitchBefore=%g pitchAfter=%g yaw=%g\n",
                 nativeLookPitchLock,nativeLookCalls.load(),nativeLookApplied.load(),nativeLookBefore.load(),nativeLookAfter.load(),nativeLookYaw.load());
             fprintf(motion,"directions interaction=%s movement=%s interactionQueries=%llu movementAxes=%llu motionControls=%d inputIndex=%u actions=%p/%p lastInput=%g,%g lastOutput=%g,%g heading=%g\n",
@@ -4657,12 +5565,17 @@ void SetChannel(Transport::Header* header){std::lock_guard lock(stateMutex);chan
 // the display stays tracked. Bit 128 is the opposite: a wheel screen pausing
 // gameplay, where [Buttons] must be kept.
 float ConfiguredWorldScale(){return liveWorldScale.Configured();}
+float ScopeMagnification(){return scopeMagnification.load();}
+bool SetScopeMagnification(float value){if(!std::isfinite(value)||value<1||value>12)return false;scopeMagnification.store(value);return true;}
 float ActiveWorldScale(){return liveWorldScale.Active();}
 void SetConfiguredWorldScale(float value){liveWorldScale.Request(value);}
 unsigned InteractionAim(){return unsigned(interactionAim.load());}
 bool DialogueEnabled(){return fixedDialogueCamera.load();}
 bool DialogueAvailable(){return dialogueHooksReady.load();}
 void SetDialogueEnabled(bool value){fixedDialogueCamera.store(value&&dialogueHooksReady.load());}
+bool HandHudConfigured(){return handHudSetting.load();}
+bool HandHudActive(){return HudIsolationCheck::handHudActive.load();}
+void SetHandHudConfigured(bool value){handHudSetting.store(value);HudIsolationCheck::SetHandHudShown(value);}
 void SetInteractionAim(unsigned value){if(value<=3)interactionAim.store(static_cast<DirectionConfig::Source>(value));}
 unsigned MovementResponse(){return movementResponse.load();}
 void SetMovementResponse(unsigned value){if(value<=2)movementResponse.store(value);}
@@ -4677,8 +5590,22 @@ bool RequestDirectSnap(float degrees){
 }
 unsigned MovementDirection(){return unsigned(movementDirection.load());}
 void Recenter(){recenterRequested=true;conversationCamera=nullptr;}
+bool ThrowMarkerEnabled(){return MarkerOn();}
+unsigned ThrowAimSetting(){return throwAimReady.load()?unsigned(throwAim.load())+1:0;}
+void SetThrowAim(unsigned source){if(throwAimReady.load()&&source<=3)throwAim.store(static_cast<DirectionConfig::Source>(source));}
+unsigned ThrowMarkerSetting(){return throwMarkerReady.load()?(throwMarkerWanted.load()?2:1):0;}
+void SetThrowMarker(bool value){if(throwMarkerReady.load())throwMarkerWanted.store(value);}
+unsigned CoverFollowSetting(){return coverFollowReady.load()?(coverFollowWanted.load()?2:1):0;}
+void SetCoverFollow(bool value){if(coverFollowReady.load()){coverFollowWanted.store(value);coverCameraFollow.store(value);}}
+unsigned ImmersiveScopeSetting(){return immersiveScopeReady.load()?(immersiveScope.load()?2:1):0;}
+void SetImmersiveScope(bool value){if(immersiveScopeReady.load())immersiveScope.store(value);}
+void SetThrowAiming(bool aiming){throwAiming=aiming;}
+void NoteThrowRelease(uint64_t heldMs){throwHeldMs=heldMs;}
+bool DetonateReady(){return detonateReady.load();}
+void NoteDetonatePress(uint64_t heldMs){NoteDetonate("press passed through as RB",heldMs);}
 void SetMovementDirection(unsigned value){if(value<=3)movementDirection.store(static_cast<DirectionConfig::Source>(value));}
 unsigned CurrentScreenReasons(){std::lock_guard lock(stateMutex);return screenReasons|(gameMenuOpen?32u:0u)|(readerOpen?64u:0u)|(wheelOpen?128u:0u);}
+bool NativeCoverControls(){return NativeCoverActive();}
 bool SnapTurnView(float& yaw) {
     std::lock_guard lock(stateMutex);
     auto now=GetTickCount64();
@@ -4711,6 +5638,7 @@ int QuickBarAutoHide(bool set) {
 
 void SetShaderSwapDevice(ID3D11Device* device){
     shaderSwap.SetDevice(device);
+    HandBand::renderer.SetDevice(device); // used only by the hand HUD test
     // Phase 3: also init the injected-pass subsystem now that the device is
     // available. Loads the injected-pass .cso blobs from the same compiled/
     // dir the shader swap uses. Missing blobs leave the corresponding pass

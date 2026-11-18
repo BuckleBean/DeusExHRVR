@@ -6,14 +6,26 @@
 #include <fstream>
 #include <limits>
 namespace EngineCamera {
+bool nativeCover{};bool NativeCoverControls(){return nativeCover;}
 bool dialogue{},available=true;
 bool DialogueEnabled(){return dialogue;}
 bool DialogueAvailable(){return available;}
 void SetDialogueEnabled(bool value){dialogue=value&&available;}
+bool handHud=true,handHudActive=true;
+bool HandHudConfigured(){return handHud;}bool HandHudActive(){return handHudActive;}void SetHandHudConfigured(bool value){handHud=handHudActive=value;}
+// Transport 24 menu tabs: 0 = unavailable (setters then ignored, as in EngineCamera).
+unsigned throwAimSetting=3,throwMarkerSetting=2,coverFollowSetting=2,scopeSetting=1;
+unsigned ThrowAimSetting(){return throwAimSetting;}void SetThrowAim(unsigned s){if(throwAimSetting&&s<=3)throwAimSetting=s+1;}
+unsigned ThrowMarkerSetting(){return throwMarkerSetting;}void SetThrowMarker(bool v){if(throwMarkerSetting)throwMarkerSetting=v?2:1;}
+unsigned CoverFollowSetting(){return coverFollowSetting;}void SetCoverFollow(bool v){if(coverFollowSetting)coverFollowSetting=v?2:1;}
+unsigned ImmersiveScopeSetting(){return scopeSetting;}void SetImmersiveScope(bool v){if(scopeSetting)scopeSetting=v?2:1;}
 LiveWorldScale scale;
 float ConfiguredWorldScale(){return scale.Configured();}
 float ActiveWorldScale(){return scale.Active();}
 void SetConfiguredWorldScale(float value){scale.Request(value);}
+float zoom=4;
+float ScopeMagnification(){return zoom;}
+bool SetScopeMagnification(float value){if(!(value>=1&&value<=12))return false;zoom=value;return true;}
 unsigned interaction{};
 unsigned InteractionAim(){return interaction;}
 void SetInteractionAim(unsigned value){interaction=value;}
@@ -24,6 +36,10 @@ unsigned movement{};
 unsigned MovementDirection(){return movement;}
 void SetMovementDirection(unsigned value){movement=value;}
 unsigned reasons=2;
+bool throwMarker{},throwAiming{};uint64_t throwHeld{};
+bool ThrowMarkerEnabled(){return throwMarker;}void SetThrowAiming(bool v){throwAiming=v;}void NoteThrowRelease(uint64_t ms){throwHeld=ms;}
+bool detonate{};uint64_t detonateHeld{};
+bool DetonateReady(){return detonate;}void NoteDetonatePress(uint64_t ms){detonateHeld=ms;}
 unsigned CurrentScreenReasons(){return reasons;}
 bool SnapTurnView(float&){return reasons==0;}
 bool directEnabled{},directPending{};
@@ -122,6 +138,12 @@ int wmain(int argc,wchar_t** argv) {
     assert(GamepadBridge::buttonHoldMs[0]==300&&GamepadBridge::buttonTapTarget[0]==(1u<<18));
     EngineCamera::reasons=0;XINPUT_GAMEPAD mapped{};mapped.wButtons=XINPUT_GAMEPAD_X;mapped.bRightTrigger=200;
     GamepadBridge::ApplyButtons(mapped);assert(mapped.wButtons==XINPUT_GAMEPAD_A&&mapped.bLeftTrigger==200&&!mapped.bRightTrigger);
+    EngineCamera::nativeCover=true;mapped={};mapped.wButtons=XINPUT_GAMEPAD_X;mapped.bRightTrigger=200;
+    mapped.sThumbRX=12345;mapped.sThumbRY=-23456;
+    GamepadBridge::ApplyButtons(mapped);
+    assert(mapped.wButtons==XINPUT_GAMEPAD_A&&mapped.bLeftTrigger==200&&!mapped.bRightTrigger);
+    assert(mapped.sThumbRX==12345&&mapped.sThumbRY==-23456);
+    EngineCamera::nativeCover=false;
     EngineCamera::reasons=2;mapped={};mapped.wButtons=XINPUT_GAMEPAD_A;GamepadBridge::ApplyButtons(mapped);
     assert(mapped.wButtons==XINPUT_GAMEPAD_X); // independent screen mapping
     for(int n=0;n<200&&h.menu.saved!=21;++n){Sleep(10);GamepadBridge::MenuTick(2);}
@@ -216,6 +238,101 @@ int wmain(int argc,wchar_t** argv) {
     h.menu.requestedResponse=0;request(105,30);assert(EngineCamera::response==0);
     for(int n=0;n<200&&h.menu.saved!=105;++n){Sleep(10);GamepadBridge::MenuTick(2);}
     assert(h.menu.saved==105&&GetPrivateProfileIntW(L"VR",L"MovementResponse",3,path.c_str())==0);
+    // HUD: reported as saved/active; a request saves HandHud and switches it live.
+    GamepadBridge::MenuTick(2);assert(h.menu.handHud==2&&h.menu.activeHandHud==2);
+    assert(GetPrivateProfileIntW(L"VR",L"HandHud",7,path.c_str())==7); // nothing written without a request
+    h.menu.requestedHandHud=1;request(106,30);assert(!EngineCamera::handHud&&h.menu.handHud==1);
+    GamepadBridge::MenuTick(2);assert(h.menu.activeHandHud==1);
+    for(int n=0;n<200&&h.menu.saved!=106;++n){Sleep(10);GamepadBridge::MenuTick(2);}
+    assert(h.menu.saved==106&&h.menu.result==0&&GetPrivateProfileIntW(L"VR",L"HandHud",7,path.c_str())==0);
+    h.menu.requestedHandHud=0;request(107,30);assert(!EngineCamera::handHud&&h.menu.handHud==1); // 0 keeps it
+    for(int n=0;n<200&&h.menu.saved!=107;++n){Sleep(10);GamepadBridge::MenuTick(2);}
+    assert(GetPrivateProfileIntW(L"VR",L"HandHud",7,path.c_str())==0);
+    h.menu.requestedHandHud=3;request(108,30);assert(h.menu.result==2&&!EngineCamera::handHud);  // refused
+    h.menu.requestedHandHud=2;request(109,30);assert(EngineCamera::handHud&&h.menu.handHud==2);
+    for(int n=0;n<200&&h.menu.saved!=109;++n){Sleep(10);GamepadBridge::MenuTick(2);}
+    assert(h.menu.saved==109&&GetPrivateProfileIntW(L"VR",L"HandHud",7,path.c_str())==1);
+    h.menu.requestedHandHud=0;
+    // Scope zoom: applied at once, saved as ScopeMagnification, 0 keeps it, out of range refused.
+    GamepadBridge::MenuTick(2);assert(h.menu.scopeZoom==4);
+    h.menu.requestedScopeZoom=3;request(106,30);assert(EngineCamera::zoom==3&&h.menu.scopeZoom==3);
+    for(int n=0;n<200&&h.menu.saved!=106;++n){Sleep(10);GamepadBridge::MenuTick(2);}
+    {wchar_t z[40]{};GetPrivateProfileStringW(L"VR",L"ScopeMagnification",L"",z,40,path.c_str());assert(h.menu.saved==106&&_wtof(z)==3);}
+    h.menu.requestedScopeZoom=0;request(107,30);assert(h.menu.result!=2&&EngineCamera::zoom==3);
+    for(int n=0;n<200&&h.menu.saved!=107;++n){Sleep(10);GamepadBridge::MenuTick(2);}
+    {wchar_t z[40]{};GetPrivateProfileStringW(L"VR",L"ScopeMagnification",L"",z,40,path.c_str());assert(h.menu.saved==107&&_wtof(z)==3);}
+    for(float bad:{.5f,12.5f,std::numeric_limits<float>::quiet_NaN()}){h.menu.requestedScopeZoom=bad;request(108,30);assert(h.menu.result==2&&EngineCamera::zoom==3);}
+    h.menu.requestedScopeZoom=0;
+    // Menu tabs (transport 24): reported, applied at once and saved; 0 keeps each;
+    // out-of-range and unavailable requests are refused whole.
+    {
+        auto text=[&](const wchar_t* key){static wchar_t v[40];GetPrivateProfileStringW(L"VR",key,L"",v,40,path.c_str());return std::wstring(v);};
+        auto wait=[&](uint32_t id){for(int n=0;n<200&&h.menu.saved!=id;++n){Sleep(10);GamepadBridge::MenuTick(2);}assert(h.menu.saved==id&&h.menu.result==0);};
+        GamepadBridge::MenuTick(2);
+        assert(h.menu.throwAim==3&&h.menu.throwMarker==2&&h.menu.coverFollow==2&&h.menu.immersiveScope==1);
+        assert(text(L"ThrowAim").empty()&&text(L"ThrowMarker").empty()&&text(L"CoverCameraFollow").empty()&&text(L"ImmersiveScope").empty()); // nothing written unasked
+        EngineCamera::throwAiming=true;
+        h.menu.requestedThrowAim=1;h.menu.requestedThrowMarker=1;h.menu.requestedCoverFollow=1;h.menu.requestedImmersiveScope=2;request(110,30);
+        assert(h.menu.result!=2&&EngineCamera::throwAimSetting==1&&EngineCamera::throwMarkerSetting==1&&EngineCamera::coverFollowSetting==1&&EngineCamera::scopeSetting==2);
+        assert(h.menu.throwAim==1&&h.menu.throwMarker==1&&h.menu.coverFollow==1&&h.menu.immersiveScope==2);
+        assert(!EngineCamera::throwAiming); // a half-made throw hold is dropped
+        wait(110);
+        assert(text(L"ThrowAim")==L"Mouse"&&text(L"ThrowMarker")==L"0"&&text(L"CoverCameraFollow")==L"0"&&text(L"ImmersiveScope")==L"1");
+        h.menu.requestedThrowAim=h.menu.requestedThrowMarker=h.menu.requestedCoverFollow=h.menu.requestedImmersiveScope=0;request(111,30);
+        assert(EngineCamera::throwAimSetting==1&&EngineCamera::throwMarkerSetting==1&&EngineCamera::coverFollowSetting==1&&EngineCamera::scopeSetting==2);
+        wait(111);assert(text(L"ThrowAim")==L"Mouse"&&text(L"ImmersiveScope")==L"1");
+        h.menu.requestedThrowAim=4;h.menu.requestedThrowMarker=2;request(112,30);assert(EngineCamera::throwAimSetting==4&&EngineCamera::throwMarkerSetting==2);
+        wait(112);assert(text(L"ThrowAim")==L"LeftController"&&text(L"ThrowMarker")==L"1");
+        h.menu.requestedThrowAim=3;h.menu.requestedThrowMarker=0;h.menu.requestedCoverFollow=2;h.menu.requestedImmersiveScope=1;request(113,30);
+        wait(113);assert(text(L"ThrowAim")==L"Controller"&&text(L"CoverCameraFollow")==L"1"&&text(L"ImmersiveScope")==L"0");
+        h.menu.requestedThrowAim=h.menu.requestedCoverFollow=h.menu.requestedImmersiveScope=0;
+        h.menu.requestedThrowAim=5;request(114,30);assert(h.menu.result==2&&EngineCamera::throwAimSetting==3);h.menu.requestedThrowAim=0; // still the right hand set by 113
+        h.menu.requestedThrowMarker=3;request(115,30);assert(h.menu.result==2);h.menu.requestedThrowMarker=0;
+        h.menu.requestedCoverFollow=3;request(116,30);assert(h.menu.result==2);h.menu.requestedCoverFollow=0;
+        h.menu.requestedImmersiveScope=3;request(117,30);assert(h.menu.result==2);h.menu.requestedImmersiveScope=0;
+        EngineCamera::coverFollowSetting=0;GamepadBridge::MenuTick(2);assert(h.menu.coverFollow==0);
+        h.menu.requestedCoverFollow=2;request(118,30);assert(h.menu.result==2&&EngineCamera::coverFollowSetting==0); // unavailable: refused
+        h.menu.requestedCoverFollow=0;EngineCamera::coverFollowSetting=2;
+        EngineCamera::throwAimSetting=3;EngineCamera::throwMarkerSetting=2;EngineCamera::scopeSetting=1;
+        request(119,30);wait(119);
+        printf("PASS %zu-bit menu tabs: grenade aim, landing ring, cover camera and immersive scope reported, switched at once, saved (ThrowAim Mouse/LeftController/Controller), 0 keeps, bad or unavailable refused\n",sizeof(void*)*8);
+    }
+    // Grenade landing marker through the real remapper, with each layout.
+    {
+        EngineCamera::reasons=0;EngineCamera::throwMarker=true;
+        auto poll=[&](bool down){XINPUT_GAMEPAD p{};if(down)p.wButtons=XINPUT_GAMEPAD_A;GamepadBridge::ApplyButtons(p);return (p.wButtons&XINPUT_GAMEPAD_RIGHT_SHOULDER)!=0;};
+        auto layout=[&](const wchar_t* a,const wchar_t* tap){
+            WritePrivateProfileStringW(L"Buttons",L"RightA",a,path.c_str());
+            WritePrivateProfileStringW(L"Buttons",L"RightAHoldMs",L"300",path.c_str());
+            WritePrivateProfileStringW(L"Buttons",L"RightATap",tap,path.c_str());
+            GamepadBridge::LoadButtons();assert(GamepadBridge::remapActive);};
+        // Mark's layout since Nov 15: RightA=RB, RightAHoldMs=300, RightATap=None.
+        layout(L"RB",L"None");
+        assert(!poll(true));Sleep(50);assert(!poll(true));
+        assert(!poll(false)&&!EngineCamera::throwAiming);Sleep(30);assert(!poll(false)); // a tap throws nothing
+        assert(!poll(true));Sleep(350);assert(!poll(true)&&EngineCamera::throwAiming);  // a hold shows the ring, no throw yet
+        assert(poll(false)&&!EngineCamera::throwAiming&&EngineCamera::throwHeld>=300);   // release throws
+        Sleep(150);assert(!poll(false));                                                  // once
+        // A thrown remote device waits for "hold RB": a press that starts then is RB at once, held, no delay.
+        EngineCamera::detonate=true;
+        assert(poll(true)&&!EngineCamera::throwAiming);Sleep(350);assert(poll(true)&&!EngineCamera::throwAiming); // RB from the first poll, no ring
+        EngineCamera::detonate=false;assert(poll(true));                                 // detonated while held: still RB
+        assert(!poll(false)&&EngineCamera::detonateHeld>=300);Sleep(150);assert(!poll(false)); // release: no throw
+        EngineCamera::detonate=true;assert(poll(true));Sleep(30);assert(!poll(false));Sleep(150);assert(!poll(false)); // a short press: RB only while held
+        EngineCamera::detonate=false;                                                     // device gone: throws again
+        assert(!poll(true));Sleep(350);assert(!poll(true)&&EngineCamera::throwAiming);assert(poll(false));Sleep(150);assert(!poll(false));
+        // Nov 14 layout: RightA=None, RightATap=RB: a tap throws on release, a hold aims.
+        layout(L"None",L"RB");
+        assert(!poll(true));Sleep(50);assert(poll(false));Sleep(150);assert(!poll(false));
+        assert(!poll(true));Sleep(350);assert(!poll(true)&&EngineCamera::throwAiming);assert(poll(false));Sleep(150);poll(false);
+        EngineCamera::detonate=true;assert(poll(true));Sleep(350);assert(poll(true));assert(!poll(false));Sleep(150);assert(!poll(false)); // detonate holds RB here too
+        EngineCamera::detonate=false;
+        // Marker off: the layout behaves as before the marker (RB while held past 300 ms).
+        EngineCamera::throwMarker=false;layout(L"RB",L"None");
+        assert(!poll(true));Sleep(350);assert(poll(true));assert(!poll(false));
+        EngineCamera::reasons=2;
+        printf("PASS %zu-bit grenade hold through the real remapper: RightA=RB hold 300 (tap throws nothing; hold shows the ring, throws on release; while a remote device waits, RB from the first moment until release, also with RightATap=RB), RightATap=RB (tap throws), marker off unchanged\n",sizeof(void*)*8);
+    }
     GamepadBridge::SetChannel(nullptr);
     printf("PASS %zu-bit actual bridge: request/ack/save/error, duplicate/stale/refused edits, calibration scaling, virtual/physical input and focus recovery\n",sizeof(void*)*8);
 }
