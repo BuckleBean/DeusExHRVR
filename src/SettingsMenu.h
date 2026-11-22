@@ -2,6 +2,7 @@
 #include "SharedPair.h"
 #include "LiveWorldScale.h"
 #include "GamepadMapping.h"
+#include "CoverCrosshair.h"
 #include <cmath>
 #include <algorithm>
 #include <string>
@@ -42,7 +43,7 @@ inline constexpr Rect Interaction=MainRow(0),ThrowAimRow=MainRow(1),ThrowMarkerR
 // View tab. Scope zoom 0.5x steps, menu range 3-12 (Mark, Nov 16).
 inline constexpr Rect HandHud=MainRow(0),ScopeRow=MainRow(1);
 inline constexpr Rect ZoomMinus{760,MainRowY(2),100,52},ZoomPlus{1190,MainRowY(2),100,52};
-inline constexpr Rect CoverFollowRow=MainRow(3),Dialogue=MainRow(4);
+inline constexpr Rect CoverFollowRow=MainRow(3),Dialogue=MainRow(4),CrosshairRow=MainRow(5);
 // Next grenade aim: transport values (Source + 1) 3 right, 4 left, 2 head, 1 game.
 inline constexpr uint32_t NextThrowAim(uint32_t v){return v==3?4:v==4?2:v==2?1:3;}
 inline constexpr Rect ResetBindings{1040,110,320,45};
@@ -150,13 +151,15 @@ struct State {
     bool draftThrowMarker{},originalThrowMarker{},throwMarkerAvailable{};uint32_t requestedThrowMarker{};
     bool draftCoverFollow{},originalCoverFollow{},coverFollowAvailable{};uint32_t requestedCoverFollow{};
     bool draftScope{},originalScope{},scopeAvailable{};uint32_t requestedImmersiveScope{};
-    void ResetTabDrafts(){draftThrowAim=originalThrowAim;draftThrowMarker=originalThrowMarker;draftCoverFollow=originalCoverFollow;draftScope=originalScope;}
-    bool TabDirty() const {return draftThrowAim!=originalThrowAim||draftThrowMarker!=originalThrowMarker||draftCoverFollow!=originalCoverFollow||draftScope!=originalScope;}
+    uint32_t draftCrosshair{},originalCrosshair{},requestedCrosshair{}; // CoverCrosshair mode, 0 = unavailable
+    void ResetTabDrafts(){draftThrowAim=originalThrowAim;draftThrowMarker=originalThrowMarker;draftCoverFollow=originalCoverFollow;draftScope=originalScope;draftCrosshair=originalCrosshair;}
+    bool TabDirty() const {return draftThrowAim!=originalThrowAim||draftThrowMarker!=originalThrowMarker||draftCoverFollow!=originalCoverFollow||draftScope!=originalScope||draftCrosshair!=originalCrosshair;}
     void LoadTabDrafts(const Transport::MenuState& game){
         draftThrowAim=originalThrowAim=game.throwAim<=4?game.throwAim:0;
         throwMarkerAvailable=game.throwMarker==1||game.throwMarker==2;draftThrowMarker=originalThrowMarker=game.throwMarker==2;
         coverFollowAvailable=game.coverFollow==1||game.coverFollow==2;draftCoverFollow=originalCoverFollow=game.coverFollow==2;
         scopeAvailable=game.immersiveScope==1||game.immersiveScope==2;draftScope=originalScope=game.immersiveScope==2;
+        draftCrosshair=originalCrosshair=game.crosshair<=4?game.crosshair:0;
     }
     float draftZoom{},originalZoom{},requestedZoom{}; // requestedZoom 0 = unchanged
     bool scalePage{};float draftScale{LiveWorldScale::Default},originalScale{LiveWorldScale::Default},requestedScale{LiveWorldScale::Default};
@@ -164,7 +167,7 @@ struct State {
     bool listening{},captureReady{},confirming{},captureRelease{},scrollArmed{};
     int candidate{-1},pressedSlot{-1};uint64_t pressAt{};
     Rect Area() const {return open?(remapping?ListPanel:Panel):Entry;}
-    void Submit(){requestedThrowAim=originalThrowAim&&draftThrowAim!=originalThrowAim?draftThrowAim:0u;requestedThrowMarker=throwMarkerAvailable&&draftThrowMarker!=originalThrowMarker?(draftThrowMarker?2u:1u):0u;requestedCoverFollow=coverFollowAvailable&&draftCoverFollow!=originalCoverFollow?(draftCoverFollow?2u:1u):0u;requestedImmersiveScope=scopeAvailable&&draftScope!=originalScope?(draftScope?2u:1u):0u;requestedHandHud=handHudAvailable&&draftHandHud!=originalHandHud?(draftHandHud?2u:1u):0u;requestedZoom=draftZoom!=originalZoom?draftZoom:0.f;requestedDialogue=draftDialogue;requestedScale=draftScale;requestedInteraction=draftInteraction;requestedReset=draftReset;requestedResponse=draftResponse;requested=draft;requestedSnap=draftSnap;requestedMovement=draftMovement;requestedBindings=draftBindings;if(draftReset)requestedBindingMask=(1u<<ButtonBindings::Count)-1;requestedBindingMask|=ButtonBindings::Changes(draftBindings,originalBindings);++request;saving=true;committed=true;}
+    void Submit(){requestedCrosshair=originalCrosshair&&draftCrosshair!=originalCrosshair?draftCrosshair:0u;requestedThrowAim=originalThrowAim&&draftThrowAim!=originalThrowAim?draftThrowAim:0u;requestedThrowMarker=throwMarkerAvailable&&draftThrowMarker!=originalThrowMarker?(draftThrowMarker?2u:1u):0u;requestedCoverFollow=coverFollowAvailable&&draftCoverFollow!=originalCoverFollow?(draftCoverFollow?2u:1u):0u;requestedImmersiveScope=scopeAvailable&&draftScope!=originalScope?(draftScope?2u:1u):0u;requestedHandHud=handHudAvailable&&draftHandHud!=originalHandHud?(draftHandHud?2u:1u):0u;requestedZoom=draftZoom!=originalZoom?draftZoom:0.f;requestedDialogue=draftDialogue;requestedScale=draftScale;requestedInteraction=draftInteraction;requestedReset=draftReset;requestedResponse=draftResponse;requested=draft;requestedSnap=draftSnap;requestedMovement=draftMovement;requestedBindings=draftBindings;if(draftReset)requestedBindingMask=(1u<<ButtonBindings::Count)-1;requestedBindingMask|=ButtonBindings::Changes(draftBindings,originalBindings);++request;saving=true;committed=true;}
     void Assign(){
         const auto target=ButtonBindings::Targets[selected].value;
         for(auto& value:draftBindings)if(value==target)value=0;
@@ -283,6 +286,7 @@ struct State {
             }
             else if(!saving&&tab==TabView&&coverFollowAvailable&&CoverFollowRow.Has(x,y)){draftCoverFollow=!draftCoverFollow;}
             else if(!saving&&tab==TabView&&game.dialogueAvailable&&Dialogue.Has(x,y)){draftDialogue=!draftDialogue;}
+            else if(!saving&&tab==TabView&&originalCrosshair&&CrosshairRow.Has(x,y)){draftCrosshair=CoverCrosshair::Next(draftCrosshair);}
         }
         // One step per stick deflection; no frame-rate-dependent repeats.
         if(std::abs(in.leftY)<.2f)scrollArmed=true;

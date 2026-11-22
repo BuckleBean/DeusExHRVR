@@ -358,6 +358,7 @@ std::atomic<uint64_t> handDriveRejected{};
 // off until it has tests that do not depend on them.
 bool controllerHandsPose=false;
 bool controllerHandsInteractCurl=false;
+std::atomic<uint32_t> crosshairMode{CoverCrosshair::Third}; // [VR] Crosshair=Off|FirstPerson|ThirdPerson|Both
 bool handGripClose=true; // [VR] HandGripClose=0 returns to the gentle right-hand Interact curl
 uint32_t controllerHandsPoseMask=0x4000;     // XINPUT_GAMEPAD_X    = interact
 uint32_t controllerHandsSprintMask=0x0100;   // XINPUT_GAMEPAD_LB   = sprint
@@ -3010,20 +3011,42 @@ bool CoverTargetRaw(void* owner,const CameraMath::Matrix& aim,float* target) {
         return CoverCrosshair::Valid(target);
     } __except(EXCEPTION_EXECUTE_HANDLER) {return false;}
 }
+// First-person gameplay with the gun at the controller: not cover, a scope, a
+// menu, the wheel, or a camera mode the hands step aside for.
+bool FirstPersonAimLocked() { // stateMutex held
+    auto now=GetTickCount64();
+    if(!requested || !current.active || screenReasons || gameMenuOpen || wheelOpen ||
+       immersiveScopeActive || scopeScreen || !experimentalMotionControls ||
+       handsSuspendedByMode.load() || handsAsideForScope.load() || !activeCameraIsPlayer.load() ||
+       !current.tracking.rightController.valid || now<current.tracking.tick || now-current.tracking.tick>=250)return false;
+    return NativeCombatCamera(current.playerInstance,current.managerAddress);
+}
+// The ray shots use: the controller's in cover, the barrel's in first person.
+bool CrosshairFrame(bool cover,CameraMath::Matrix& aim) {
+    if(cover)return CoverPointingFrame(aim);
+    auto pose=ReadWeaponPose(true,MuzzleQueryDiagnostic::Aim);
+    if(!pose.active || pose.nativeCover || !pose.weapon)return false;
+    aim=CameraMath::FiringFromMuzzle(pose.muzzle);
+    return true;
+}
 void UpdateCoverTarget() {
     bool ok=false,pointing=false;float point[3]{};void* owner{};
     const bool cover=NativeCoverActive();
-    if(cover) {
+    const auto mode=crosshairMode.load();
+    const bool coverShown=cover&&CoverCrosshair::ShowsThird(mode);
+    bool firstShown=false;
+    if(!cover&&CoverCrosshair::ShowsFirst(mode)){std::lock_guard lock(stateMutex);firstShown=FirstPersonAimLocked();}
+    if(coverShown||firstShown) {
         {std::lock_guard lock(stateMutex);owner=current.playerInstance;}
         CameraMath::Matrix aim;
-        pointing=CoverPointingFrame(aim);
+        pointing=CrosshairFrame(cover,aim);
         ok=owner && pointing && CoverTargetRaw(owner,aim,point);
     }
-    static int previous=-1;const int status=cover?(ok?2:pointing?1:3):0;
+    static int previous=-1;const int status=coverShown?(ok?2:pointing?1:3):0;
     if(previous!=status) {
         previous=status;FILE* f{};
         if(!fopen_s(&f,"DeusExHRVR-camera.log","a")) {
-            fprintf(f,"cover controls=%s target=%s point=%.2f,%.2f,%.2f\n",cover?(pointing?"controller":"no-controller"):"off",
+            fprintf(f,"cover controls=%s target=%s point=%.2f,%.2f,%.2f\n",coverShown?(pointing?"controller":"no-controller"):"off",
                 ok?"valid":"unavailable",point[0],point[1],point[2]);fclose(f);
         }
     }
@@ -3043,7 +3066,12 @@ uint32_t __fastcall ReticleTypeHook(void* self,void*,void* descriptor) {
     bool hide{};
     {
         std::lock_guard lock(stateMutex);
-        hide=current.coverTargetValid && (current.tracking.reserved&1) && NativeCoverActiveLocked();
+        // Ours replaces the game's whenever it is showing. In cover the game's would mark
+        // the camera's aim, not the controller's, so "off" there hides it too.
+        const auto mode=crosshairMode.load();
+        const bool ours=current.coverTargetValid && (current.tracking.reserved&1);
+        hide=NativeCoverActiveLocked()?(!CoverCrosshair::ShowsThird(mode)||ours):
+            (CoverCrosshair::ShowsFirst(mode)&&ours&&FirstPersonAimLocked());
     }
     static int last=-1;
     if(last!=int(hide)) {
@@ -5000,7 +5028,9 @@ void ExportCoverTarget(Transport::RenderInfo& info,const Snapshot& frame) {
     info.coverState=0;
     // Called with stateMutex held. A cached scene must not keep the crosshair
     // alive after cover, tracking, a menu or a scope transition.
-    if(!NativeCoverActiveLocked() || !frame.coverTargetValid || frame.immersiveScoped ||
+    const auto mode=crosshairMode.load();
+    const bool wanted=NativeCoverActiveLocked()?CoverCrosshair::ShowsThird(mode):(CoverCrosshair::ShowsFirst(mode)&&FirstPersonAimLocked());
+    if(!wanted || !frame.coverTargetValid || frame.immersiveScoped ||
        frame.playerInstance!=current.playerInstance || !frame.tracking.valid || !(frame.scale>0))return;
     const auto& h=frame.tracking.head;
     auto x=ThrowAim::WorldToTracking(frame.coverTarget,frame.world.m,{h.position.x,h.position.y,h.position.z},
@@ -5556,6 +5586,7 @@ void Install() {
     controllerHandsNeutralWrist=GetPrivateProfileIntW(L"VR",L"ControllerHandsNeutralWrist",1,config)!=0;
     controllerHandsInteractCurl=GetPrivateProfileIntW(L"VR",L"ControllerHandsInteractCurl",1,config)!=0;
     handGripClose=GetPrivateProfileIntW(L"VR",L"HandGripClose",1,config)!=0;
+    {wchar_t crosshairText[32]{};GetPrivateProfileStringW(L"VR",L"Crosshair",L"ThirdPerson",crosshairText,32,config);crosshairMode=CoverCrosshair::Parse(crosshairText);}
     GamepadBridge::EnableInteractionVisual(controllerHandsInteractCurl);
     controllerHandsRadius=float(GetPrivateProfileIntW(L"VR",L"ControllerHandsRadiusCm",15,config));
     controllerHandsSplitA=int(GetPrivateProfileIntW(L"VR",L"ControllerHandsSplitA",74,config));
@@ -5892,6 +5923,8 @@ unsigned ThrowAimSetting(){return throwAimReady.load()?unsigned(throwAim.load())
 void SetThrowAim(unsigned source){if(throwAimReady.load()&&source<=3)throwAim.store(static_cast<DirectionConfig::Source>(source));}
 unsigned ThrowMarkerSetting(){return throwMarkerReady.load()?(throwMarkerWanted.load()?2:1):0;}
 void SetThrowMarker(bool value){if(throwMarkerReady.load())throwMarkerWanted.store(value);}
+unsigned CrosshairSetting(){return crosshairMode.load();}
+void SetCrosshair(unsigned value){if(value>=CoverCrosshair::Off&&value<=CoverCrosshair::Both)crosshairMode.store(value);}
 unsigned CoverFollowSetting(){return coverFollowReady.load()?(coverFollowWanted.load()?2:1):0;}
 void SetCoverFollow(bool value){if(coverFollowReady.load()){coverFollowWanted.store(value);coverCameraFollow.store(value);}}
 unsigned ImmersiveScopeSetting(){return immersiveScopeReady.load()?(immersiveScope.load()?2:1):0;}

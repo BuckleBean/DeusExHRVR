@@ -5,7 +5,7 @@
 #include <cstddef>
 #include "ButtonBindings.h"
 namespace Transport {
-inline constexpr uint32_t Magic=0x52485844, Version=25;
+inline constexpr uint32_t Magic=0x52485844, Version=26;
 struct alignas(8) MenuState {
     uint64_t gameTick,hostTick;
     uint32_t eligible,blocked,snapEnabled,request;
@@ -19,7 +19,7 @@ struct alignas(8) MenuState {
     uint32_t holdMs[8],tapTargets[8];
     uint32_t recenterRequest,recenterAck;
     uint32_t response,requestedResponse;
-    uint32_t interaction,requestedInteraction,resetBindings,reserved;
+    uint32_t interaction,requestedInteraction,resetBindings,crosshair; // crosshair: CoverCrosshair mode (transport 26)
     // scopeZoom: the game's live ScopeMagnification (0 from a DLL that predates it).
     // requestedScopeZoom: 1-12 (the menu offers 3-12), or 0 = keep (what a companion that predates it sends).
     // Both reuse former reserved slots, so the layout and Version are unchanged.
@@ -28,7 +28,7 @@ struct alignas(8) MenuState {
     // Hand HUD (transport 23): handHud = the saved HandHud setting, 1 off / 2 on;
     // activeHandHud = the HUD running now, 1 game HUD / 2 hand HUD (switched live
     // when saved; differs only if the hand HUD could not start); requestedHandHud 0 = keep.
-    uint32_t handHud,activeHandHud,requestedHandHud,handHudReserved; // from offset 372 (former tail padding)
+    uint32_t handHud,activeHandHud,requestedHandHud,requestedCrosshair; // from offset 372 (former tail padding)
     // Transport 24, menu tabs (Mark, Nov 17): four more settings, each applied
     // when saved. Game side: 0 = unavailable. Requests: 0 = keep.
     // throwAim = DirectionConfig::Source + 1 (1 game's own, 2 head, 3 right hand,

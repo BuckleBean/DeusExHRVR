@@ -18,6 +18,7 @@ bool HandHudConfigured(){return handHud;}bool HandHudActive(){return handHudActi
 unsigned throwAimSetting=3,throwMarkerSetting=2,coverFollowSetting=2,scopeSetting=1;
 unsigned ThrowAimSetting(){return throwAimSetting;}void SetThrowAim(unsigned s){if(throwAimSetting&&s<=3)throwAimSetting=s+1;}
 unsigned ThrowMarkerSetting(){return throwMarkerSetting;}void SetThrowMarker(bool v){if(throwMarkerSetting)throwMarkerSetting=v?2:1;}
+unsigned crosshairSetting=3;unsigned CrosshairSetting(){return crosshairSetting;}void SetCrosshair(unsigned v){crosshairSetting=v;}
 unsigned CoverFollowSetting(){return coverFollowSetting;}void SetCoverFollow(bool v){if(coverFollowSetting)coverFollowSetting=v?2:1;}
 unsigned ImmersiveScopeSetting(){return scopeSetting;}void SetImmersiveScope(bool v){if(scopeSetting)scopeSetting=v?2:1;}
 LiveWorldScale scale;
@@ -335,6 +336,15 @@ int wmain(int argc,wchar_t** argv) {
         EngineCamera::coverFollowSetting=0;GamepadBridge::MenuTick(2);assert(h.menu.coverFollow==0);
         h.menu.requestedCoverFollow=2;request(118,30);assert(h.menu.result==2&&EngineCamera::coverFollowSetting==0); // unavailable: refused
         h.menu.requestedCoverFollow=0;EngineCamera::coverFollowSetting=2;
+        // Crosshair (transport 26): reported, applied at once, saved; 0 keeps; bad values refused.
+        GamepadBridge::MenuTick(2);assert(h.menu.crosshair==3);
+        h.menu.requestedCrosshair=4;request(130,30);assert(h.menu.result!=2&&EngineCamera::crosshairSetting==4&&h.menu.crosshair==4);
+        for(int n=0;n<200&&h.menu.saved!=130;++n){Sleep(10);GamepadBridge::MenuTick(2);}
+        {wchar_t c[40]{};GetPrivateProfileStringW(L"VR",L"Crosshair",L"",c,40,path.c_str());assert(h.menu.saved==130&&!wcscmp(c,L"Both"));}
+        h.menu.requestedCrosshair=0;request(131,30);assert(h.menu.result!=2&&EngineCamera::crosshairSetting==4);
+        for(int n=0;n<200&&h.menu.saved!=131;++n){Sleep(10);GamepadBridge::MenuTick(2);}
+        h.menu.requestedCrosshair=5;request(132,30);assert(h.menu.result==2&&EngineCamera::crosshairSetting==4);
+        h.menu.requestedCrosshair=0;EngineCamera::crosshairSetting=3;
         EngineCamera::throwAimSetting=3;EngineCamera::throwMarkerSetting=2;EngineCamera::scopeSetting=1;
         request(119,30);wait(119);
         printf("PASS %zu-bit menu tabs: grenade aim, landing ring, cover camera and immersive scope reported, switched at once, saved (ThrowAim Mouse/LeftController/Controller), 0 keeps, bad or unavailable refused\n",sizeof(void*)*8);

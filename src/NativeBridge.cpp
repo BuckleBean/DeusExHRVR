@@ -200,7 +200,7 @@ struct Bridge {
             m.requestedDialogue=menuUI.requestedDialogue;
             m.requestedHandHud=menuUI.requestedHandHud;
             m.requestedThrowAim=menuUI.requestedThrowAim;m.requestedThrowMarker=menuUI.requestedThrowMarker;
-            m.requestedCoverFollow=menuUI.requestedCoverFollow;m.requestedImmersiveScope=menuUI.requestedImmersiveScope;
+            m.requestedCrosshair=menuUI.requestedCrosshair;m.requestedCoverFollow=menuUI.requestedCoverFollow;m.requestedImmersiveScope=menuUI.requestedImmersiveScope;
             m.requestedScopeZoom=menuUI.requestedZoom;
             m.requestedInteraction=menuUI.requestedInteraction;m.resetBindings=menuUI.requestedReset;
             m.request=menuUI.request;m.requestedDegrees=menuUI.requested;m.requestedSnap=menuUI.requestedSnap;m.requestedMovement=menuUI.requestedMovement;

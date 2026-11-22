@@ -65,6 +65,9 @@ unsigned ThrowMarkerSetting();
 void SetThrowMarker(bool enabled);
 unsigned CoverFollowSetting();
 void SetCoverFollow(bool enabled);
+// VR crosshair: CoverCrosshair::Off, First, Third or Both. Applies at once.
+unsigned CrosshairSetting();
+void SetCrosshair(unsigned mode);
 unsigned ImmersiveScopeSetting();
 void SetImmersiveScope(bool enabled);
 void SetInteractionAim(unsigned value);

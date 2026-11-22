@@ -260,6 +260,23 @@ int wmain(int argc,wchar_t** argv) {
      click(SettingsMenu::Tab(SettingsMenu::TabMovement));click(SettingsMenu::Response);click(SettingsMenu::Save);
      assert(ui.saving&&!ui.requestedThrowAim&&!ui.requestedThrowMarker&&!ui.requestedCoverFollow&&!ui.requestedImmersiveScope);
     }
+    // Crosshair row: cycles on the View tab, one Save, nothing sent when unchanged.
+    {SettingsMenu::State ui;Transport::MenuState gm{};gm.degrees=30;gm.worldScale=gm.activeWorldScale=300;gm.crosshair=CoverCrosshair::Third;
+     GamepadMapping::Input input{};input.active=true;
+     auto click=[&](SettingsMenu::Rect rect){input.rightTrigger=0;ui.Update(true,true,true,float(rect.x+30),float(rect.y+25),input,gm);input.rightTrigger=1;ui.Update(true,true,true,float(rect.x+30),float(rect.y+25),input,gm);};
+     static_assert(SettingsMenu::CrosshairRow.y+SettingsMenu::CrosshairRow.h<SettingsMenu::StatusY);
+     click(SettingsMenu::Entry);click(SettingsMenu::Tab(SettingsMenu::TabView));assert(ui.draftCrosshair==CoverCrosshair::Third&&!ui.Dirty());
+     click(SettingsMenu::CrosshairRow);assert(ui.draftCrosshair==CoverCrosshair::Both&&ui.Dirty());
+     click(SettingsMenu::CrosshairRow);assert(ui.draftCrosshair==CoverCrosshair::Off);
+     click(SettingsMenu::CrosshairRow);assert(ui.draftCrosshair==CoverCrosshair::First);
+     click(SettingsMenu::CrosshairRow);assert(ui.draftCrosshair==CoverCrosshair::Third&&!ui.Dirty());
+     click(SettingsMenu::CrosshairRow);click(SettingsMenu::CrosshairRow);click(SettingsMenu::Save);assert(ui.saving&&ui.requestedCrosshair==CoverCrosshair::Off);
+    }
+    {SettingsMenu::State ui;Transport::MenuState gm{};gm.degrees=30;gm.worldScale=gm.activeWorldScale=300; // unavailable: inert
+     GamepadMapping::Input input{};input.active=true;
+     auto click=[&](SettingsMenu::Rect rect){input.rightTrigger=0;ui.Update(true,true,true,float(rect.x+30),float(rect.y+25),input,gm);input.rightTrigger=1;ui.Update(true,true,true,float(rect.x+30),float(rect.y+25),input,gm);};
+     click(SettingsMenu::Entry);click(SettingsMenu::Tab(SettingsMenu::TabView));click(SettingsMenu::CrosshairRow);assert(!ui.draftCrosshair&&!ui.Dirty());
+    }
     float degrees=30;double counts=300;
     // Validate the diagnostic's native frame offsets and failed-read handling.
     {
@@ -572,7 +589,7 @@ int wmain(int argc,wchar_t** argv) {
     s.tab=SettingsMenu::TabControls;assert(draw.Save((out/L"menu-tab-controls.bmp").c_str(),s,game));pixels=static_cast<const uint32_t*>(draw.Draw(s,game));assert(pixels);
     for(auto r:{SettingsMenu::Interaction,SettingsMenu::ThrowAimRow,SettingsMenu::ThrowMarkerRow,SettingsMenu::Remap})assert(bright(r)>100);
     for(int i=0;i<4;++i)assert(bright({240,SettingsMenu::MainRowY(i),470,52})>100);
-    s.tab=SettingsMenu::TabView;assert(draw.Save((out/L"menu-tab-view.bmp").c_str(),s,game));pixels=static_cast<const uint32_t*>(draw.Draw(s,game));assert(pixels);
+    s.tab=SettingsMenu::TabView;s.draftCrosshair=s.originalCrosshair=CoverCrosshair::Third;assert(draw.Save((out/L"menu-tab-view.bmp").c_str(),s,game));pixels=static_cast<const uint32_t*>(draw.Draw(s,game));assert(pixels);
     for(auto r:{SettingsMenu::HandHud,SettingsMenu::ScopeRow,SettingsMenu::CoverFollowRow,SettingsMenu::Dialogue})assert(bright(r)>100);
     for(int i=0;i<5;++i)assert(bright({240,SettingsMenu::MainRowY(i),470,52})>100);
     s.draftThrowAim=1;s.tab=SettingsMenu::TabControls;assert(draw.Save((out/L"menu-tab-controls-default-throw.bmp").c_str(),s,game));

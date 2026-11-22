@@ -464,7 +464,7 @@ void MenuTick(unsigned screenReasons) {
     m.dialogue=EngineCamera::DialogueEnabled();m.dialogueAvailable=EngineCamera::DialogueAvailable();
     m.handHud=EngineCamera::HandHudConfigured()?2:1;m.activeHandHud=EngineCamera::HandHudActive()?2:1;
     m.throwAim=EngineCamera::ThrowAimSetting();m.throwMarker=EngineCamera::ThrowMarkerSetting();
-    m.coverFollow=EngineCamera::CoverFollowSetting();m.immersiveScope=EngineCamera::ImmersiveScopeSetting();
+    m.crosshair=EngineCamera::CrosshairSetting();m.coverFollow=EngineCamera::CoverFollowSetting();m.immersiveScope=EngineCamera::ImmersiveScopeSetting();
     m.response=EngineCamera::MovementResponse();
     m.interaction=EngineCamera::InteractionAim();
     m.worldScale=EngineCamera::ConfiguredWorldScale();m.activeWorldScale=EngineCamera::ActiveWorldScale();
@@ -480,7 +480,7 @@ void MenuTick(unsigned screenReasons) {
     m.bindings[18]=stickUpTarget;m.bindings[19]=stickDownTarget;
     if(m.request!=m.acknowledged && Transport::Fresh(m.hostTick,now)) {
         m.acknowledged=m.request;
-        if(m.eligible&&m.blocked&&(m.requestedScopeZoom==0||(std::isfinite(m.requestedScopeZoom)&&m.requestedScopeZoom>=1&&m.requestedScopeZoom<=12))&&m.requestedDialogue<=1&&(!m.requestedDialogue||m.dialogueAvailable)&&m.requestedHandHud<=2&&m.requestedThrowAim<=4&&(!m.requestedThrowAim||m.throwAim)&&m.requestedThrowMarker<=2&&(!m.requestedThrowMarker||m.throwMarker)&&m.requestedCoverFollow<=2&&(!m.requestedCoverFollow||m.coverFollow)&&m.requestedImmersiveScope<=2&&(!m.requestedImmersiveScope||m.immersiveScope)&&std::isfinite(m.requestedWorldScale)&&m.requestedWorldScale>=10&&m.requestedWorldScale<=1000&&m.resetBindings<=1&&m.requestedInteraction<=3&&(m.requestedInteraction==1||m.requestedInteraction==2||m.requestedInteraction==m.interaction)&&m.requestedResponse<=2&&m.requestedSnap<=1&&m.requestedMovement<=3&&(m.requestedMovement!=0||m.movement==0)&&ButtonBindings::Valid(m.requestedBindings,m.bindingMask)&&SettingsMenu::ApplyAngle(m.requestedDegrees,snapDegrees,snapCounts)) {
+        if(m.eligible&&m.blocked&&m.requestedCrosshair<=4&&(m.requestedScopeZoom==0||(std::isfinite(m.requestedScopeZoom)&&m.requestedScopeZoom>=1&&m.requestedScopeZoom<=12))&&m.requestedDialogue<=1&&(!m.requestedDialogue||m.dialogueAvailable)&&m.requestedHandHud<=2&&m.requestedThrowAim<=4&&(!m.requestedThrowAim||m.throwAim)&&m.requestedThrowMarker<=2&&(!m.requestedThrowMarker||m.throwMarker)&&m.requestedCoverFollow<=2&&(!m.requestedCoverFollow||m.coverFollow)&&m.requestedImmersiveScope<=2&&(!m.requestedImmersiveScope||m.immersiveScope)&&std::isfinite(m.requestedWorldScale)&&m.requestedWorldScale>=10&&m.requestedWorldScale<=1000&&m.resetBindings<=1&&m.requestedInteraction<=3&&(m.requestedInteraction==1||m.requestedInteraction==2||m.requestedInteraction==m.interaction)&&m.requestedResponse<=2&&m.requestedSnap<=1&&m.requestedMovement<=3&&(m.requestedMovement!=0||m.movement==0)&&ButtonBindings::Valid(m.requestedBindings,m.bindingMask)&&SettingsMenu::ApplyAngle(m.requestedDegrees,snapDegrees,snapCounts)) {
             snapArmed=false;EngineCamera::CancelDirectSnap();
             EngineCamera::SetDialogueEnabled(m.requestedDialogue!=0);m.dialogue=m.requestedDialogue;
             if(m.requestedHandHud){EngineCamera::SetHandHudConfigured(m.requestedHandHud==2);m.handHud=m.requestedHandHud;}
@@ -491,6 +491,7 @@ void MenuTick(unsigned screenReasons) {
             if(m.requestedThrowAim||m.requestedThrowMarker)ResetThrowHold();
             if(m.requestedCoverFollow){EngineCamera::SetCoverFollow(m.requestedCoverFollow==2);m.coverFollow=m.requestedCoverFollow;}
             if(m.requestedImmersiveScope){EngineCamera::SetImmersiveScope(m.requestedImmersiveScope==2);m.immersiveScope=m.requestedImmersiveScope;}
+            if(m.requestedCrosshair){EngineCamera::SetCrosshair(m.requestedCrosshair);m.crosshair=m.requestedCrosshair;}
             EngineCamera::SetConfiguredWorldScale(m.requestedWorldScale);m.worldScale=m.requestedWorldScale;
             if(m.requestedScopeZoom!=0){EngineCamera::SetScopeMagnification(m.requestedScopeZoom);m.scopeZoom=m.requestedScopeZoom;}
             EngineCamera::SetInteractionAim(m.requestedInteraction);m.interaction=m.requestedInteraction;
@@ -512,7 +513,7 @@ void MenuTick(unsigned screenReasons) {
             m.degrees=snapDegrees;m.result=1;
             SettingsWriter().Queue(configPath,snapCounts,m.request,snapDegrees,int(snapEnabled),int(m.movement),m.bindings,m.bindingMask,int(m.response),int(m.interaction),m.resetBindings!=0,m.worldScale,int(m.dialogue),m.requestedScopeZoom!=0?m.scopeZoom:-1.f,m.requestedHandHud?int(m.requestedHandHud==2):-1,
                 m.requestedThrowAim?int(m.requestedThrowAim)-1:-1,m.requestedThrowMarker?int(m.requestedThrowMarker==2):-1,
-                m.requestedCoverFollow?int(m.requestedCoverFollow==2):-1,m.requestedImmersiveScope?int(m.requestedImmersiveScope==2):-1);
+                m.requestedCoverFollow?int(m.requestedCoverFollow==2):-1,m.requestedImmersiveScope?int(m.requestedImmersiveScope==2):-1,m.requestedCrosshair?int(m.requestedCrosshair):-1);
         } else m.result=2;
     }
     auto& writer=SettingsWriter();

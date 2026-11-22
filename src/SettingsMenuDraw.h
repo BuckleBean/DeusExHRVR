@@ -202,6 +202,7 @@ public:
                 label(2,s.scopeAvailable&&!s.draftScope?L"Scope zoom (inactive)":L"Scope zoom");
                 label(3,L"Cover camera");
                 label(4,L"Conversation camera");
+                label(5,L"Crosshair");
                 row(SettingsMenu::HandHud,s.handHudAvailable,s.draftHandHud?L"HANDS":L"DEFAULT");
                 row(SettingsMenu::ScopeRow,s.scopeAvailable,s.draftScope?L"ON":L"OFF");
                 if(game.scopeZoom>=1){
@@ -211,6 +212,7 @@ public:
                 }else Text(L"UNAVAILABLE",870,MainRowY(2),310,52,true);
                 row(SettingsMenu::CoverFollowRow,s.coverFollowAvailable,s.draftCoverFollow?L"FOLLOWS AIM":L"STILL");
                 row(SettingsMenu::Dialogue,game.dialogueAvailable!=0,s.draftDialogue?L"STAY IN FIRST PERSON":L"GAME CAMERA");
+                row(SettingsMenu::CrosshairRow,s.originalCrosshair!=0,CoverCrosshair::Label(s.draftCrosshair));
             }
             Text(s.Dirty()?L"Changes apply when you choose Save & Back.":game.worldScale!=game.activeWorldScale?L"World scale saved. Resume to apply it.":game.handHud&&game.activeHandHud&&game.handHud!=game.activeHandHud?L"HUD saved. Restart the game to apply it.":L"Select a value to change it.",240,SettingsMenu::StatusY,1120,40);
             if(s.Dirty())Button(SettingsMenu::Discard,s.committed?L"BACK":L"DISCARD & BACK",!s.saving&&hovered(SettingsMenu::Discard));

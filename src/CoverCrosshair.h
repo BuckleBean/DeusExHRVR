@@ -2,7 +2,22 @@
 #include <cmath>
 #include <cstdint>
 #include <vector>
+#include <wchar.h>
 namespace CoverCrosshair {
+// [VR] Crosshair and the VR menu: Off, FirstPerson, ThirdPerson (cover) or Both.
+// Transport values; 0 means unavailable or "keep".
+inline constexpr uint32_t Off=1,First=2,Third=3,Both=4;
+inline constexpr bool ShowsFirst(uint32_t m){return m==First||m==Both;}
+inline constexpr bool ShowsThird(uint32_t m){return m==Third||m==Both;}
+inline constexpr uint32_t Next(uint32_t m){return m==Off?First:m==First?Third:m==Third?Both:Off;}
+inline uint32_t Parse(const wchar_t* v) {
+    if(!_wcsicmp(v,L"Off")||!_wcsicmp(v,L"0"))return Off;
+    if(!_wcsicmp(v,L"FirstPerson"))return First;
+    if(!_wcsicmp(v,L"Both"))return Both;
+    return Third; // absent or unknown: what earlier versions did
+}
+inline const wchar_t* Value(uint32_t m){return m==Off?L"Off":m==First?L"FirstPerson":m==Both?L"Both":L"ThirdPerson";}
+inline const wchar_t* Label(uint32_t m){return m==Off?L"OFF":m==First?L"1ST PERSON":m==Both?L"BOTH":L"3RD PERSON";}
 inline constexpr uint32_t Size=128;
 // Fixed angular size, at the actual target depth. No controller or head-centre aim.
 inline float Width(float distance) {return distance*.012f;}
