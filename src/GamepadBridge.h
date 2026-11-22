@@ -3,6 +3,8 @@
 namespace GamepadBridge {
 void EnableInteractionVisual(bool enabled);
 bool InteractionVisualHeld(uint64_t now);
+// Interact is down, from either hand, whether or not the finger curl is enabled.
+bool InteractionHeld(uint64_t now);
 void SetChannel(Transport::Header* header);
 void OnPresent(bool capture);
 void MenuTick(unsigned screenReasons);

@@ -1988,6 +1988,8 @@ bool interactionProbesReady{};
 // Forgiving aim (November 21): see ForgivingAim.h. [VR] ForgivingAim=0 turns it
 // off; ForgivingAimDegrees sets the cone around the aim line (default 15).
 bool forgivingAimEnabled{};
+bool leftHandInteract{}; // [VR] LeftHandInteract=0 keeps interaction on the right hand only
+std::atomic<uint64_t> leftPromptTick{};
 bool forgivingAimLog{}; // [VR] ForgivingAimLog=1 writes its diagnostic lines
 float forgivingTan=.26795f;
 ForgivingAim::Selector forgivingSelector;
@@ -2040,6 +2042,7 @@ void InstallInteractionProbes(){
     interactionDiagLog=GetPrivateProfileIntW(L"VR",L"InteractionDiagnosticLog",0,diagConfig)!=0;
     forgivingAimEnabled=GetPrivateProfileIntW(L"VR",L"ForgivingAim",1,diagConfig)!=0;
     forgivingAimLog=GetPrivateProfileIntW(L"VR",L"ForgivingAimLog",0,diagConfig)!=0;
+    leftHandInteract=GetPrivateProfileIntW(L"VR",L"LeftHandInteract",1,diagConfig)!=0;
     float forgivingDegrees=15.f;
     {
         wchar_t degreesText[32]{};GetPrivateProfileStringW(L"VR",L"ForgivingAimDegrees",L"15",degreesText,32,diagConfig);
@@ -2209,9 +2212,15 @@ void ForgivingSummary(uint64_t now) {
 }
 void ForgivingBegin(void* self) {
     forgivingRayActive=false;forgivingSelected=0;forgivingSteering=false;
+    const auto setting=interactionAim.load();
+    const bool twoHands=leftHandInteract&&setting==DirectionConfig::Source::Controller;
+    const auto now=GetTickCount64();
+    const auto turn=forgivingSelector.BeginUpdate(now,twoHands);
+    const auto source=turn.hand?DirectionConfig::Source::LeftController:setting;
     CameraMath::Matrix aim{};float scale{};
     {
-        if(!DirectionWorld(interactionAim,aim)){forgivingSelector.Reset();return;}
+        // A left controller that is not tracking must not disturb the right hand.
+        if(!DirectionWorld(source,aim)){if(!turn.hand||forgivingSelector.Held())forgivingSelector.Reset();return;}
         std::lock_guard lock(stateMutex);
         if(coverCamera.held){forgivingSelector.Reset();return;}
         scale=current.scale;
@@ -2221,7 +2230,7 @@ void ForgivingBegin(void* self) {
     if(!ForgivingAim::Normalize(frame.dir)||!std::isfinite(frame.origin[0])||!std::isfinite(frame.origin[1])||!std::isfinite(frame.origin[2])||!std::isfinite(scale)||scale<=0){forgivingSelector.Reset();return;}
     frame.tanCone=forgivingTan;frame.minRadius=ForgivingAim::MinRadiusMetres*scale;
     ForgivingAim::Candidate list[32]{};unsigned count{};
-    if(!ForgivingQueryRaw(self,frame.origin,frame.dir,frame.minRadius,list,count)) {
+    if(turn.search&&!ForgivingQueryRaw(self,frame.origin,frame.dir,frame.minRadius,list,count)) {
         forgivingSelector.Reset();
         if(++forgivingFaults>=3) {
             forgivingAimEnabled=false;
@@ -2229,16 +2238,17 @@ void ForgivingBegin(void* self) {
         }
         return;
     }
-    const auto now=GetTickCount64();
-    const float* point=forgivingSelector.Update(list,count,frame,now,GamepadBridge::InteractionVisualHeld(now));
+    const float* point=forgivingSelector.Update(list,count,frame,now,GamepadBridge::InteractionHeld(now));
     const auto& stats=forgivingSelector.GetStats();
     if(stats.refused!=forgivingLoggedRefused){forgivingLoggedRefused=stats.refused;ForgivingRefusedLog(stats.lastRefused);}
     if(point&&ForgivingAim::RayMatrix(aim,frame.origin,point,forgivingRay)){forgivingRayActive=true;forgivingSteering=true;}
+    else if(turn.hand){forgivingRay=aim;forgivingRayActive=true;}
 }
 void ForgivingEnd() {
     const auto now=GetTickCount64();
     const auto selected=forgivingSelected;
     forgivingSelector.NoteSelection(selected,forgivingSelectedPoint,now);
+    leftPromptTick.store(selected&&forgivingSelector.HeldHand()==1?now:0,std::memory_order_relaxed);
     if(selected&&forgivingLastSelected&&forgivingLastEnd&&now>forgivingLastEnd&&now-forgivingLastEnd<1000)forgivingHeldMs+=now-forgivingLastEnd;
     if(selected!=forgivingLastSelected) {
         if(selected) {
@@ -5803,6 +5813,7 @@ void SetImmersiveScope(bool value){if(immersiveScopeReady.load())immersiveScope.
 void SetThrowAiming(bool aiming){throwAiming=aiming;}
 void NoteThrowRelease(uint64_t heldMs){throwHeldMs=heldMs;}
 bool DetonateReady(){return detonateReady.load();}
+bool LeftHandOwnsPrompt(){const auto tick=leftPromptTick.load(std::memory_order_relaxed);const auto now=GetTickCount64();return forgivingAimEnabled&&leftHandInteract&&tick&&now>=tick&&now-tick<250;}
 void NoteDetonatePress(uint64_t heldMs){NoteDetonate("press passed through as RB",heldMs);}
 void SetMovementDirection(unsigned value){if(value<=3)movementDirection.store(static_cast<DirectionConfig::Source>(value));}
 unsigned CurrentScreenReasons(){std::lock_guard lock(stateMutex);return screenReasons|(gameMenuOpen?32u:0u)|(readerOpen?64u:0u)|(wheelOpen?128u:0u);}

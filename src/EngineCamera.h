@@ -35,6 +35,8 @@ void NoteThrowRelease(uint64_t heldMs);
 // behind its "Weapon_Detonate" prompt). A press of the throw input that starts
 // then is passed to the game as a plain held RB, not a throw.
 bool DetonateReady();
+// True while the game's current interaction target belongs to the left hand.
+bool LeftHandOwnsPrompt();
 void NoteDetonatePress(uint64_t heldMs);
 void Recenter();
 // Local patch: bit mask of active virtual-screen reasons (1 interaction, 2 menu, 4 video, 8 game over, 16 scope,

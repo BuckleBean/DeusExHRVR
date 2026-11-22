@@ -39,6 +39,7 @@ unsigned reasons=2;
 bool throwMarker{},throwAiming{};uint64_t throwHeld{};
 bool ThrowMarkerEnabled(){return throwMarker;}void SetThrowAiming(bool v){throwAiming=v;}void NoteThrowRelease(uint64_t ms){throwHeld=ms;}
 bool detonate{};uint64_t detonateHeld{};
+bool leftOwns{};bool LeftHandOwnsPrompt(){return leftOwns;}
 bool DetonateReady(){return detonate;}void NoteDetonatePress(uint64_t ms){detonateHeld=ms;}
 unsigned CurrentScreenReasons(){return reasons;}
 bool SnapTurnView(float&){return reasons==0;}
@@ -219,6 +220,30 @@ int wmain(int argc,wchar_t** argv) {
     GamepadBridge::rightTriggerTarget=XINPUT_GAMEPAD_X;t.gamepad.buttons=0;t.gamepad.rightTrigger=255;
     Transport::WriteTracking(&h,t);visualPad={};GamepadBridge::Read(visualPad);assert(GamepadBridge::InteractionVisualHeld(GetTickCount64()));
     t.tick=1;Transport::WriteTracking(&h,t);visualPad={};GamepadBridge::Read(visualPad);assert(!GamepadBridge::InteractionVisualHeld(GetTickCount64()));
+    // Left grip: Interact only for a press that starts while the left hand owns the prompt.
+    {
+        const WORD LB=XINPUT_GAMEPAD_LEFT_SHOULDER,X=XINPUT_GAMEPAD_X,Y=XINPUT_GAMEPAD_Y;
+        const auto savedTrigger=GamepadBridge::rightTriggerTarget;GamepadBridge::rightTriggerTarget=0;
+        GamepadBridge::buttonTarget[0]=0;GamepadBridge::buttonTarget[4]=Y;EngineCamera::reasons=0;
+        auto grip=[&](bool down){XINPUT_GAMEPAD p{};if(down)p.wButtons=LB;GamepadBridge::ApplyButtons(p);return p.wButtons;};
+        EngineCamera::leftOwns=false;assert(grip(true)==Y);assert(grip(false)==0);          // no left prompt: the wheel
+        EngineCamera::leftOwns=true;assert(grip(true)==X);                                  // left prompt: Interact
+        EngineCamera::leftOwns=false;assert(grip(true)==X);assert(grip(false)==0);          // kept until release, no stray wheel tap
+        assert(grip(true)==Y);EngineCamera::leftOwns=true;assert(grip(true)==Y);assert(grip(false)==0); // a wheel press stays the wheel
+        assert(grip(true)==X);EngineCamera::reasons=1;assert(!(grip(true)&(LB|Y)));         // Interact opened a screen
+        EngineCamera::leftOwns=false;EngineCamera::reasons=0;assert(grip(true)==0);         // still held: not a new wheel press
+        assert(grip(false)==0);assert(grip(true)==Y);assert(grip(false)==0);                // next press is normal
+        GamepadBridge::remapActive=false;EngineCamera::leftOwns=true;assert(grip(true)==X);assert(grip(false)==0); // default layout
+        EngineCamera::leftOwns=false;assert(grip(true)==LB);assert(grip(false)==0);
+        GamepadBridge::remapActive=true;
+        // A left-hand Interact counts as held but must not curl the right hand's fingers.
+        EngineCamera::leftOwns=true;t={};t.tick=GetTickCount64();t.gamepad.valid=1;t.gamepad.buttons=LB;Transport::WriteTracking(&h,t);
+        visualPad={};GamepadBridge::Read(visualPad);
+        assert(visualPad.wButtons==X&&GamepadBridge::InteractionHeld(GetTickCount64())&&!GamepadBridge::InteractionVisualHeld(GetTickCount64()));
+        EngineCamera::leftOwns=false;t.tick=GetTickCount64();t.gamepad.buttons=0;Transport::WriteTracking(&h,t);
+        visualPad={};GamepadBridge::Read(visualPad);assert(!GamepadBridge::InteractionHeld(GetTickCount64()));
+        GamepadBridge::buttonTarget[4]=0;GamepadBridge::buttonTarget[0]=X;GamepadBridge::rightTriggerTarget=savedTrigger;
+    }
     GamepadBridge::EnableInteractionVisual(false);
     h.menu.requestedDegrees=30;h.menu.requestedSnap=1;h.menu.requestedMovement=1;
     h.menu.requestedInteraction=1;h.menu.requestedResponse=0;h.menu.requestedWorldScale=300;

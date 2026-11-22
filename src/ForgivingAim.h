@@ -3,7 +3,8 @@
 #include <cstdint>
 #include "CameraMath.h"
 
-// Forgiving aim with a prompt hold (November 21). Once the game selects an object,
+// Forgiving aim with a prompt hold, for either hand (November 21). Hand 0 is the
+// right/normal aim, hand 1 the left controller, with identical rules. Once the game selects an object,
 // its single interaction check keeps being aimed at the exact point it accepted,
 // so small hand movements do not drop the prompt. With nothing selected, updates
 // alternate between the plain aim line and the usable object closest to it. The
@@ -24,6 +25,7 @@ inline constexpr float SearchUnits=948.15f;  // longest interaction reach seen i
 
 struct Candidate {uintptr_t owner{};float point[3]{};float score{};};
 struct Frame {float origin[3]{};float dir[3]{};float tanCone{};float minRadius{};};
+struct Turn {int hand{};bool search{};};
 struct Stats {unsigned wobblesHeld{},released{},lost{},refused{},switches{};uintptr_t lastRefused{};};
 
 inline float Dot(const float* a,const float* b){return a[0]*b[0]+a[1]*b[1]+a[2]*b[2];}
@@ -57,10 +59,10 @@ inline bool Score(const float* origin,const float* dir,const float* point,float 
 class Selector {
     struct Block {uintptr_t owner{};uint64_t until{};};
     Block blocks[8]{};unsigned nextBlock{};
-    uintptr_t held{};float heldPoint[3]{};uint64_t lastSelected{},outsideSince{};
+    uintptr_t held{};int heldHand{};float heldPoint[3]{};uint64_t lastSelected{},outsideSince{};
     uintptr_t switchOwner{};uint64_t switchSince{};
-    Candidate attempt{};uint64_t attemptSince{};
-    uint64_t lastUpdate{};bool plainTurn{};
+    Candidate attempt[2]{};uint64_t attemptSince[2]{};
+    uint64_t lastUpdate{};unsigned phase{3};Turn turn{};
     Stats stats{};
     bool Blocked(uintptr_t owner,uint64_t now) const {
         for(const auto& b:blocks)if(b.owner==owner&&now<b.until)return true;
@@ -82,65 +84,68 @@ class Selector {
         }
         return best;
     }
-    void DropHeld(){held=0;outsideSince=0;switchOwner=0;switchSince=0;}
+    void DropHeld(){held=0;heldHand=0;outsideSince=0;switchOwner=0;switchSince=0;}
 public:
-    void Reset(){DropHeld();attempt={};attemptSince=0;lastSelected=0;}
+    void Reset(){DropHeld();attempt[0]={};attempt[1]={};attemptSince[0]=attemptSince[1]=0;lastSelected=0;}
     uintptr_t Held() const {return held;}
+    int HeldHand() const {return heldHand;}
     const Stats& GetStats() const {return stats;}
-    // The point to aim the game's check at this update, or nullptr for the plain line.
-    const float* Update(const Candidate* list,unsigned count,const Frame& f,uint64_t now,bool interactHeld) {
-        if(!list){Reset();lastUpdate=now;return nullptr;}
+    // Which hand this update belongs to. A held object keeps its hand. Otherwise
+    // the turns run: right line, left line, right near miss, left near miss.
+    Turn BeginUpdate(uint64_t now,bool twoHands) {
         if(lastUpdate&&now-lastUpdate>GapMs)Reset();
         lastUpdate=now;
+        if(held)turn={heldHand,true};
+        else if(twoHands){phase=(phase+1)%4;turn={int(phase&1),phase>=2};}
+        else {phase=(phase+1)%2;turn={0,phase==1};}
+        return turn;
+    }
+    // The point to aim this turn's check at, or nullptr for that hand's plain line.
+    const float* Update(const Candidate* list,unsigned count,const Frame& f,uint64_t now,bool interactHeld) {
+        if(!list){Reset();return nullptr;}
+        const int hand=turn.hand;
         if(held) {
             if(interactHeld){outsideSince=0;switchOwner=0;return heldPoint;}
-            if(now-lastSelected>LostMs){AddBlock(held,now);++stats.lost;DropHeld();}
-        }
-        if(held) {
+            if(now-lastSelected>LostMs){AddBlock(held,now);++stats.lost;DropHeld();return nullptr;}
             const float off=OffAxis(f.origin,f.dir,heldPoint,f.tanCone,f.minRadius);
             if(off>ReleaseScore) {
                 if(!outsideSince)outsideSince=now;
-                if(now-outsideSince>=HoldMs){++stats.released;DropHeld();}
+                if(now-outsideSince>=HoldMs){++stats.released;DropHeld();return nullptr;}
             } else if(outsideSince){outsideSince=0;++stats.wobblesHeld;}
-        }
-        if(held) {
-            const float off=OffAxis(f.origin,f.dir,heldPoint,f.tanCone,f.minRadius);
             const auto* other=Best(list,count,now,held);
             if(other&&other->score<off*SwitchRatio) {
                 if(switchOwner!=other->owner){switchOwner=other->owner;switchSince=now;}
                 else if(now-switchSince>=SwitchMs) {
                     ++stats.switches;
-                    attempt=*other;attemptSince=now;DropHeld();plainTurn=false;
-                    return attempt.point;
+                    attempt[hand]=*other;attemptSince[hand]=now;DropHeld();
+                    return attempt[hand].point;
                 }
             } else switchOwner=0;
             return heldPoint;
         }
-        if(attempt.owner) {
-            const auto* same=Find(list,count,attempt.owner);
-            if(!same)attempt={};
-            else if(now-attemptSince>RejectMs) {
-                AddBlock(attempt.owner,now);++stats.refused;stats.lastRefused=attempt.owner;attempt={};
-            } else {
-                const auto since=attemptSince;attempt=*same;attemptSince=since;
-            }
+        if(!turn.search)return nullptr;
+        auto& a=attempt[hand];
+        if(a.owner) {
+            const auto* same=Find(list,count,a.owner);
+            if(!same)a={};
+            else if(now-attemptSince[hand]>RejectMs) {
+                AddBlock(a.owner,now);++stats.refused;stats.lastRefused=a.owner;a={};
+            } else a=*same;
         }
-        plainTurn=!plainTurn;
-        if(plainTurn)return nullptr;
-        if(!attempt.owner) {
+        if(!a.owner) {
             const auto* best=Best(list,count,now,0);
             if(!best)return nullptr;
-            attempt=*best;attemptSince=now;
+            a=*best;attemptSince[hand]=now;
         }
-        return attempt.point;
+        return a.point;
     }
     // What the game selected in the update that just ran (owner 0 = nothing).
     void NoteSelection(uintptr_t owner,const float* point,uint64_t now) {
         if(!owner||!point)return;
-        if(owner!=held){DropHeld();held=owner;}
+        if(owner!=held){const int hand=turn.hand;DropHeld();held=owner;heldHand=hand;}
         heldPoint[0]=point[0];heldPoint[1]=point[1];heldPoint[2]=point[2];
         lastSelected=now;
-        attempt={};attemptSince=0;
+        attempt[0]={};attempt[1]={};attemptSince[0]=attemptSince[1]=0;
     }
 };
 

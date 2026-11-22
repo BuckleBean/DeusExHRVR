@@ -28,7 +28,7 @@ void SetDirectSnapEnabled(bool){}void CancelDirectSnap(){++cancels;}
 bool RequestDirectSnap(float degrees){requestedAngle=degrees;++requests;return true;}
 int QuickBarAutoHide(bool){assert(false);return 0;}
 bool ImmersiveScopeButton(){return false;}void ArmHandCalibration(){}void Recenter(){}
-bool ThrowMarkerEnabled(){return false;}void SetThrowAiming(bool){}void NoteThrowRelease(uint64_t){}bool DetonateReady(){return false;}void NoteDetonatePress(uint64_t){}
+bool ThrowMarkerEnabled(){return false;}void SetThrowAiming(bool){}void NoteThrowRelease(uint64_t){}bool LeftHandOwnsPrompt(){return false;}bool DetonateReady(){return false;}void NoteDetonatePress(uint64_t){}
 }
 int main(){
     DirectSnap::Request q;

@@ -18,7 +18,34 @@ namespace {
 std::mutex guard;
 std::atomic<bool> interactionVisualEnabled{};
 std::atomic<uint64_t> interactionVisualPress{};
-void PublishInteraction(bool down,uint64_t now){if(interactionVisualEnabled.load(std::memory_order_relaxed))interactionVisualPress.store(down?now:0,std::memory_order_relaxed);}
+std::atomic<uint64_t> interactionPress{};
+// `visual` drives the right hand's finger curl; a left-hand Interact must not curl it.
+void PublishInteraction(bool down,uint64_t now,bool visual=true){
+    interactionPress.store(down?now:0,std::memory_order_relaxed);
+    if(interactionVisualEnabled.load(std::memory_order_relaxed))interactionVisualPress.store(down&&visual?now:0,std::memory_order_relaxed);
+}
+// Left grip: decided when the press starts and kept until release. While the left
+// hand owns the prompt it is Interact, exactly like the Interact button; otherwise
+// it does whatever the layout says. If Interact opens a screen with the grip still
+// down, the rest of that press is swallowed so it cannot act as a new one.
+enum class LeftGrip {Normal,Interact,Swallow};
+bool leftGripInteract{},leftGripWait{},leftGripPrevious{};
+LeftGrip LeftGripStep(bool on,bool wheel) {
+    if(leftGripWait){if(!on)leftGripWait=false;leftGripPrevious=on;return LeftGrip::Swallow;}
+    if(on&&!leftGripPrevious&&!wheel)leftGripInteract=EngineCamera::LeftHandOwnsPrompt();
+    leftGripPrevious=on;
+    if(!on){const bool was=leftGripInteract;leftGripInteract=false;return was?LeftGrip::Swallow:LeftGrip::Normal;}
+    return leftGripInteract?LeftGrip::Interact:LeftGrip::Normal;
+}
+void LeftGripOnScreen(XINPUT_GAMEPAD& pad) {
+    const bool on=(pad.wButtons&XINPUT_GAMEPAD_LEFT_SHOULDER)!=0;
+    if(leftGripInteract){leftGripInteract=false;leftGripWait=true;}
+    if(leftGripWait) {
+        if(on)pad.wButtons&=~XINPUT_GAMEPAD_LEFT_SHOULDER;
+        else leftGripWait=false;
+    }
+    leftGripPrevious=on;
+}
 Transport::Header* channel{};
 Transport::Tracking latest{};
 using GetState=DWORD(WINAPI*)(DWORD,XINPUT_STATE*);
@@ -175,10 +202,17 @@ void ApplyButtons(XINPUT_GAMEPAD& pad) {
     unsigned reasons=gameplay?0:allReasons;
     if(!gameplay && reasons!=16) {
         for(size_t i=0;i<buttonCount;i++){buttonWasDown[i]=false;buttonTapUntil[i]=0;}ResetThrowHold();
+        LeftGripOnScreen(pad);
         ApplyScreenButtons(pad);
         return;
     }
-    if(!remapActive){ResetThrowHold();return;}
+    if(!remapActive){
+        ResetThrowHold();
+        const auto grip=LeftGripStep((pad.wButtons&XINPUT_GAMEPAD_LEFT_SHOULDER)!=0,(allReasons&128)!=0);
+        if(grip!=LeftGrip::Normal)pad.wButtons&=~XINPUT_GAMEPAD_LEFT_SHOULDER;
+        if(grip==LeftGrip::Interact)pad.wButtons|=XINPUT_GAMEPAD_X;
+        return;
+    }
     const XINPUT_GAMEPAD in=pad;
     WORD owned=0;for(const auto& s:buttonSources)owned|=s.bit;
     pad.wButtons=in.wButtons&~owned; // D-pad gestures, Back and Start pulses stay as-is
@@ -188,6 +222,14 @@ void ApplyButtons(XINPUT_GAMEPAD& pad) {
     bool aiming=false;
     for(size_t i=0;i<buttonCount;i++) {
         bool on=(in.wButtons&buttonSources[i].bit)!=0;
+        if(buttonSources[i].bit==XINPUT_GAMEPAD_LEFT_SHOULDER) {
+            const auto grip=LeftGripStep(on,wheel);
+            if(grip!=LeftGrip::Normal) {
+                if(grip==LeftGrip::Interact)Emit(pad,XINPUT_GAMEPAD_X,true,BYTE(255));
+                buttonWasDown[i]=on;buttonTapUntil[i]=0;plainPress[i]=false;
+                continue;
+            }
+        }
         if(on && !buttonWasDown[i])plainPress[i]=EngineCamera::DetonateReady();
         if(!wheel && ThrowInput(i) && plainPress[i]) {
             if(on && !buttonWasDown[i])buttonDownAt[i]=now;
@@ -333,7 +375,7 @@ bool Read(XINPUT_GAMEPAD& pad) {
         else if(stickUpTarget || stickDownTarget)StickButtons(pad);
     }
     if(!fresh || !latest.gamepad.valid || !GameInForeground()){snapArmed=false;EngineCamera::CancelDirectSnap();}
-    PublishInteraction(fresh && latest.gamepad.valid && (pad.wButtons&XINPUT_GAMEPAD_X)!=0,now);
+    PublishInteraction(fresh && latest.gamepad.valid && (pad.wButtons&XINPUT_GAMEPAD_X)!=0,now,!leftGripInteract);
     // Keep the device connected after first activation, but release every
     // button/axis on focus loss, sleeping controllers or a stalled companion.
     return connected;
@@ -389,6 +431,7 @@ void Install() {
 }
 }
 void EnableInteractionVisual(bool on){interactionVisualEnabled=on;interactionVisualPress=0;}
+bool InteractionHeld(uint64_t now){auto tick=interactionPress.load(std::memory_order_relaxed);return tick&&now>=tick&&now-tick<250;}
 bool InteractionVisualHeld(uint64_t now){auto tick=interactionVisualPress.load(std::memory_order_relaxed);return tick&&now>=tick&&now-tick<250;}
 void SetChannel(Transport::Header* header) {
     std::lock_guard lock(guard);
