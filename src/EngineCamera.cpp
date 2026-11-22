@@ -1992,9 +1992,13 @@ float forgivingTan=.26795f;
 ForgivingAim::Selector forgivingSelector;
 thread_local bool forgivingRayActive{};
 thread_local uintptr_t forgivingSelected{};
+thread_local float forgivingSelectedPoint[3]{};
 thread_local CameraMath::Matrix forgivingRay;
-unsigned forgivingFaults{},forgivingLogged{},forgivingLoggedRejects{};
-uintptr_t forgivingLastOwner{},forgivingLastAccepted{};
+unsigned forgivingFaults{},forgivingLogged{},forgivingLoggedRefused{};
+uintptr_t forgivingLastSelected{},forgivingLastCleared{};
+uint64_t forgivingClearedAt{},forgivingNextSummary{},forgivingHeldMs{},forgivingLastEnd{};
+unsigned forgivingPrompts{},forgivingSteered{},forgivingPlain{},forgivingClears{},forgivingBlinks{};
+bool forgivingSteering{};
 // The interaction ray: steered onto the chosen object, otherwise the setting's.
 bool InteractionWorld(CameraMath::Matrix& target,uintptr_t manager=0) {
     if(!DirectionWorld(interactionAim,target,nullptr,manager))return false;
@@ -2021,7 +2025,10 @@ void* __fastcall InteractionEventHook(void* out,void*,void* object,void* descrip
     auto caller=reinterpret_cast<uintptr_t>(_ReturnAddress());
     auto result=originalInteractionEvent(out,object,descriptor,point,player,manager);
     const bool selection=caller==base+0x68a180-0x400000||caller==base+0x68a783-0x400000;
-    if(selection&&senseQueries)forgivingSelected=reinterpret_cast<uintptr_t>(object);
+    if(selection&&senseQueries&&point) {
+        forgivingSelected=reinterpret_cast<uintptr_t>(object);
+        memcpy(forgivingSelectedPoint,point,sizeof(forgivingSelectedPoint));
+    }
     if(interactionSample.active&&selection){
         interactionSample.selected=true;interactionSample.selectedObject=reinterpret_cast<uintptr_t>(object);
     }
@@ -2178,15 +2185,28 @@ bool ForgivingQueryRaw(void* self,const float* origin,const float* dir,float min
     } __except(EXCEPTION_EXECUTE_HANDLER) {ok=false;}
     return ok;
 }
-void ForgivingLog(const char* text,uintptr_t owner,double value,unsigned nearby) {
-    if(forgivingLogged>=400)return;
+void ForgivingRefusedLog(uintptr_t owner) {
+    if(forgivingLogged>=100)return;
     ++forgivingLogged;
     FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")){
-        fprintf(f,"forgiving aim %s target=%p score=%.2f nearby=%u\n",text,reinterpret_cast<void*>(owner),value,nearby);fclose(f);
+        fprintf(f,"forgiving aim refused tick=%llu target=%p\n",GetTickCount64(),reinterpret_cast<void*>(owner));fclose(f);
+    }
+}
+// One short line every 10 seconds at most, only when there was activity. A blink
+// is a prompt that cleared and came back on the same object within a second.
+void ForgivingSummary(uint64_t now) {
+    if(now<forgivingNextSummary)return;
+    forgivingNextSummary=now+10000;
+    if(!forgivingPrompts&&!forgivingClears)return;
+    const auto& s=forgivingSelector.GetStats();
+    FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")){
+        fprintf(f,"forgiving aim summary tick=%llu prompts=%u plain=%u nearMiss=%u cleared=%u blinks=%u heldMs=%llu wobblesHeld=%u released=%u lost=%u refused=%u switches=%u\n",
+            now,forgivingPrompts,forgivingPlain,forgivingSteered,forgivingClears,forgivingBlinks,forgivingHeldMs,s.wobblesHeld,s.released,s.lost,s.refused,s.switches);
+        fclose(f);
     }
 }
 void ForgivingBegin(void* self) {
-    forgivingRayActive=false;forgivingSelected=0;
+    forgivingRayActive=false;forgivingSelected=0;forgivingSteering=false;
     CameraMath::Matrix aim{};float scale{};
     {
         if(!DirectionWorld(interactionAim,aim)){forgivingSelector.Reset();return;}
@@ -2194,11 +2214,12 @@ void ForgivingBegin(void* self) {
         if(coverCamera.held){forgivingSelector.Reset();return;}
         scale=current.scale;
     }
-    float dir[3]{aim.m[8],aim.m[9],aim.m[10]};
-    const float origin[3]{aim.m[12],aim.m[13],aim.m[14]};
-    if(!ForgivingAim::Normalize(dir)||!std::isfinite(origin[0])||!std::isfinite(origin[1])||!std::isfinite(origin[2])||!std::isfinite(scale)||scale<=0){forgivingSelector.Reset();return;}
+    ForgivingAim::Frame frame{};
+    for(int i=0;i<3;i++){frame.dir[i]=aim.m[8+i];frame.origin[i]=aim.m[12+i];}
+    if(!ForgivingAim::Normalize(frame.dir)||!std::isfinite(frame.origin[0])||!std::isfinite(frame.origin[1])||!std::isfinite(frame.origin[2])||!std::isfinite(scale)||scale<=0){forgivingSelector.Reset();return;}
+    frame.tanCone=forgivingTan;frame.minRadius=ForgivingAim::MinRadiusMetres*scale;
     ForgivingAim::Candidate list[32]{};unsigned count{};
-    if(!ForgivingQueryRaw(self,origin,dir,ForgivingAim::MinRadiusMetres*scale,list,count)) {
+    if(!ForgivingQueryRaw(self,frame.origin,frame.dir,frame.minRadius,list,count)) {
         forgivingSelector.Reset();
         if(++forgivingFaults>=3) {
             forgivingAimEnabled=false;
@@ -2207,19 +2228,27 @@ void ForgivingBegin(void* self) {
         return;
     }
     const auto now=GetTickCount64();
-    const auto* target=forgivingSelector.Update(list,count,now,GamepadBridge::InteractionVisualHeld(now));
-    const uintptr_t owner=target?target->owner:0;
-    if(owner!=forgivingLastOwner){forgivingLastOwner=owner;ForgivingLog("steer",owner,target?double(target->score):0.,count);}
-    if(forgivingSelector.Rejected()!=forgivingLoggedRejects){forgivingLoggedRejects=forgivingSelector.Rejected();ForgivingLog("refused",owner,0.,count);}
-    if(target&&ForgivingAim::RayMatrix(aim,origin,target->point,forgivingRay))forgivingRayActive=true;
+    const float* point=forgivingSelector.Update(list,count,frame,now,GamepadBridge::InteractionVisualHeld(now));
+    const auto& stats=forgivingSelector.GetStats();
+    if(stats.refused!=forgivingLoggedRefused){forgivingLoggedRefused=stats.refused;ForgivingRefusedLog(stats.lastRefused);}
+    if(point&&ForgivingAim::RayMatrix(aim,frame.origin,point,forgivingRay)){forgivingRayActive=true;forgivingSteering=true;}
 }
 void ForgivingEnd() {
+    const auto now=GetTickCount64();
     const auto selected=forgivingSelected;
-    forgivingSelector.NoteSelection(selected,GetTickCount64());
-    if(selected!=forgivingLastAccepted) {
-        forgivingLastAccepted=selected;
-        ForgivingLog(selected?(forgivingRayActive?"accepted-steered":"accepted-plain-line"):"prompt-cleared",selected,0.,0);
+    forgivingSelector.NoteSelection(selected,forgivingSelectedPoint,now);
+    if(selected&&forgivingLastSelected&&forgivingLastEnd&&now>forgivingLastEnd&&now-forgivingLastEnd<1000)forgivingHeldMs+=now-forgivingLastEnd;
+    if(selected!=forgivingLastSelected) {
+        if(selected) {
+            ++forgivingPrompts;
+            if(forgivingSteering)++forgivingSteered;else ++forgivingPlain;
+            if(selected==forgivingLastCleared&&now-forgivingClearedAt<1000)++forgivingBlinks;
+        }
+        if(forgivingLastSelected&&!selected){++forgivingClears;forgivingLastCleared=forgivingLastSelected;forgivingClearedAt=now;}
+        forgivingLastSelected=selected;
     }
+    forgivingLastEnd=now;
+    ForgivingSummary(now);
     forgivingRayActive=false;
 }
 void __fastcall SenseUpdateHook(void* self,void*,float dt) {

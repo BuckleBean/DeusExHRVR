@@ -3,20 +3,28 @@
 #include <cstdint>
 #include "CameraMath.h"
 
-// Forgiving aim (November 21). A near miss with the interaction line still counts:
-// the usable object closest to the line, inside a cone around it, receives the
-// game's own single interaction check. The game still applies its range and rules.
-// Owner values are compared only; this file never reads game memory.
+// Forgiving aim with a prompt hold (November 21). Once the game selects an object,
+// its single interaction check keeps being aimed at the exact point it accepted,
+// so small hand movements do not drop the prompt. With nothing selected, updates
+// alternate between the plain aim line and the usable object closest to it. The
+// game still applies its range and rules. Owner values are compared only; this
+// file never reads game memory.
 namespace ForgivingAim {
-inline constexpr float KeepScore=1.25f;      // a held target may drift this far past the cone
-inline constexpr float SwitchRatio=.5f;      // another object must be twice as close to the line
-inline constexpr uint64_t RejectMs=150;      // no game selection for this long: try another
+inline constexpr float KeepScore=1.25f;      // candidates are listed up to here
+inline constexpr float ReleaseScore=1.5f;    // aim must leave this far to start releasing
+inline constexpr uint64_t HoldMs=300;        // and stay out this long
+inline constexpr uint64_t LostMs=120;        // held, but the game stopped selecting it
+inline constexpr float SwitchRatio=.5f;      // another object must be twice as close to the aim
+inline constexpr uint64_t SwitchMs=120;      // for this long
+inline constexpr uint64_t RejectMs=150;      // an attempt the game never accepts
 inline constexpr uint64_t BlockMs=1500;      // how long a refused object is left out
 inline constexpr uint64_t GapMs=200;         // no updates this long (a screen): start fresh
 inline constexpr float MinRadiusMetres=.15f; // the cone never gets narrower than this up close
 inline constexpr float SearchUnits=948.15f;  // longest interaction reach seen in this game
 
 struct Candidate {uintptr_t owner{};float point[3]{};float score{};};
+struct Frame {float origin[3]{};float dir[3]{};float tanCone{};float minRadius{};};
+struct Stats {unsigned wobblesHeld{},released{},lost{},refused{},switches{};uintptr_t lastRefused{};};
 
 inline float Dot(const float* a,const float* b){return a[0]*b[0]+a[1]*b[1]+a[2]*b[2];}
 inline void Cross(const float* a,const float* b,float* out) {
@@ -27,29 +35,39 @@ inline bool Normalize(float* v) {
     if(!std::isfinite(n)||n<1e-5f)return false;
     v[0]/=n;v[1]/=n;v[2]/=n;return true;
 }
-// 0 = exactly on the line, 1 = at the edge of the cone. False: behind, too far or outside.
+// 0 = on the line, 1 = at the edge of the cone. Behind the hand counts as far off.
+inline float OffAxis(const float* origin,const float* dir,const float* point,float tanCone,float minRadius) {
+    const float v[3]{point[0]-origin[0],point[1]-origin[1],point[2]-origin[2]};
+    const float along=Dot(v,dir);
+    if(!std::isfinite(along)||along<=0)return 1e6f;
+    const float off[3]{v[0]-dir[0]*along,v[1]-dir[1]*along,v[2]-dir[2]*along};
+    const float wide=tanCone*along;
+    const float allowed=wide>minRadius?wide:minRadius;
+    const float score=std::sqrt(Dot(off,off))/allowed;
+    return std::isfinite(score)?score:1e6f;
+}
 inline bool Score(const float* origin,const float* dir,const float* point,float reach,float tanCone,float minRadius,float& score) {
     const float v[3]{point[0]-origin[0],point[1]-origin[1],point[2]-origin[2]};
     const float distance=std::sqrt(Dot(v,v));
     if(!std::isfinite(distance)||distance>reach)return false;
-    const float along=Dot(v,dir);
-    if(!std::isfinite(along)||along<=0)return false;
-    const float off[3]{v[0]-dir[0]*along,v[1]-dir[1]*along,v[2]-dir[2]*along};
-    const float offset=std::sqrt(Dot(off,off));
-    const float wide=tanCone*along;
-    const float allowed=wide>minRadius?wide:minRadius;
-    if(!std::isfinite(offset)||allowed<=0)return false;
-    score=offset/allowed;
+    score=OffAxis(origin,dir,point,tanCone,minRadius);
     return score<=KeepScore;
 }
 
 class Selector {
     struct Block {uintptr_t owner{};uint64_t until{};};
     Block blocks[8]{};unsigned nextBlock{};
-    Candidate held{};uint64_t lastOk{},lastUpdate{};uintptr_t selected{};unsigned rejected{};
+    uintptr_t held{};float heldPoint[3]{};uint64_t lastSelected{},outsideSince{};
+    uintptr_t switchOwner{};uint64_t switchSince{};
+    Candidate attempt{};uint64_t attemptSince{};
+    uint64_t lastUpdate{};bool plainTurn{};
+    Stats stats{};
     bool Blocked(uintptr_t owner,uint64_t now) const {
         for(const auto& b:blocks)if(b.owner==owner&&now<b.until)return true;
         return false;
+    }
+    void AddBlock(uintptr_t owner,uint64_t now) {
+        blocks[nextBlock]={owner,now+BlockMs};nextBlock=(nextBlock+1)%8;
     }
     const Candidate* Find(const Candidate* list,unsigned count,uintptr_t owner) const {
         for(unsigned i=0;i<count;i++)if(list[i].owner==owner)return &list[i];
@@ -64,40 +82,65 @@ class Selector {
         }
         return best;
     }
+    void DropHeld(){held=0;outsideSince=0;switchOwner=0;switchSince=0;}
 public:
-    void Reset(){held={};lastOk=0;selected=0;}
-    uintptr_t Owner() const {return held.owner;}
-    unsigned Rejected() const {return rejected;}
-    // The target for this update, or nullptr to use the plain aim line.
-    const Candidate* Update(const Candidate* list,unsigned count,uint64_t now,bool interactHeld) {
+    void Reset(){DropHeld();attempt={};attemptSince=0;lastSelected=0;}
+    uintptr_t Held() const {return held;}
+    const Stats& GetStats() const {return stats;}
+    // The point to aim the game's check at this update, or nullptr for the plain line.
+    const float* Update(const Candidate* list,unsigned count,const Frame& f,uint64_t now,bool interactHeld) {
         if(!list){Reset();lastUpdate=now;return nullptr;}
         if(lastUpdate&&now-lastUpdate>GapMs)Reset();
         lastUpdate=now;
-        // Whatever the game actually selected is what the prompt shows: keep it.
-        if(selected&&selected!=held.owner) {
-            if(const auto* chosen=Find(list,count,selected)){held=*chosen;lastOk=now;}
+        if(held) {
+            if(interactHeld){outsideSince=0;switchOwner=0;return heldPoint;}
+            if(now-lastSelected>LostMs){AddBlock(held,now);++stats.lost;DropHeld();}
         }
-        if(held.owner) {
-            const auto* same=Find(list,count,held.owner);
-            if(same&&same->score<=KeepScore) {
-                if(interactHeld){held=*same;return &held;}
-                if(now-lastOk<=RejectMs) {
-                    const auto* other=Best(list,count,now,held.owner);
-                    if(other&&other->score<same->score*SwitchRatio){held=*other;lastOk=now;selected=0;return &held;}
-                    held=*same;return &held;
+        if(held) {
+            const float off=OffAxis(f.origin,f.dir,heldPoint,f.tanCone,f.minRadius);
+            if(off>ReleaseScore) {
+                if(!outsideSince)outsideSince=now;
+                if(now-outsideSince>=HoldMs){++stats.released;DropHeld();}
+            } else if(outsideSince){outsideSince=0;++stats.wobblesHeld;}
+        }
+        if(held) {
+            const float off=OffAxis(f.origin,f.dir,heldPoint,f.tanCone,f.minRadius);
+            const auto* other=Best(list,count,now,held);
+            if(other&&other->score<off*SwitchRatio) {
+                if(switchOwner!=other->owner){switchOwner=other->owner;switchSince=now;}
+                else if(now-switchSince>=SwitchMs) {
+                    ++stats.switches;
+                    attempt=*other;attemptSince=now;DropHeld();plainTurn=false;
+                    return attempt.point;
                 }
-                blocks[nextBlock]={held.owner,now+BlockMs};nextBlock=(nextBlock+1)%8;++rejected;
-            }
-            held={};lastOk=0;selected=0;
+            } else switchOwner=0;
+            return heldPoint;
         }
-        const auto* best=Best(list,count,now,0);
-        if(!best)return nullptr;
-        held=*best;lastOk=now;
-        return &held;
+        if(attempt.owner) {
+            const auto* same=Find(list,count,attempt.owner);
+            if(!same)attempt={};
+            else if(now-attemptSince>RejectMs) {
+                AddBlock(attempt.owner,now);++stats.refused;stats.lastRefused=attempt.owner;attempt={};
+            } else {
+                const auto since=attemptSince;attempt=*same;attemptSince=since;
+            }
+        }
+        plainTurn=!plainTurn;
+        if(plainTurn)return nullptr;
+        if(!attempt.owner) {
+            const auto* best=Best(list,count,now,0);
+            if(!best)return nullptr;
+            attempt=*best;attemptSince=now;
+        }
+        return attempt.point;
     }
-    void NoteSelection(uintptr_t owner,uint64_t now) {
-        selected=owner;
-        if(owner&&owner==held.owner)lastOk=now;
+    // What the game selected in the update that just ran (owner 0 = nothing).
+    void NoteSelection(uintptr_t owner,const float* point,uint64_t now) {
+        if(!owner||!point)return;
+        if(owner!=held){DropHeld();held=owner;}
+        heldPoint[0]=point[0];heldPoint[1]=point[1];heldPoint[2]=point[2];
+        lastSelected=now;
+        attempt={};attemptSince=0;
     }
 };
 

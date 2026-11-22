@@ -1,74 +1,96 @@
-// Offline checks for forgiving aim's target choice and ray. No game code runs.
+// Offline checks for forgiving aim's prompt hold and ray. No game code runs.
 #include <cstdio>
 #include <cmath>
 #include "ForgivingAim.h"
 using namespace ForgivingAim;
 static int failures=0;
 static void Check(bool ok,const char* name){printf("%s %s\n",ok?"PASS":"FAIL",name);if(!ok)++failures;}
-static Candidate C(uintptr_t owner,float score){Candidate c{};c.owner=owner;c.point[0]=score;c.score=score;return c;}
+static const float Tan15=.26795f;
+// Aim from the origin toward (side,0,300); the object sits at (0,0,300).
+static Frame Aim(float side) {
+    Frame f{};f.dir[0]=side;f.dir[2]=300;Normalize(f.dir);f.tanCone=Tan15;f.minRadius=45;return f;
+}
+static const float P[3]{0,0,300};
+static Candidate C(uintptr_t owner,float score,float x=0){Candidate c{};c.owner=owner;c.point[0]=x;c.point[2]=300;c.score=score;return c;}
+static bool At(const float* p,const float* q){return p&&std::abs(p[0]-q[0])<1e-4f&&std::abs(p[1]-q[1])<1e-4f&&std::abs(p[2]-q[2])<1e-4f;}
 int main() {
+    Candidate none[1]{};
     {
-        const float o[3]{0,0,0},d[3]{0,0,1},t=std::tan(15.f*3.14159265f/180.f);float s{};
-        const float centre[3]{0,0,300};
-        Check(Score(o,d,centre,948,t,45,s)&&s<1e-5f,"object on the line scores zero");
-        const float miss[3]{t*300*.5f,0,300};
-        Check(Score(o,d,miss,948,t,45,s)&&std::abs(s-.5f)<1e-3f,"near miss at normal distance is inside the cone");
-        const float outside[3]{t*300*1.5f,0,300};
-        Check(!Score(o,d,outside,948,t,45,s),"object well off to the side is not chosen");
-        const float close[3]{30,0,20};
-        Check(Score(o,d,close,948,t,45,s)&&s<1,"up close the cone keeps a minimum width");
-        const float behind[3]{0,0,-50};
-        Check(!Score(o,d,behind,948,t,45,s),"object behind the hand is not chosen");
-        const float distant[3]{0,0,700};
-        Check(!Score(o,d,distant,632,t,45,s),"object beyond its own interaction reach is not chosen");
+        float s{};const Frame f=Aim(0);
+        const float miss[3]{Tan15*150,0,300},outside[3]{Tan15*450,0,300},close[3]{30,0,20},behind[3]{0,0,-50},distant[3]{0,0,700};
+        Check(Score(f.origin,f.dir,P,948,f.tanCone,f.minRadius,s)&&s<1e-5f,"object on the line scores zero");
+        Check(Score(f.origin,f.dir,miss,948,f.tanCone,f.minRadius,s)&&std::abs(s-.5f)<1e-3f,"near miss at normal distance is inside the cone");
+        Check(!Score(f.origin,f.dir,outside,948,f.tanCone,f.minRadius,s),"object well off to the side is not chosen");
+        Check(Score(f.origin,f.dir,close,948,f.tanCone,f.minRadius,s)&&s<1,"up close the cone keeps a minimum width");
+        Check(!Score(f.origin,f.dir,behind,948,f.tanCone,f.minRadius,s),"object behind the hand is not chosen");
+        Check(!Score(f.origin,f.dir,distant,632,f.tanCone,f.minRadius,s),"object beyond its own interaction reach is not chosen");
     }
     {
-        Selector s;Candidate l[]={C(1,.6f),C(2,.2f),C(3,1.1f)};
-        auto* t=s.Update(l,3,1000,false);
-        Check(t&&t->owner==2,"object closest to the aim is chosen");
-        Selector e;Candidate o[]={C(3,1.1f)};
-        Check(!e.Update(o,1,1000,false),"nothing in the cone uses the plain aim line");
+        Selector s;
+        Check(s.Update(none,0,Aim(0),1000,false)==nullptr,"nothing selected starts on the plain line");
+        s.NoteSelection(1,P,1000);
+        Check(At(s.Update(none,0,Aim(0),1010,false),P),"a selected object is held on the point the game accepted");
+        s.NoteSelection(1,P,1010);
+        Check(At(s.Update(none,0,Aim(100),1020,false),P),"a small hand movement keeps the prompt");
+        s.NoteSelection(1,P,1020);
+        Check(At(s.Update(none,0,Aim(200),1030,false),P),"a larger wobble still keeps the prompt at first");
     }
     {
-        Selector s;Candidate a[]={C(1,.5f)};s.Update(a,1,1000,false);s.NoteSelection(1,1010);
-        Candidate b[]={C(1,1.2f),C(2,.8f)};
-        auto* t=s.Update(b,2,1020,false);
-        Check(t&&t->owner==1,"a selected object stays while aim drifts just past the cone");
-        s.NoteSelection(1,1030);
-        Candidate c[]={C(1,.8f),C(2,.3f)};
-        t=s.Update(c,2,1040,false);
-        Check(t&&t->owner==2,"pointing clearly at another object switches to it");
-        s.NoteSelection(2,1050);
-        Candidate d[]={C(2,1.3f),C(1,.9f)};
-        t=s.Update(d,2,1060,false);
-        Check(t&&t->owner==1,"aiming away from the object releases it");
+        Selector s;s.Update(none,0,Aim(0),1000,false);s.NoteSelection(1,P,1000);
+        uint64_t t=1010;
+        for(;t<1250;t+=10){s.Update(none,0,Aim(200),t,false);s.NoteSelection(1,P,t);}
+        const auto* back=s.Update(none,0,Aim(0),t,false);s.NoteSelection(1,P,t);
+        Check(At(back,P)&&s.GetStats().wobblesHeld==1&&s.GetStats().released==0,"returning within the hold time never drops it");
+        t+=10;
+        for(uint64_t end=t+290;t<end;t+=10){s.Update(none,0,Aim(200),t,false);s.NoteSelection(1,P,t);}
+        Check(s.Held()==1,"aim away for under 300 ms still holds");
+        for(int i=0;i<3;i++,t+=10){s.Update(none,0,Aim(200),t,false);if(s.Held())s.NoteSelection(1,P,t);}
+        Check(!s.Held()&&s.GetStats().released==1,"clearly aiming away for 300 ms releases it");
     }
     {
-        Selector s;Candidate a[]={C(1,.2f),C(2,.4f)};s.Update(a,2,1000,false);
-        s.NoteSelection(0,1010);s.Update(a,2,1100,false);s.NoteSelection(0,1110);
-        auto* t=s.Update(a,2,1160,false);
-        Check(t&&t->owner==2&&s.Rejected()==1,"object the game refuses is skipped for the next one");
-        s.NoteSelection(2,1170);
-        Candidate only[]={C(1,.2f)};
-        t=s.Update(only,1,1200,false);
-        Check(!t,"a refused object stays out for a moment");
-        t=s.Update(only,1,2650,false);
-        Check(!t,"a refused object is still out just before its 1.5 s block ends");
-        t=s.Update(only,1,2670,false);
-        Check(t&&t->owner==1,"a refused object can return after its block");
+        Selector s;s.Update(none,0,Aim(0),1000,false);s.NoteSelection(1,P,1000);
+        s.Update(none,0,Aim(0),1050,false);
+        Check(s.Held()==1,"one missed update does not drop the object");
+        s.Update(none,0,Aim(0),1130,false);
+        Check(!s.Held()&&s.GetStats().lost==1,"object the game stops offering (used or gone) is let go");
     }
     {
-        Selector s;Candidate a[]={C(1,.2f),C(2,.4f)};s.Update(a,2,1000,false);s.NoteSelection(1,1010);
-        auto* t=s.Update(a,2,9000,false);
-        Check(t&&t->owner==1&&s.Rejected()==0,"returning from a hacking screen is not a refusal");
+        Selector s;s.Update(none,0,Aim(0),1000,false);s.NoteSelection(1,P,1000);
+        const float* p{};
+        for(uint64_t t=1010;t<1600;t+=10){p=s.Update(none,0,Aim(250),t,true);}
+        Check(At(p,P)&&s.Held()==1,"holding Interact keeps the object regardless of aim or selection");
     }
     {
-        Selector s;Candidate a[]={C(1,.2f),C(2,.1f)};s.Update(a,2,1000,false);
-        s.NoteSelection(1,1010);
-        auto* t=s.Update(a,2,1020,false);
-        Check(t&&t->owner==1,"the object the game actually selected is the one kept");
-        t=s.Update(a,2,1100,true);t=s.Update(a,2,1190,true);
-        Check(t&&t->owner==1&&s.Rejected()==0,"holding Interact keeps the target");
+        Selector s;s.Update(none,0,Aim(0),1000,false);s.NoteSelection(1,P,1000);
+        const float q[3]{120,0,300};Candidate l[]={C(2,.05f,120)};const Frame f=Aim(120);
+        const float* p=s.Update(l,1,f,1010,false);s.NoteSelection(1,P,1010);
+        Check(At(p,P),"a neighbour does not steal the prompt immediately");
+        p=s.Update(l,1,f,1060,false);s.NoteSelection(1,P,1060);
+        Check(At(p,P),"a brief pass over a neighbour does not steal it");
+        p=s.Update(l,1,f,1135,false);
+        Check(At(p,q)&&s.GetStats().switches==1,"clearly pointing at another object moves to it");
+        s.NoteSelection(2,q,1135);
+        Check(s.Held()==2,"the game's new selection becomes the held object");
+    }
+    {
+        Selector s;Candidate l[]={C(1,.6f,10),C(2,.2f,20)};const float two[3]{20,0,300};
+        Check(s.Update(l,2,Aim(0),1000,false)==nullptr,"with nothing selected the plain line gets its turn");
+        Check(At(s.Update(l,2,Aim(0),1010,false),two),"then the object closest to the aim is tried");
+        Check(s.Update(l,2,Aim(0),1020,false)==nullptr,"plain line and near-miss attempts alternate");
+        s.Update(l,2,Aim(0),1030,false);s.Update(l,2,Aim(0),1100,false);s.Update(l,2,Aim(0),1170,false);
+        Check(s.GetStats().refused==1&&s.GetStats().lastRefused==2,"an object the game refuses is recorded and skipped");
+        const float one[3]{10,0,300};const float* p=s.Update(l,2,Aim(0),1180,false);if(!p)p=s.Update(l,2,Aim(0),1190,false);
+        Check(At(p,one),"the next closest object is tried");
+    }
+    {
+        Selector s;s.Update(none,0,Aim(0),1000,false);s.NoteSelection(1,P,1000);
+        s.Update(none,0,Aim(0),9000,false);
+        Check(!s.Held()&&s.GetStats().lost==0&&s.GetStats().refused==0,"returning from a hacking screen starts fresh without a refusal");
+    }
+    {
+        Selector s;s.Update(none,0,Aim(0),1000,false);s.NoteSelection(1,P,1000);
+        const float moved[3]{5,0,300};s.Update(none,0,Aim(0),1010,false);s.NoteSelection(1,moved,1010);
+        Check(At(s.Update(none,0,Aim(0),1020,false),moved),"the held point follows what the game reports");
     }
     {
         CameraMath::Matrix hint{};hint.m[0]=1;hint.m[5]=1;hint.m[10]=1;hint.m[15]=1;
