@@ -1,6 +1,7 @@
 #include "ModelWristHud.h"
 #include "NativeCover.h"
 #include "CoverCrosshair.h"
+#include "ForgivingAim.h"
 #include "CoverFollow.h"
 #include "WorldScaleConfig.h"
 #include "HudIsolationCheck.h"
@@ -1984,6 +1985,22 @@ thread_local InteractionSample interactionSample;
 std::atomic<uint64_t> interactionNextSample{};
 std::atomic<unsigned> interactionSampleCount{};
 bool interactionProbesReady{};
+// Forgiving aim (November 21): see ForgivingAim.h. [VR] ForgivingAim=0 turns it
+// off; ForgivingAimDegrees sets the cone around the aim line (default 15).
+bool forgivingAimEnabled{};
+float forgivingTan=.26795f;
+ForgivingAim::Selector forgivingSelector;
+thread_local bool forgivingRayActive{};
+thread_local uintptr_t forgivingSelected{};
+thread_local CameraMath::Matrix forgivingRay;
+unsigned forgivingFaults{},forgivingLogged{},forgivingLoggedRejects{};
+uintptr_t forgivingLastOwner{},forgivingLastAccepted{};
+// The interaction ray: steered onto the chosen object, otherwise the setting's.
+bool InteractionWorld(CameraMath::Matrix& target,uintptr_t manager=0) {
+    if(!DirectionWorld(interactionAim,target,nullptr,manager))return false;
+    if(forgivingRayActive)target=forgivingRay;
+    return true;
+}
 using InteractionResolve=void*(__cdecl*)(void*,void**);
 using InteractionEvent=void*(__thiscall*)(void*,void*,void*,void*,void*,void*);
 InteractionResolve originalInteractionResolve{};
@@ -2003,7 +2020,9 @@ void* __cdecl InteractionResolveHook(void* object,void** descriptor){
 void* __fastcall InteractionEventHook(void* out,void*,void* object,void* descriptor,void* point,void* player,void* manager){
     auto caller=reinterpret_cast<uintptr_t>(_ReturnAddress());
     auto result=originalInteractionEvent(out,object,descriptor,point,player,manager);
-    if(interactionSample.active&&(caller==base+0x68a180-0x400000||caller==base+0x68a783-0x400000)){
+    const bool selection=caller==base+0x68a180-0x400000||caller==base+0x68a783-0x400000;
+    if(selection&&senseQueries)forgivingSelected=reinterpret_cast<uintptr_t>(object);
+    if(interactionSample.active&&selection){
         interactionSample.selected=true;interactionSample.selectedObject=reinterpret_cast<uintptr_t>(object);
     }
     return result;
@@ -2011,7 +2030,15 @@ void* __fastcall InteractionEventHook(void* out,void*,void* object,void* descrip
 void InstallInteractionProbes(){
     wchar_t diagConfig[MAX_PATH]{};GetFullPathNameW(L"DeusExHRVR.ini",MAX_PATH,diagConfig,nullptr);
     interactionDiagLog=GetPrivateProfileIntW(L"VR",L"InteractionDiagnosticLog",0,diagConfig)!=0;
-    if(!interactionDiagLog)return;
+    forgivingAimEnabled=GetPrivateProfileIntW(L"VR",L"ForgivingAim",1,diagConfig)!=0;
+    float forgivingDegrees=15.f;
+    {
+        wchar_t degreesText[32]{};GetPrivateProfileStringW(L"VR",L"ForgivingAimDegrees",L"15",degreesText,32,diagConfig);
+        const float value=float(_wtof(degreesText));
+        if(std::isfinite(value)&&value>=3.f&&value<=40.f)forgivingDegrees=value;
+    }
+    forgivingTan=std::tan(forgivingDegrees*.0174532925f);
+    if(!interactionDiagLog&&!forgivingAimEnabled)return;
     auto resolve=reinterpret_cast<void*>(base+0x688ed0-0x400000);
     auto event=reinterpret_cast<void*>(base+0x688e80-0x400000);
     bool match=!memcmp(resolve,"\x8b\x4c\x24\x04\x57",5)&&!memcmp(event,"\x8b\x54\x24\x08\x8b\xc1",6);
@@ -2032,6 +2059,11 @@ void InstallInteractionProbes(){
         if(madeResolve){MH_DisableHook(resolve);MH_RemoveHook(resolve);}
         if(madeEvent){MH_DisableHook(event);MH_RemoveHook(event);}
     }
+    if(forgivingAimEnabled&&!interactionProbesReady)forgivingAimEnabled=false;
+    {FILE* aimLog{};if(!fopen_s(&aimLog,"DeusExHRVR-camera.log","a")){
+        fprintf(aimLog,"forgiving aim enabled=%d degrees=%g layoutMatch=%d\n",int(forgivingAimEnabled),double(forgivingDegrees),int(match));fclose(aimLog);
+    }}
+    if(!interactionDiagLog)return;
     FILE* f{};if(!fopen_s(&f,"DeusExHRVR-interaction.log","a")){
         fprintf(f,"Interaction diagnostics ready=%d layoutMatch=%d maxSamples=300 intervalMs=2000\n",int(interactionProbesReady),int(match));fclose(f);
     }
@@ -2055,6 +2087,141 @@ void WriteInteractionSample(){
     fclose(f);
 }
 
+uintptr_t VA(uintptr_t preferred);
+// The game's own candidate search (0x689310): same pool, filter, ignore record,
+// capsule shape, flags and hit layout, with a wider capsule along the aim line.
+// Game thread, inside the interaction update. No C++ objects with destructors
+// here, so a fault inside a game call is caught and reported.
+bool ForgivingQueryRaw(void* self,const float* origin,const float* dir,float minRadius,ForgivingAim::Candidate* out,unsigned& count) {
+    count=0;
+    using Alloc=void*(__thiscall*)(uintptr_t);
+    using Release=void(__thiscall*)(uintptr_t,void*);
+    using SetByte=void(__thiscall*)(void*,int);
+    using SetIgnore=void(__thiscall*)(void*,void*);
+    using Capsule=void(__thiscall*)(void*,float,float,const float*,const float*);
+    using SetVector=void(__thiscall*)(void*,const float*);
+    using FromTo=void*(__thiscall*)(float*,const float*,const float*);
+    using SetFilter=void(__thiscall*)(uintptr_t,void*);
+    using Overlap=int(__thiscall*)(uintptr_t,void*,int,void*,int);
+    using Resolve=void*(__cdecl*)(void*,void**);
+    uintptr_t world{};void* shape{};bool filterSet{},ownerSet{};uintptr_t savedFilter{};
+    auto* ownerSlot=reinterpret_cast<uintptr_t*>(VA(0x00e9aa34));
+    const float length=ForgivingAim::SearchUnits;
+    const float wide=forgivingTan*length;
+    const float radius=wide>minRadius?wide:minRadius;
+    alignas(16) unsigned char hits[0x80*32];
+    alignas(16) float position[4]{origin[0]+dir[0]*length*.5f,origin[1]+dir[1]*length*.5f,origin[2]+dir[2]*length*.5f,1.f};
+    alignas(16) const float identity[4]{0,0,0,1.f};
+    alignas(16) const float axis[4]{0,0,1.f,0};
+    alignas(16) const float toward[4]{dir[0],dir[1],dir[2],0};
+    alignas(16) float rotation[4]{0,0,0,1.f};
+    alignas(16) uintptr_t ignore[4]{};
+    bool ok=false;
+    __try {
+        world=*reinterpret_cast<uintptr_t*>(VA(0x01c7bf64));
+        const uintptr_t player=*reinterpret_cast<uintptr_t*>(static_cast<unsigned char*>(self)+8);
+        if(!world||!player)return false;
+        const uintptr_t ownerValue=*reinterpret_cast<uintptr_t*>(*reinterpret_cast<uintptr_t*>(player+8)+0x5c);
+        reinterpret_cast<FromTo>(VA(0x4cf900))(rotation,axis,toward);
+        shape=reinterpret_cast<Alloc>(VA(0x50f020))(world+0x10);
+        if(!shape)return false;
+        reinterpret_cast<SetByte>(VA(0x4fb620))(shape,0x0c);
+        savedFilter=*reinterpret_cast<uintptr_t*>(world+0x2330);
+        reinterpret_cast<SetFilter>(VA(0x4c7680))(world,reinterpret_cast<void*>(VA(0x688fe0)));
+        filterSet=true;
+        ignore[0]=player;
+        reinterpret_cast<SetIgnore>(VA(0x4fb5e0))(shape,ignore);
+        reinterpret_cast<Capsule>(VA(0x4fcd50))(shape,radius,length,position,identity);
+        reinterpret_cast<SetByte>(VA(0x4fb550))(shape,0x42);
+        reinterpret_cast<SetVector>(VA(0x4fd100))(shape,position);
+        reinterpret_cast<SetVector>(VA(0x4fd140))(shape,rotation);
+        memset(hits,0,sizeof(hits));
+        *ownerSlot=ownerValue;ownerSet=true;
+        const int found=reinterpret_cast<Overlap>(VA(0x50f1c0))(world+0x10,hits,0x20,shape,1);
+        *ownerSlot=0;ownerSet=false;
+        for(int i=0;i<found&&i<32&&count<32;i++) {
+            auto* hit=hits+0x80*i;
+            void* object=*reinterpret_cast<void**>(hit+0x58);
+            if(!object)continue;
+            void* descriptor{};
+            auto* owner=static_cast<unsigned char*>(reinterpret_cast<Resolve>(VA(0x688ed0))(object,&descriptor));
+            if(!owner||!descriptor)continue;
+            auto* d=static_cast<unsigned char*>(descriptor);
+            if(!*reinterpret_cast<uint32_t*>(d)||!d[0x10])continue;
+            const float reach=*reinterpret_cast<const float*>(d+4)*316.05f;
+            if(!std::isfinite(reach)||reach<=0)continue;
+            const auto* point=reinterpret_cast<const float*>(hit);
+            float score{};
+            bool usable=ForgivingAim::Score(origin,dir,point,reach,forgivingTan,minRadius,score);
+            const auto* position2=reinterpret_cast<const float*>(owner+0x20);
+            float score2{};
+            if(ForgivingAim::Score(origin,dir,position2,reach,forgivingTan,minRadius,score2)&&(!usable||score2<score)) {
+                point=position2;score=score2;usable=true;
+            }
+            if(!usable)continue;
+            bool merged=false;
+            for(unsigned j=0;j<count;j++)if(out[j].owner==reinterpret_cast<uintptr_t>(owner)) {
+                merged=true;
+                if(score<out[j].score){out[j].score=score;out[j].point[0]=point[0];out[j].point[1]=point[1];out[j].point[2]=point[2];}
+            }
+            if(merged)continue;
+            auto& c=out[count++];
+            c.owner=reinterpret_cast<uintptr_t>(owner);c.score=score;
+            c.point[0]=point[0];c.point[1]=point[1];c.point[2]=point[2];
+        }
+        ok=true;
+    } __except(EXCEPTION_EXECUTE_HANDLER) {ok=false;}
+    __try {
+        if(ownerSet)*ownerSlot=0;
+        if(filterSet)reinterpret_cast<SetFilter>(VA(0x4c7680))(world,reinterpret_cast<void*>(savedFilter));
+        if(shape)reinterpret_cast<Release>(VA(0x50ef00))(world+0x10,shape);
+    } __except(EXCEPTION_EXECUTE_HANDLER) {ok=false;}
+    return ok;
+}
+void ForgivingLog(const char* text,uintptr_t owner,double value,unsigned nearby) {
+    if(forgivingLogged>=400)return;
+    ++forgivingLogged;
+    FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")){
+        fprintf(f,"forgiving aim %s target=%p score=%.2f nearby=%u\n",text,reinterpret_cast<void*>(owner),value,nearby);fclose(f);
+    }
+}
+void ForgivingBegin(void* self) {
+    forgivingRayActive=false;forgivingSelected=0;
+    CameraMath::Matrix aim{};float scale{};
+    {
+        if(!DirectionWorld(interactionAim,aim)){forgivingSelector.Reset();return;}
+        std::lock_guard lock(stateMutex);
+        if(coverCamera.held){forgivingSelector.Reset();return;}
+        scale=current.scale;
+    }
+    float dir[3]{aim.m[8],aim.m[9],aim.m[10]};
+    const float origin[3]{aim.m[12],aim.m[13],aim.m[14]};
+    if(!ForgivingAim::Normalize(dir)||!std::isfinite(origin[0])||!std::isfinite(origin[1])||!std::isfinite(origin[2])||!std::isfinite(scale)||scale<=0){forgivingSelector.Reset();return;}
+    ForgivingAim::Candidate list[32]{};unsigned count{};
+    if(!ForgivingQueryRaw(self,origin,dir,ForgivingAim::MinRadiusMetres*scale,list,count)) {
+        forgivingSelector.Reset();
+        if(++forgivingFaults>=3) {
+            forgivingAimEnabled=false;
+            FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")){fprintf(f,"forgiving aim turned off after %u failed searches\n",forgivingFaults);fclose(f);}
+        }
+        return;
+    }
+    const auto now=GetTickCount64();
+    const auto* target=forgivingSelector.Update(list,count,now,GamepadBridge::InteractionVisualHeld(now));
+    const uintptr_t owner=target?target->owner:0;
+    if(owner!=forgivingLastOwner){forgivingLastOwner=owner;ForgivingLog("steer",owner,target?double(target->score):0.,count);}
+    if(forgivingSelector.Rejected()!=forgivingLoggedRejects){forgivingLoggedRejects=forgivingSelector.Rejected();ForgivingLog("refused",owner,0.,count);}
+    if(target&&ForgivingAim::RayMatrix(aim,origin,target->point,forgivingRay))forgivingRayActive=true;
+}
+void ForgivingEnd() {
+    const auto selected=forgivingSelected;
+    forgivingSelector.NoteSelection(selected,GetTickCount64());
+    if(selected!=forgivingLastAccepted) {
+        forgivingLastAccepted=selected;
+        ForgivingLog(selected?(forgivingRayActive?"accepted-steered":"accepted-plain-line"):"prompt-cleared",selected,0.,0);
+    }
+    forgivingRayActive=false;
+}
 void __fastcall SenseUpdateHook(void* self,void*,float dt) {
     auto previous=senseQueries;
     {std::lock_guard lock(stateMutex);
@@ -2063,7 +2230,9 @@ void __fastcall SenseUpdateHook(void* self,void*,float dt) {
     }
     bool sample=false;
     uint64_t now{};
-    if(interactionProbesReady&&!previous&&senseQueries&&dt>0&&interactionSampleCount.load()<300){
+    const bool forgivingDrive=forgivingAimEnabled&&interactionProbesReady&&!previous&&senseQueries&&dt>0;
+    if(forgivingDrive)ForgivingBegin(self);
+    if(interactionDiagLog&&interactionProbesReady&&!previous&&senseQueries&&dt>0&&interactionSampleCount.load()<300){
         now=GetTickCount64();
         auto next=interactionNextSample.load();
         sample=now>=next&&interactionNextSample.compare_exchange_strong(next,now+2000);
@@ -2074,6 +2243,7 @@ void __fastcall SenseUpdateHook(void* self,void*,float dt) {
         interactionSample.scale=current.scale;interactionSample.source=unsigned(interactionAim.load());
     }
     originalSenseUpdate(self,dt);senseQueries=previous;
+    if(forgivingDrive)ForgivingEnd();
     if(sample){interactionSample.active=false;++interactionSampleCount;WriteInteractionSample();}
 }
 uintptr_t VA(uintptr_t preferred);
@@ -2111,7 +2281,7 @@ void* __fastcall PlayerWorldHook(void* self,void*) {
     }
     if(senseQueries) {
         thread_local CameraMath::Matrix target;
-        if(DirectionWorld(interactionAim,target)){RecordInteractionTransform(target);++interactionQueries;return target.m;}
+        if(InteractionWorld(target)){RecordInteractionTransform(target);++interactionQueries;return target.m;}
     }
     return originalPlayerWorld(self);
 }
@@ -2674,7 +2844,7 @@ CameraMath::Matrix* __fastcall WeaponAimHook(void* self,void*,CameraMath::Matrix
     // must use its own setting even when the gun follows the controller.
     if(senseQueries) {
         CameraMath::Matrix target;
-        if(out && DirectionWorld(interactionAim,target)){RecordInteractionTransform(target);*out=target;++interactionQueries;}
+        if(out && InteractionWorld(target)){RecordInteractionTransform(target);*out=target;++interactionQueries;}
         return result;
     }
     if(experimentalMotionControls && out) {
@@ -4597,7 +4767,7 @@ void* Get(void* self,Getter original,int kind,uintptr_t caller) {
     if(senseQueries && kind<2) {
         CameraMath::Matrix target;
         thread_local CameraMath::Matrix targetMatrices[2];
-        if(DirectionWorld(interactionAim,target,nullptr,reinterpret_cast<uintptr_t>(self))) {
+        if(InteractionWorld(target,reinterpret_cast<uintptr_t>(self))) {
             RecordInteractionTransform(target);
             targetMatrices[kind]=kind?CameraMath::InverseRigid(target):target;
             ++interactionQueries;return targetMatrices[kind].m;
