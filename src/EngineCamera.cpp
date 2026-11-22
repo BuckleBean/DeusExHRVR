@@ -2006,7 +2006,7 @@ std::atomic<uint64_t> leftPromptTick{};
 bool leftCarryThrow{};
 std::atomic<bool> grabActive{},grabLeft{};
 // Two-handed weapons, stage one. [VR] TwoHandedWeapons=0 turns it off;
-// TwoHandedWeaponsLog=0 stops DeusExHRVR-twohand.log.
+// TwoHandedWeaponsLog=1 writes DeusExHRVR-twohand.log.
 bool twoHandedWeapons{},twoHandedLog{};
 // [VR] TwoHandedAim=0 leaves all aiming on the right hand.
 bool twoHandedAim{};
@@ -2147,7 +2147,7 @@ void InstallInteractionProbes(){
     leftHandInteract=GetPrivateProfileIntW(L"VR",L"LeftHandInteract",1,diagConfig)!=0;
     leftCarryThrow=leftHandInteract&&GetPrivateProfileIntW(L"VR",L"LeftHandCarryThrow",1,diagConfig)!=0;
     twoHandedWeapons=GetPrivateProfileIntW(L"VR",L"TwoHandedWeapons",1,diagConfig)!=0;
-    twoHandedLog=twoHandedWeapons&&GetPrivateProfileIntW(L"VR",L"TwoHandedWeaponsLog",1,diagConfig)!=0;
+    twoHandedLog=twoHandedWeapons&&GetPrivateProfileIntW(L"VR",L"TwoHandedWeaponsLog",0,diagConfig)!=0;
     twoHandedAim=twoHandedWeapons&&GetPrivateProfileIntW(L"VR",L"TwoHandedAim",1,diagConfig)!=0;
     float forgivingDegrees=15.f;
     {
