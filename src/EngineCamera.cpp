@@ -358,6 +358,7 @@ std::atomic<uint64_t> handDriveRejected{};
 // off until it has tests that do not depend on them.
 bool controllerHandsPose=false;
 bool controllerHandsInteractCurl=false;
+bool handGripClose=true; // [VR] HandGripClose=0 returns to the gentle right-hand Interact curl
 uint32_t controllerHandsPoseMask=0x4000;     // XINPUT_GAMEPAD_X    = interact
 uint32_t controllerHandsSprintMask=0x0100;   // XINPUT_GAMEPAD_LB   = sprint
 CameraMath::Matrix handPoseBase[32]{},handPoseBest[32]{};
@@ -2767,14 +2768,15 @@ bool NativeModelFrame(void* model,const std::shared_ptr<const HandOnlyGeometry::
                 memcpy(&segments[i].parent,raw.data()+i*64+0x38,4);
             }
             ready=NativeHandWeapon::Frame(segments,cachedFrame,cachedPivot,plan->boneCount);
-            if(ready && controllerHandsInteractCurl)cachedCurl=InteractionCurl::Build(segments,plan->boneCount);
+            if(ready && controllerHandsInteractCurl)cachedCurl=InteractionCurl::Build(segments,plan->boneCount,false,handGripClose);
         }
     }
     if(!ready)return false;frame=cachedFrame;pivot=cachedPivot;if(curl)*curl=cachedCurl;return true;
 }
 bool LeftModelFrame(void* model,const std::shared_ptr<const HandOnlyGeometry::Plan>& plan,
-                      CameraMath::Matrix& frame,ModelHandAlignment::V& pivot) {
+                      CameraMath::Matrix& frame,ModelHandAlignment::V& pivot,InteractionCurl::Definition* curl=nullptr) {
     static std::mutex guard;
+    static InteractionCurl::Definition cachedCurl{};
     static std::shared_ptr<const HandOnlyGeometry::Plan> previous;
     static CameraMath::Matrix cachedFrame{};static ModelHandAlignment::V cachedPivot{};
     static bool ready{};static uint64_t retryAfter{};
@@ -2793,9 +2795,11 @@ bool LeftModelFrame(void* model,const std::shared_ptr<const HandOnlyGeometry::Pl
                 memcpy(&segments[i].parent,raw.data()+i*64+0x38,4);
             }
             ready=ModelHandAlignment::BuildLeftFrame(segments,cachedFrame,plan->boneCount);
+            cachedCurl={};
+            if(ready && controllerHandsInteractCurl && handGripClose)cachedCurl=InteractionCurl::Build(segments,plan->boneCount,true,true);
         }
     }
-    if(!ready)return false;frame=cachedFrame;pivot=cachedPivot;return true;
+    if(!ready)return false;frame=cachedFrame;pivot=cachedPivot;if(curl)*curl=cachedCurl;return true;
 }
 bool ReadNativePalm(WeaponPose& pose,CameraMath::Matrix& skin,CameraMath::Matrix& delta) {
     if(!pose.owner || !pose.weapon)return false;
@@ -3191,7 +3195,7 @@ void MotionContext(HandWeaponMotionDiagnostic::Sample& sample,const WeaponPose& 
     sample.base=current.controllerBase;sample.viewWorld=current.world;
 }
 bool TryModelHand(void* model,unsigned char* data,CameraMath::Matrix* palette,uint32_t n) {
-    CameraMath::Matrix target{},leftTarget{};bool leftValid=false;
+    CameraMath::Matrix target{},leftTarget{};bool leftValid=false;uint32_t gripBits{};
     {
         std::lock_guard lock(stateMutex);
         if(!requested || !current.active || !referenceValid || screenReasons || current.scale!=handDrawScale ||
@@ -3200,6 +3204,7 @@ bool TryModelHand(void* model,unsigned char* data,CameraMath::Matrix* palette,ui
         }
         if(controllerHandsLeft.load())leftValid=
             ModelHandAlignment::GripTarget(current.tracking,GetTickCount64(),current.controllerBase,reference,current.scale,leftTarget,true);
+        gripBits=current.tracking.reserved;
     }
     auto plan=(HandDrawDiagnostic::hookStatus.load()==1)?HandOnlyGeometry::Prepare(model):nullptr;
     if(!plan || plan->boneCount!=n){if(DiagnosticOptions::hands)++modelHandBadModel;return false;}
@@ -3239,7 +3244,8 @@ bool TryModelHand(void* model,unsigned char* data,CameraMath::Matrix* palette,ui
        !ModelHandAlignment::NeutralWrist(palette,n,plan->bones)){if(DiagnosticOptions::hands)++neutralWristFailed;}
     if(capture){motion.after[0]=palette[129];motion.after[1]=palette[130];HandWeaponMotionDiagnostic::Push(motion);}
     CameraMath::Matrix leftFrame{};ModelHandAlignment::V unused{};
-    bool leftMoved=leftValid && LeftModelFrame(model,plan,leftFrame,unused) &&
+    InteractionCurl::Definition leftCurl;
+    bool leftMoved=leftValid && LeftModelFrame(model,plan,leftFrame,unused,&leftCurl) &&
         ModelHandAlignment::RestLeft(palette,n,plan->leftBones,leftFrame,leftTarget);
     if(controllerHandsInteractCurl){
         // Completed holster is state 4; do not infer empty from a missing muzzle.
@@ -3250,10 +3256,22 @@ bool TryModelHand(void* model,unsigned char* data,CameraMath::Matrix* palette,ui
             HandMeshDiagnostic::Read(weapon,&vtable,4) && vtable==base+0xab1944-0x400000 &&
             HandMeshDiagnostic::Read(weapon+0x50,&flags,4) &&
             HandMeshDiagnostic::Read(uintptr_t(pose.holder)+0x1c,&pending,4);
-        static thread_local InteractionCurl::Envelope envelope;
-        float amount=envelope.Update(now,frameId.load(),weapon,
-            InteractionCurl::Eligible(known,curl.valid,flags,pending),GamepadBridge::InteractionVisualHeld(now));
-        if(amount>0)InteractionCurl::Apply(palette,n,curl,amount);
+        const bool rightFree=InteractionCurl::Eligible(known,curl.valid,flags,pending);
+        if(handGripClose) {
+            static thread_local InteractionCurl::GripEnvelope rightGrip,leftGrip;
+            const float right=rightGrip.Update(now,frameId.load(),weapon,rightFree,
+                InteractionCurl::GripTarget(Transport::RightGrip(gripBits),GamepadBridge::InteractionVisualHeld(now)));
+            if(right>0)InteractionCurl::Apply(palette,n,curl,right);
+            bool leftReady=leftMoved&&leftCurl.valid;
+            for(unsigned i=101;leftReady&&i<=116;i++)leftReady=plan->leftBones[i];
+            const float left=leftGrip.Update(now,frameId.load(),uintptr_t(model),leftReady,
+                InteractionCurl::GripTarget(Transport::LeftGrip(gripBits),false));
+            if(left>0)InteractionCurl::Apply(palette,n,leftCurl,left);
+        } else {
+            static thread_local InteractionCurl::Envelope envelope;
+            float amount=envelope.Update(now,frameId.load(),weapon,rightFree,GamepadBridge::InteractionVisualHeld(now));
+            if(amount>0)InteractionCurl::Apply(palette,n,curl,amount);
+        }
     }
     HandOnlyGeometry::Activate(uintptr_t(data),frameId.load(),plan,palette[130].m,leftMoved);
 
@@ -5537,6 +5555,7 @@ void Install() {
     controllerHandsLeft=GetPrivateProfileIntW(L"VR",L"ControllerHandsLeft",1,config)!=0;
     controllerHandsNeutralWrist=GetPrivateProfileIntW(L"VR",L"ControllerHandsNeutralWrist",1,config)!=0;
     controllerHandsInteractCurl=GetPrivateProfileIntW(L"VR",L"ControllerHandsInteractCurl",1,config)!=0;
+    handGripClose=GetPrivateProfileIntW(L"VR",L"HandGripClose",1,config)!=0;
     GamepadBridge::EnableInteractionVisual(controllerHandsInteractCurl);
     controllerHandsRadius=float(GetPrivateProfileIntW(L"VR",L"ControllerHandsRadiusCm",15,config));
     controllerHandsSplitA=int(GetPrivateProfileIntW(L"VR",L"ControllerHandsSplitA",74,config));

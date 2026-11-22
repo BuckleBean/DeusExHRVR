@@ -520,7 +520,7 @@ struct Bridge {
         controller.Sample(session,space,fs.predictedDisplayTime,state==XR_SESSION_STATE_FOCUSED,tracking);
         MenuInput(tracking);
         if(menuUI.recenterPulse){recenter=true;Log("Menu recenter countdown completed");}
-        tracking.reserved=crosshairReady?1u:0u;
+        tracking.reserved=(crosshairReady?1u:0u)|Transport::PackGrips(controller.raw.leftGrip,controller.raw.rightGrip);
         Transport::WriteTracking(trackingChannel,tracking);
         // Low-rate status for an ordinary later session; no calibration gesture needed.
         static uint64_t gripLogTick{};

@@ -5,7 +5,7 @@
 #include <cstddef>
 #include "ButtonBindings.h"
 namespace Transport {
-inline constexpr uint32_t Magic=0x52485844, Version=24;
+inline constexpr uint32_t Magic=0x52485844, Version=25;
 struct alignas(8) MenuState {
     uint64_t gameTick,hostTick;
     uint32_t eligible,blocked,snapEnabled,request;
@@ -59,6 +59,7 @@ struct alignas(8) Tracking {
     Gamepad gamepad;
     uint32_t controllerButtons; // Raw stick clicks: bit 0 left, bit 1 right (focused input only).
     uint32_t reserved; // Transport 22: bit 0 = companion cover-crosshair texture ready.
+                       // Transport 25: bits 8-15 left grip, 16-23 right grip (0-255).
     Controller leftController; // Left aim pose, independent of grip/weapon alignment.
     GripPose leftGrip,rightGrip; // Unmodified OpenXR grip poses, same space/time as aim.
 };
@@ -121,6 +122,12 @@ struct TrackingReader {
         result=latest;return true;
     }
 };
+inline uint32_t PackGrips(float left,float right) {
+    auto byte=[](float v){return uint32_t((v>=0?(v<=1?v:1.f):0.f)*255.f+.5f);}; // NaN packs as 0
+    return (byte(left)<<8)|(byte(right)<<16);
+}
+inline float LeftGrip(uint32_t reserved){return float((reserved>>8)&255u)/255.f;}
+inline float RightGrip(uint32_t reserved){return float((reserved>>16)&255u)/255.f;}
 inline void Name(wchar_t (&name)[96],DWORD pid) {swprintf_s(name,L"Local\\DeusExHRVR-%lu",pid);}
 inline void FrameEventName(wchar_t (&name)[96],DWORD pid) {swprintf_s(name,L"Local\\DeusExHRVR-frame-%lu",pid);}
 }
