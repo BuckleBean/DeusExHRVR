@@ -9,7 +9,7 @@
 ; DeusExHRVR.ini.example. Deleting a line here returns that option to its
 ; default, which for most of them means off.
 ;
-; Tested on one setup: Quest 3 over Virtual Desktop, VDXR runtime.
+; Tested on a Quest 3, through Virtual Desktop (VDXR) and Steam Link (SteamVR).
 
 
 ; ---------------------------------------------------------------------------

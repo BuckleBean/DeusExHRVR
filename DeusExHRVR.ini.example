@@ -128,11 +128,27 @@ ControllerHandsLeft=1
 ; animation move it, which otherwise wiggles while sprinting and sits at a
 ; different angle per weapon.
 ControllerHandsNeutralWrist=1
-; Experimental visual-only curl of the empty right hand on Reload / interact.
-; Uses remapped VR input and only the supported completed-holster weapon state.
-; Enabled by default; set 0 to turn it off. Restart after changing.
-; No calibration or pose capture.
+; Visual-only finger closing with an empty hand. Uses remapped VR input and only
+; a fully holstered weapon state. Enabled by default; set 0 to turn it off. Restart
+; after changing. No calibration or pose capture.
 ControllerHandsInteractCurl=1
+; Fingers on both hands follow how far you squeeze the grip. 0 returns to the
+; earlier gentle right-hand curl on Interact. Restart after editing.
+HandGripClose=1
+; Forgiving interaction aim: the game also considers the usable object closest to
+; your aim, and a prompt stays through small hand movements. The game's own range and
+; rules still apply. Needs InteractionAim=Controller. 0 turns it off. ForgivingAimDegrees
+; is the width of the cone around the aim line. ForgivingAimLog=1 writes troubleshooting
+; lines to the log. Restart after editing.
+ForgivingAim=1
+ForgivingAimDegrees=15
+ForgivingAimLog=0
+; Either hand can interact: while your left hand has the prompt, left grip acts as
+; Interact. 0 keeps interaction on the right hand. LeftHandCarryThrow=1 moves the throw
+; to the left trigger when the left hand is carrying a body or object. Restart after
+; editing.
+LeftHandInteract=1
+LeftHandCarryThrow=1
 ; Which camera modes the hands step aside for, as a bit mask over the game's
 ; modes. 342 = cover, ladders, the animation-bone camera, lying down, orbit.
 ControllerHandsSuspendModes=342
@@ -188,17 +204,20 @@ CeilingGuard=1
 CeilingGuardCm=20
 CeilingGuardLookAhead=1
 ; Two-handed weapons: hold the left grip with your left hand near the weapon and it
-; takes the game's own grip pose. 0 turns it off. TwoHandedAim=1 lets the left hand
+; takes the game's own grip pose. While it holds the weapon, left grip does not send
+; its normal action (sprint on the default layout). 0 turns it off. TwoHandedAim=1 lets the left hand
 ; steer the barrel while it holds the weapon; 0 leaves aiming on the right hand.
 ; TwoHandedWeaponsLog=1 writes DeusExHRVR-twohand.log for troubleshooting. Restart
 ; after editing.
 TwoHandedWeapons=1
 TwoHandedAim=1
 TwoHandedWeaponsLog=0
-; EXPERIMENTAL first-person takedowns, off by default. The game's animation still runs. Your
-; view rides along with Jensen's eyes and turns with his body, and only his arms are shown.
-; This can cause motion sickness. FirstPersonTakedownsLog=0 stops DeusExHRVR-takedown.log.
-; Restart after editing.
+; EXPERIMENTAL first-person takedowns, off by default. Set FirstPersonTakedowns=1 to try
+; them. The game's animation still runs. Your view rides along with Jensen's eyes and turns
+; with his body, and only his arms are shown. It can cause motion sickness, the view can
+; clip through characters, and hands can be missing. While it is on, each takedown is
+; written to DeusExHRVR-takedown.log; FirstPersonTakedownsLog=0 stops that. Restart after
+; editing.
 FirstPersonTakedowns=0
 FirstPersonTakedownsLog=1
 ; The game's quickbar: 1 auto-hides it, 0 keeps it on screen. Leave this line out to
