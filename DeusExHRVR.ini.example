@@ -180,11 +180,13 @@ CoverCameraFollow=1
 ; Off also hides the game's crosshair in cover, where it would mark the camera's
 ; aim rather than the controller's. VR Settings > View > Crosshair; applies when saved.
 Crosshair=ThirdPerson
-; Keeps the view below low ceilings such as vents, including when your real head is
-; higher than when you recentered. 0 turns it off. CeilingGuardCm is the gap to keep
-; (3 to 40). Restart after editing.
+; Keeps the view below low ceilings such as vents while crouched, including when your
+; real head is higher than when you recentered. 0 turns it off. CeilingGuardCm is the
+; gap to keep (3 to 40). CeilingGuardLookAhead=1 starts easing down just before you
+; reach a low ceiling; 0 turns that part off. Restart after editing.
 CeilingGuard=1
-CeilingGuardCm=15
+CeilingGuardCm=20
+CeilingGuardLookAhead=1
 ; The game's quickbar: 1 auto-hides it, 0 keeps it on screen. Leave this line out to
 ; let the game decide. VR Settings > Controls > Quickbar; the tilde key also changes it.
 ; QuickBarAutoHide=1

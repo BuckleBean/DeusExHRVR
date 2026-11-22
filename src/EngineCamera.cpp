@@ -360,8 +360,9 @@ std::atomic<uint64_t> handDriveRejected{};
 // off until it has tests that do not depend on them.
 bool controllerHandsPose=false;
 bool controllerHandsInteractCurl=false;
-// [VR] CeilingGuard=0 turns it off; CeilingGuardCm is the gap kept below a ceiling.
-std::atomic<bool> ceilingGuardOn{true};float ceilingMarginMetres=.15f;
+// [VR] CeilingGuard=0 turns it off; CeilingGuardCm is the gap kept below a ceiling;
+// CeilingGuardLookAhead=0 stops it checking just ahead of the player.
+std::atomic<bool> ceilingGuardOn{true},ceilingLookAhead{true},ceilingCrouched{};float ceilingMarginMetres=.20f;
 std::atomic<float> ceilingRoom{CeilingGuard::NoCeiling};
 std::atomic<uint32_t> crosshairMode{CoverCrosshair::Third}; // [VR] Crosshair=Off|FirstPerson|ThirdPerson|Both
 bool handGripClose=true; // [VR] HandGripClose=0 returns to the gentle right-hand Interact curl
@@ -3062,7 +3063,7 @@ void UpdateCoverTarget() {
 // Ceiling guard: how much room is above the player, measured straight up from the
 // body with the same collision query as the crosshair. Runs outside the state lock;
 // the camera uses the newest result on its next update.
-bool CeilingRaw(void* owner,float x,float y,float z,float& room) {
+bool CeilingRaw(void* owner,float x,float y,float z,bool useAhead,float aheadX,float aheadY,float& room) {
     __try {
         room=CeilingGuard::NoCeiling;
         void* ignored[2]={owner,nullptr};
@@ -3085,21 +3086,41 @@ bool CeilingRaw(void* owner,float x,float y,float z,float& room) {
             // A hit this low means the ray began inside something: not a ceiling.
             if(std::isfinite(height)&&height>=150.f)room=height;
         }
+        if(useAhead) {
+            // Only if nothing solid stands between the player and that point.
+            alignas(16) float from[4]{x,y,z+120.f,1};
+            alignas(16) float to[4]{aheadX,aheadY,z+120.f,0};
+            memset(hit,0,sizeof(hit));
+            if(!query(world,0xc72c1ba3,from,to,hit,ignored,ignored[1]?2u:1u)) {
+                alignas(16) float aheadStart[4]{aheadX,aheadY,z+40.f,1};
+                alignas(16) float aheadEnd[4]{aheadX,aheadY,z+900.f,0};
+                memset(hit,0,sizeof(hit));
+                if(query(world,0xc72c1ba3,aheadStart,aheadEnd,hit,ignored,ignored[1]?2u:1u)) {
+                    const float height=*reinterpret_cast<float*>(hit+0x18)-z;
+                    if(std::isfinite(height)&&height>=150.f&&height<room)room=height;
+                }
+            }
+        }
         return true;
     } __except(EXCEPTION_EXECUTE_HANDLER) {return false;}
 }
 void UpdateCeilingRoom() {
     float room=CeilingGuard::NoCeiling;
-    if(ceilingGuardOn.load()) {
+    static CeilingGuard::Ahead ahead;
+    if(ceilingGuardOn.load()&&ceilingCrouched.load()) {
         // Carrying (the load could read as a ceiling) or a screen, wheel or scope:
         // keep the last measurement so the view does not rise in a low space.
         if(grabActive.load())return;
         void* owner{};bool ready{},paused{};
         {std::lock_guard lock(stateMutex);owner=current.playerInstance;ready=requested&&current.active;paused=screenReasons||gameMenuOpen||wheelOpen||immersiveScopeActive;}
         if(ready&&paused)return;
-        if(owner&&ready&&handBodyOriginValid.load()&&!CeilingRaw(owner,handBodyOrigin[0].load(),handBodyOrigin[1].load(),handBodyOrigin[2].load(),room))
-            room=CeilingGuard::NoCeiling;
-    }
+        if(owner&&ready&&handBodyOriginValid.load()) {
+            const float x=handBodyOrigin[0].load(),y=handBodyOrigin[1].load(),z=handBodyOrigin[2].load();
+            float aheadX=x,aheadY=y;
+            const bool useAhead=ceilingLookAhead.load()&&ahead.Update(x,y,double(GetTickCount64()),aheadX,aheadY);
+            if(!CeilingRaw(owner,x,y,z,useAhead,aheadX,aheadY,room))room=CeilingGuard::NoCeiling;
+        } else ahead.Reset();
+    } else ahead.Reset();
     ceilingRoom.store(room);
 }
 // The game's own crosshair would mark where Jensen's camera looks, not where
@@ -4804,13 +4825,16 @@ void __fastcall UpdateHook(void* self,void*) {
                     // Keep the view, including the player's real head height, below a low ceiling.
                     static CeilingGuard::State ceiling;
                     auto guardEntity=*reinterpret_cast<const unsigned char* const*>(active+0xaa0);
-                    if(!ceilingGuardOn.load()||!guardEntity)ceiling.Reset();
+                    if(!ceilingGuardOn.load()||!guardEntity){ceiling.Reset();ceilingCrouched=false;}
                     else if(coverCamera.held||dialogue||handsSuspendedByMode.load())renderBase.m[14]-=ceiling.Release(ms);
                     else if(!referenceValid||!t.valid||gameMenuOpen||wheelOpen||immersiveScopeActive)renderBase.m[14]-=ceiling.Hold(ms);
                     else {
                         const float bodyZ=*reinterpret_cast<const float*>(guardEntity+0x28);
+                        const bool crouched=CeilingGuard::Crouched(renderBase.m[14]-bodyZ);
+                        ceilingCrouched=crouched;
                         const float eye=CameraMath::HeadWorld(renderBase,reference,t.head,worldScale).m[14]-bodyZ;
-                        if(std::isfinite(eye))renderBase.m[14]-=ceiling.Update(eye,ceilingRoom.load(),ceilingMarginMetres*worldScale,.5f*worldScale,ms);
+                        if(!crouched)renderBase.m[14]-=ceiling.Release(ms);
+                        else if(std::isfinite(eye))renderBase.m[14]-=ceiling.Update(eye,ceilingRoom.load(),ceilingMarginMetres*worldScale,.5f*worldScale,ms);
                         else renderBase.m[14]-=ceiling.Hold(ms);
                     }
                 }
@@ -5653,8 +5677,9 @@ void Install() {
     handGripClose=GetPrivateProfileIntW(L"VR",L"HandGripClose",1,config)!=0;
     {wchar_t crosshairText[32]{};GetPrivateProfileStringW(L"VR",L"Crosshair",L"ThirdPerson",crosshairText,32,config);crosshairMode=CoverCrosshair::Parse(crosshairText);}
     ceilingGuardOn=GetPrivateProfileIntW(L"VR",L"CeilingGuard",1,config)!=0;
+    ceilingLookAhead=GetPrivateProfileIntW(L"VR",L"CeilingGuardLookAhead",1,config)!=0;
     {
-        wchar_t gapText[32]{};GetPrivateProfileStringW(L"VR",L"CeilingGuardCm",L"15",gapText,32,config);
+        wchar_t gapText[32]{};GetPrivateProfileStringW(L"VR",L"CeilingGuardCm",L"20",gapText,32,config);
         const float cm=float(_wtof(gapText));
         if(std::isfinite(cm)&&cm>=3.f&&cm<=40.f)ceilingMarginMetres=cm*.01f;
     }
