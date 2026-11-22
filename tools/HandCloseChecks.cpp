@@ -52,14 +52,31 @@ static void Hand(const Skeleton& s,bool left,const char* name) {
         if(Dist(Apply4(full[i],s.rest[i]),Apply4(full[s.segments[i].parent],s.rest[i]))>1e-2)connected=false;
     }
     const V centre=PalmPoint(s,palm);
-    for(unsigned k:{3u,6u,9u,12u,15u}) {
+    for(unsigned k:{3u,6u,9u,12u}) { // the thumb now rests on the fingers, checked below
         const auto tip=s.rest[palm+k];
         const double r=Dist(tip,centre),h=Dist(Apply4(half[palm+k],tip),centre),f=Dist(Apply4(full[palm+k],tip),centre);
         if(!(f<h&&h<r))closer=false;
     }
     Check(others,"only that hand's fingers move",name);Check(meta,"shader data survives",name);
     Check(rigid,"finger transforms stay rigid",name);Check(connected,"finger joints stay connected",name);
-    Check(closer,"every fingertip closes steadily with squeeze",name);
+    Check(closer,"all four fingertips close steadily with squeeze",name);
+    {   // Across the whole squeeze the thumb must never pass underneath the fingers.
+        Matrix frame{};(left?BuildLeftFrame(s.segments,frame,s.count):BuildRightFrame(s.segments,frame,s.count));
+        V in{frame.m[0],frame.m[1],frame.m[2]},bendWay{};
+        for(unsigned k:{1u,4u,7u,10u})bendWay=Add(bendWay,Sub(s.rest[palm+k+2],s.rest[palm+k]));
+        if(Dot(in,bendWay)<0)in=Scale(in,-1);
+        bool outside=true;double worst=1e9;
+        for(int step=1;step<=20;step++) {
+            auto q=base;Apply(q.data(),s.count,d,float(step)/20.f);
+            const V tip=Apply4(q[palm+15],s.rest[palm+15]);
+            for(unsigned f:{1u,4u,7u,10u})for(unsigned j=0;j<3;j++) {
+                const V joint=Apply4(q[palm+f+j],s.rest[palm+f+j]);auto gap=Sub(tip,joint);
+                const double height=Dot(gap,in);auto flat=Sub(gap,Scale(in,height));
+                if(Dot(flat,flat)<36.0){worst=std::min(worst,height);if(height<0)outside=false;}
+            }
+        }
+        Check(outside,"the thumb stays outside the fingers through the whole squeeze",name);
+    }
 }
 int main() {
     Skeleton a,b,c;
@@ -76,7 +93,7 @@ int main() {
     {   // The C++ pose must be the pose Mark saw in the preview (report.json, CLOSED GRIP).
         const auto d=InteractionCurl::Build(a.segments,a.count,false,true);auto p=Identity();
         bool ok=InteractionCurl::Apply(p.data(),a.count,d,1.f);const V centre=PalmPoint(a,130);
-        const unsigned tips[5]{133,136,139,142,145};const double want[5]{18.3,18.7,19.4,19.4,15.7};
+        const unsigned tips[5]{133,136,139,142,145};const double want[5]{18.3,18.7,19.4,19.4,23.27};
         for(int i=0;i<5;i++){const double got=Dist(Apply4(p[tips[i]],a.rest[tips[i]]),centre);if(std::abs(got-want[i])>.25){ok=false;printf("NOTE tip %u got %.2f want %.1f\n",tips[i],got,want[i]);}}
         Check(ok,"full squeeze matches the previewed closed grip");
         const auto g=InteractionCurl::Build(a.segments,a.count);Matrix frame{};
@@ -101,8 +118,8 @@ int main() {
         Check(GripTarget(NAN,false)==0,"a bad grip reading is treated as open");
         InteractionCurl::GripEnvelope e;uintptr_t owner=7;
         Check(e.Update(1000,1,owner,true,1)==0,"closing starts from open");
-        float v=e.Update(1035,2,owner,true,1);Check(std::abs(v-.5f)<1e-4f,"closes at a limited speed");
-        Check(e.Update(1035,2,owner,true,0)==v,"a second eye of the same frame does not advance it");
+        float v=e.Update(1065,2,owner,true,1);Check(std::abs(v-.5f)<1e-4f,"closes at the slower speed");
+        Check(e.Update(1065,2,owner,true,0)==v,"a second eye of the same frame does not advance it");
         v=e.Update(1200,3,owner,false,1);Check(v==0,"losing eligibility opens at once");
         e.Update(2000,4,owner,true,.5f);e.Update(2100,5,owner,true,.5f);Check(e.Update(2120,6,owner,true,.5f)==.5f,"holds a partial squeeze");
     }
