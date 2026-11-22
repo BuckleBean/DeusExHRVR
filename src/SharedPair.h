@@ -70,7 +70,7 @@ struct alignas(8) Tracking {
 // marker*: the grenade landing marker for this frame (transport 21), in the
 // same OpenXR space as tracking. markerState bit 0 = show it; bit 1 =
 // markerNormal holds the facing of the surface it lies on (unit, OpenXR).
-struct RenderInfo {Tracking tracking;uint32_t mode,eyeMask;float markerPosition[3];uint32_t markerState;float markerNormal[3];uint32_t markerReserved;float coverPosition[3];uint32_t coverState;};
+struct RenderInfo {Tracking tracking;uint32_t mode,eyeMask;float markerPosition[3];uint32_t markerState;float markerNormal[3];uint32_t markerReserved/*fade darkness, 0 none to 255 black*/;float coverPosition[3];uint32_t coverState;};
 static_assert(sizeof(Tracking)==288 && sizeof(RenderInfo)==344);
 static_assert(offsetof(Tracking,rightController)==136 && offsetof(Tracking,gamepad)==168);
 static_assert(offsetof(Tracking,leftController)==192 && offsetof(Tracking,leftGrip)==224 && offsetof(Tracking,rightGrip)==256);

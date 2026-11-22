@@ -4,6 +4,8 @@
 #include "CeilingGuard.h"
 #include "TwoHandAttach.h"
 #include "TwoHandSteer.h"
+#include "TakedownView.h"
+#include "TakedownRide.h"
 #include "QuickBarRule.h"
 #include "ForgivingAim.h"
 #include "CoverFollow.h"
@@ -2010,6 +2012,19 @@ bool twoHandedWeapons{},twoHandedLog{};
 bool twoHandedAim{};
 std::atomic<uint64_t> leftSteerTick{};
 std::atomic<uint64_t> rightHandEmptyTick{}; // the holder shows no weapon in the right hand
+// First-person takedowns, off by default (Mark: an odd experience, not the right
+// implementation). [VR] FirstPersonTakedowns=1 turns them on;
+// FirstPersonTakedownsLog=0 stops DeusExHRVR-takedown.log.
+std::atomic<bool> firstPersonTakedowns{},takedownLog{},takedownStarted{},takedownEnded{};
+std::atomic<uint64_t> takedownHoldTick{},takedownDarkTick{};
+std::atomic<uint32_t> takedownDarkness{};
+thread_local bool takedownRideDrawing{}; // inside the player's draw during the ride-along
+void TakedownNote(const char* what,uint64_t frame) {
+    static unsigned lines{};
+    if(!takedownLog.load()||lines>=200)return;
+    ++lines;FILE* f{};
+    if(!fopen_s(&f,"DeusExHRVR-takedown.log","a")&&f){fprintf(f,"[%llu] %s frame=%llu\n",GetTickCount64(),what,frame);fclose(f);}
+}
 // The wrist HUD follows the visible hands: [0] left on the weapon, [1] right while steering.
 std::mutex twoHandHudMutex;
 TwoHandSteer::HudShift twoHandHud[2];
@@ -3186,6 +3201,32 @@ uint32_t __fastcall ReticleTypeHook(void* self,void*,void* descriptor) {
 }
 
 void __fastcall ActorDrawHook(void* self,void*,void* matrix,void* args) {
+    {
+        // Riding along in a takedown: draw only his arms, and not his weapon. Only while the
+        // camera code keeps confirming the hold, so a stall cannot leave him invisible.
+        const auto tick=takedownHoldTick.load(std::memory_order_relaxed);
+        if(tick) {
+            const auto now=GetTickCount64();
+            if(now>=tick&&now-tick<250) {
+                auto instance=*reinterpret_cast<void**>(static_cast<unsigned char*>(self)+8);
+                bool isPlayer=false,isWeapon=false;
+                {
+                    std::lock_guard lock(stateMutex);
+                    isPlayer=instance&&instance==current.playerInstance;
+                    isWeapon=instance&&instance==weaponPose.instance;
+                }
+                if(isWeapon)return;
+                if(isPlayer) {
+                    // Only the arms and hands are drawn, in the game's own animated pose.
+                    if(HandDrawDiagnostic::hookStatus.load()!=1)return;
+                    takedownRideDrawing=true;
+                    originalActorDraw(self,matrix,args);
+                    takedownRideDrawing=false;
+                    return;
+                }
+            }
+        }
+    }
     if(fixedDialogueCamera) {
         // Held at Jensen's eyes in a conversation: his own head and body would
         // fill the view. current.playerInstance is PlayerCamera's Instance.
@@ -3519,6 +3560,28 @@ void __cdecl SkeletonHook(void* model,void* bones,uint32_t flags,uint32_t count,
     // including native third-person draws that bypass handDrawing entirely.
     if(state && *static_cast<uintptr_t*>(state)==base+0xa97524-0x400000)
         HandOnlyGeometry::Invalidate(*reinterpret_cast<uintptr_t*>(static_cast<unsigned char*>(state)+0x10));
+    if(takedownRideDrawing) {
+        // Tags this palette as arms-only. The palette itself is left exactly as the game made it.
+        if(state && *static_cast<uintptr_t*>(state)==base+0xa97524-0x400000) {
+            if(auto data=*reinterpret_cast<unsigned char**>(static_cast<unsigned char*>(state)+0x10)) {
+                const auto n=*reinterpret_cast<uint32_t*>(data);
+                if(n&&n<=512&&n==count) {
+                    auto m=reinterpret_cast<CameraMath::Matrix*>(data+0x10);
+                    auto plan=HandOnlyGeometry::Prepare(model);
+                    if(plan&&plan->boneCount==n) {
+                        static bool noted{};
+                        if(!noted){noted=true;TakedownNote(plan->armsReady?"arms ready":"arms unavailable, hands only",frameId.load());}
+                        HandOnlyGeometry::Activate(uintptr_t(data),frameId.load(),plan,m[130].m,true,true);
+                    } else {
+                        uint32_t render{};
+                        if(HandMeshDiagnostic::Read(uintptr_t(model)+0x64,&render,4)&&render)
+                            HandOnlyGeometry::Hide(uintptr_t(data),frameId.load(),render,m[0].m);
+                    }
+                }
+            }
+        }
+        return;
+    }
     // ControllerHands: keep the hand bones, collapse the rest. Same validated
     // palette as the weapon path below, reached through the actor's own draw.
     if(handDrawing) {
@@ -4968,6 +5031,62 @@ void __fastcall UpdateHook(void* self,void*) {
                         else renderBase.m[14]-=ceiling.Hold(ms);
                     }
                 }
+                {
+                    // First-person takedown: the animation runs; the view stays at the eyes.
+                    static TakedownView::State takedown;
+                    static CameraMath::Matrix takedownView;static uint64_t takedownViewAt{};
+                    const bool started=takedownStarted.exchange(false),ended=takedownEnded.exchange(false);
+                    const bool bone=cameraModeIndex.load()==4;
+                    auto viewEntity=*reinterpret_cast<const unsigned char* const*>(active+0xaa0);
+                    bool viewGood=false,offBody=false;
+                    if(firstPersonTakedowns.load()&&viewEntity) {
+                        const float bx=*reinterpret_cast<const float*>(viewEntity+0x20),by=*reinterpret_cast<const float*>(viewEntity+0x24),bz=*reinterpret_cast<const float*>(viewEntity+0x28);
+                        const float eye=renderBase.m[14]-bz,side=std::hypot(renderBase.m[12]-bx,renderBase.m[13]-by);
+                        bool finite=std::isfinite(eye)&&std::isfinite(side);for(float v:renderBase.m)finite=finite&&std::isfinite(v);
+                        // These takedowns stay in camera mode Combat; the camera leaving the body is the sign.
+                        offBody=finite&&side>TakedownView::BodyLimit;
+                        viewGood=finite&&!offBody&&!bone&&!dialogue&&!gameMenuOpen&&!wheelOpen&&!immersiveScopeActive&&eye>1.f&&eye<900.f&&
+                            NativeCombatCamera(const_cast<unsigned char*>(viewEntity),reinterpret_cast<uintptr_t>(manager));
+                    }
+                    if(viewGood&&takedown.phase==TakedownView::Phase::Idle){takedownView=renderBase;takedownViewAt=now;}
+                    const bool canHold=takedownViewAt&&now>=takedownViewAt&&now-takedownViewAt<1000;
+                    const auto before=takedown.phase;
+                    if(started)TakedownNote("sequence start",frameId.load());
+                    if(ended)TakedownNote("sequence end",frameId.load());
+                    const auto view=takedown.Update(double(now),firstPersonTakedowns.load(),started,ended,bone||offBody,dialogue,canHold,viewGood);
+                    if(takedown.phase!=before) {
+                        static const char* const names[]{"normal view","waiting for takedown camera","holding first person","fading out","dark, view moved","fading in"};
+                        TakedownNote(names[int(takedown.phase)],frameId.load());
+                    }
+                    if(view.hold)renderBase=takedownView;
+                    {
+                        // Ride along once the takedown camera has left the body.
+                        static TakedownRide::Ride ride;
+                        const bool riding=takedown.phase==TakedownView::Phase::Hold||takedown.phase==TakedownView::Phase::Out;
+                        if(riding) {
+                            float eyeNow[3]{},chestYaw{};uint32_t rideModel{},rideBones{};
+                            CameraMath::Matrix eyeA,eyeB,chest;
+                            const bool read=viewEntity&&NativeHandWeapon::OwnerModel(uintptr_t(viewEntity),HandMeshDiagnostic::Read,rideModel,rideBones)&&
+                                HandMeshDiagnostic::Read(rideBones+TakedownRide::EyeA*sizeof(eyeA),&eyeA,sizeof(eyeA))&&
+                                HandMeshDiagnostic::Read(rideBones+TakedownRide::EyeB*sizeof(eyeB),&eyeB,sizeof(eyeB))&&
+                                HandMeshDiagnostic::Read(rideBones+TakedownRide::Chest*sizeof(chest),&chest,sizeof(chest))&&
+                                TakedownRide::FromBones(eyeA,eyeB,chest,eyeNow,chestYaw);
+                            if(read) {
+                                if(!ride.have)ride.Begin(eyeNow,chestYaw,double(now));
+                                else ride.Update(eyeNow,chestYaw,double(now));
+                            }
+                            if(view.hold)ride.Apply(renderBase);
+                        } else if(ride.have) {
+                            char note[96];
+                            snprintf(note,sizeof(note),"ride finished: head moved %.0f units, turned %.0f degrees",ride.maxTravel,ride.maxYaw*57.29578f);
+                            TakedownNote(note,frameId.load());
+                            ride.Reset();
+                        }
+                    }
+                    takedownHoldTick.store(view.hide?now:0,std::memory_order_relaxed);
+                    takedownDarkness.store(uint32_t(std::clamp(view.darkness,0.f,1.f)*255.f+.5f),std::memory_order_relaxed);
+                    takedownDarkTick.store(view.darkness>0?now:0,std::memory_order_relaxed);
+                }
                 if(bobTrace)BobTrace(ms,current.originalWorld,renderBase.m+12,t);
                 if(fixedDialogueCamera.load()){
                 auto entity=*reinterpret_cast<const unsigned char* const*>(active+0xaa0);
@@ -5706,6 +5825,7 @@ void Install() {
 #if defined(_M_IX86)
     if(enabled)InstallInteractionProbes();
     if(enabled)InstallQuickBarHooks();
+    if(enabled)InstallTakedownHooks();
     if(enabled)InstallScreenHooks(); // after, and independent of, the camera hooks
     if(enabled) {
         // HandHud in [VR] (default 1): HUD on the hands (1) or the game's own (0).
@@ -6064,6 +6184,11 @@ Transport::RenderInfo OnPresent(uint64_t frame,bool capture) {
     if(effectsCapture){SaveEffects(frame);effectCount=0;shaderTrace.End();}effectsCapture=capture;
     if(capture)shaderTrace.Begin(frame+1);
     auto completed=pairInfo;pairInfo={};
+    {
+        // Only while the camera code keeps asking, so a menu or stall can never leave it dark.
+        const auto tick=takedownDarkTick.load(std::memory_order_relaxed);const auto nowMs=GetTickCount64();
+        completed.markerReserved=tick&&nowMs>=tick&&nowMs-tick<300?takedownDarkness.load(std::memory_order_relaxed):0u;
+    }
     scenes.Complete(frame);
     lastWorld={};
     if(completed.mode==1 && completed.eyeMask!=3)completed.mode=2;
@@ -6294,6 +6419,29 @@ void __fastcall QuickBarFrameHook(void* self,void*,float dt) {
         QuickBarSaveFile(config,live!=0);
     }
     originalQuickBarFrame(self,dt);
+}
+using TakedownCall=void(__thiscall*)(void*);
+TakedownCall originalTakedownStart{},originalTakedownEnd{};
+// NsTakeDownScriptedSequence: start (vtable slot 13) and ending routine. Each only notes the
+// event and runs the game's own code unchanged.
+void __fastcall TakedownStartHook(void* self,void*){takedownStarted=true;originalTakedownStart(self);}
+void __fastcall TakedownEndHook(void* self,void*){takedownEnded=true;originalTakedownEnd(self);}
+void InstallTakedownHooks() {
+    wchar_t config[MAX_PATH]{};GetFullPathNameW(L"DeusExHRVR.ini",MAX_PATH,config,nullptr);
+    if(!GetPrivateProfileIntW(L"VR",L"FirstPersonTakedowns",0,config))return;
+    takedownLog=GetPrivateProfileIntW(L"VR",L"FirstPersonTakedownsLog",1,config)!=0;
+    HandOnlyGeometry::rideArmsEnabled=true;
+    auto start=reinterpret_cast<void*>(VA(0x7c83c0)),end=reinterpret_cast<void*>(VA(0x7c8890));
+    const auto slot=reinterpret_cast<const uintptr_t*>(VA(0xab7cbc))[13];
+    if(slot!=uintptr_t(start)||memcmp(start,"\x56\x8b\xf1\xe8",4)||memcmp(end,"\x55\x8b\xec\x83\xe4\xf0\x81\xec",8)) {
+        TakedownNote("not installed: game code differs",0);return;
+    }
+    const bool madeStart=MH_CreateHook(start,(void*)&TakedownStartHook,(void**)&originalTakedownStart)==MH_OK;
+    const bool madeEnd=madeStart&&MH_CreateHook(end,(void*)&TakedownEndHook,(void**)&originalTakedownEnd)==MH_OK;
+    if(madeEnd&&MH_EnableHook(start)==MH_OK&&MH_EnableHook(end)==MH_OK){firstPersonTakedowns=true;TakedownNote("installed",0);return;}
+    if(madeStart){MH_DisableHook(start);MH_RemoveHook(start);}
+    if(madeEnd){MH_DisableHook(end);MH_RemoveHook(end);}
+    TakedownNote("not installed: hook failed",0);
 }
 void InstallQuickBarHooks() {
     auto start=reinterpret_cast<void*>(VA(0x7fe2a0)),frame=reinterpret_cast<void*>(VA(0x7fe370));

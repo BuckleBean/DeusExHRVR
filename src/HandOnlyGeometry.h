@@ -8,7 +8,10 @@
 // buffers: draws selected contiguous ranges from the original index buffer.
 namespace HandOnlyGeometry {
 struct Run {uint32_t start{},triangles{};};
+inline bool rideArmsEnabled=false; // set once at startup when FirstPersonTakedowns=1
+struct ArmPart {unsigned group{},triangles{};uintptr_t batch{};std::vector<Run> runs[2];};
 struct Plan {
+    std::vector<ArmPart> arms;bool armsReady{};
     uintptr_t render{},mesh{},groups{},batch{};
     std::vector<Run> runs[3],leftRuns[3];
     unsigned boneCount=223,partCount=2;
@@ -30,6 +33,69 @@ inline bool ReadBlock(uintptr_t p,void* out,size_t n) {
     auto dst=static_cast<unsigned char*>(out);
     while(n){size_t k=(std::min)(n,size_t(65536));if(!HandMeshDiagnostic::Read(p,dst,k))return false;p+=k;dst+=k;n-=k;}
     return true;
+}
+// Read-only arm selection for the takedown ride-along (from the October full-arm work, with
+// its October 31 jacket-layer correction). Stores draw ranges only; game buffers are untouched.
+inline bool PrepareArms(Plan& p,const uint32_t* h){
+    unsigned groupCount=h[25]&65535,batchCount=h[25]>>16;
+    if(groupCount>25||batchCount>9)return false;
+    std::vector<uint16_t> indices(h[3]);
+    if(!ReadBlock(h[24],indices.data(),indices.size()*2))return false;
+    unsigned first=0,total=0;
+    for(unsigned batch=0;batch<batchCount;batch++){
+        uint32_t b[24]{},fmt[4]{};
+        auto address=uintptr_t(h[22])+batch*96;
+        if(!ReadBlock(address,b,sizeof(b))||!ReadBlock(b[19],fmt,sizeof(fmt)))return false;
+        unsigned stride=(fmt[2]>>16)&255,attrs=fmt[2]&65535;
+        if((stride!=48&&stride!=52)||attrs>16||b[20]>20000||b[12]>groupCount-first)return false;
+        uint32_t attributes[32]{};if(!ReadBlock(b[19]+16,attributes,attrs*8))return false;
+        bool position=false,weights=false,bones=false;
+        for(unsigned a=0;a<attrs;a++){
+            position|=attributes[a*2]==0xd2f7d823&&attributes[a*2+1]==0x00020000;
+            weights|=attributes[a*2]==0x48e691c0&&attributes[a*2+1]==0x0006001c;
+            bones|=attributes[a*2]==0x5156d8d3&&attributes[a*2+1]==0x00070020;
+        }
+        if(!position||!weights||!bones)return false;
+        unsigned gatherCount=uint16_t(b[13]);if(!gatherCount||gatherCount>223)return false;
+        std::vector<uint32_t> gather(gatherCount);
+        std::vector<unsigned char> vertices(size_t(b[20])*stride);
+        if(!ReadBlock(b[14],gather.data(),gather.size()*4)||!ReadBlock(b[15],vertices.data(),vertices.size()))return false;
+        for(auto bone:gather)if(bone>=p.boneCount)return false;
+        for(unsigned gi=first;gi<first+b[12];gi++){
+            bool selected=p.boneCount==223?(gi==1||gi==8):(gi==2||gi==4||gi==5||gi==6);
+            if(!selected)continue;
+            uint32_t g[16]{};if(!ReadBlock(h[21]+gi*64,g,sizeof(g))||uint64_t(g[4])+uint64_t(g[5])*3>indices.size())return false;
+            ArmPart part;part.group=gi;part.batch=address;part.triangles=g[5];
+            for(unsigned side=0;side<2;side++)for(unsigned tri=0;tri<g[5];tri++){
+                bool keep=true;
+                for(unsigned j=0;j<3;j++){
+                    auto id=indices[g[4]+tri*3+j];if(id>=b[20])return false;
+                    auto v=vertices.data()+id*stride;float x{};std::memcpy(&x,v,4);
+                    if(!std::isfinite(x))return false;
+                    keep&=side?x>52:x< -52;bool arm=false;unsigned sum=0;
+                    for(unsigned k=0;k<4;k++)if(v[28+k]){
+                        sum+=v[28+k];if(v[32+k]>=gatherCount)return false;
+                        auto bone=gather[v[32+k]];
+                        arm|=side?(bone>=96&&bone<=123):(bone>=125&&bone<=152);
+                    }
+                    if(sum!=255)return false;keep&=arm;
+                }
+                if(!keep)continue;
+                auto& runs=part.runs[side];uint32_t at=g[4]+tri*3;
+                if(!runs.empty()&&runs.back().start+runs.back().triangles*3==at)++runs.back().triangles;
+                else runs.push_back({at,1});
+                if(runs.size()>512)return false;++total;
+            }
+            p.arms.push_back(std::move(part));
+        }
+        first+=b[12];
+    }
+    return first==groupCount&&total==(p.boneCount==223?1486u:10029u);
+}
+inline void PrepareRideArms(Plan& p,const uint32_t* h) {
+    if(!rideArmsEnabled)return;
+    p.armsReady=PrepareArms(p,h);
+    if(!p.armsReady)p.arms.clear();
 }
 inline bool Select(Plan& plan,const std::vector<unsigned char>& vertices,uint32_t stride,
     const std::vector<uint16_t>& indices,const std::vector<uint32_t>& gather,
@@ -101,6 +167,7 @@ inline std::shared_ptr<const Plan> Prepare162(uintptr_t render,uintptr_t mesh,co
         stage=11;if(rt!=rightTotals[slot] || lt!=leftTotals[slot])return {};
         p->groupIds[slot]=gi;p->triangleCounts[slot]=counts[slot];p->partBatches[slot]=h[22]+bi*96;
     }
+    PrepareRideArms(*p,h);
     return p;
 }
 inline std::shared_ptr<const Plan> Prepare(void* model) {
@@ -172,9 +239,10 @@ inline std::shared_ptr<const Plan> Prepare(void* model) {
         unsigned total=0;for(auto r:p->runs[i])total+=r.triangles;
         if(total!=(i?611u:3297u))return fail();
     }
+    PrepareRideArms(*p,h);
     std::shared_ptr<const Plan> result=p;cached.store(result);retryAfter=0;rejectionStage=0;return result;
 }
-struct Tag {bool left{},hidden{};uintptr_t render{};unsigned witnessBone=130;uintptr_t pose{};uint64_t frame{};std::shared_ptr<const Plan> plan;std::array<unsigned char,64> wrist{};};
+struct Tag {bool left{},hidden{},arms{};uintptr_t render{};unsigned witnessBone=130;uintptr_t pose{};uint64_t frame{};std::shared_ptr<const Plan> plan;std::array<unsigned char,64> wrist{};};
 inline std::mutex tagMutex;
 inline std::array<Tag,64> tags{};
 inline unsigned cursor{};
@@ -182,11 +250,11 @@ inline void Invalidate(uintptr_t pose) {
     std::lock_guard lock(tagMutex);
     for(auto& t:tags)if(t.pose==pose){t.pose=0;t.plan.reset();}
 }
-inline void Activate(uintptr_t pose,uint64_t frame,std::shared_ptr<const Plan> plan,const void* wrist,bool left=false) {
+inline void Activate(uintptr_t pose,uint64_t frame,std::shared_ptr<const Plan> plan,const void* wrist,bool left=false,bool arms=false) {
     std::lock_guard lock(tagMutex);
     for(auto& old:tags)if(old.pose==pose){old.pose=0;old.plan.reset();}
     auto& t=tags[cursor++%tags.size()];
-    t.hidden=false;t.witnessBone=130;t.render=plan->render;t.left=left;t.pose=pose;t.frame=frame;t.plan=std::move(plan);std::memcpy(t.wrist.data(),wrist,64);if(DiagnosticOptions::hands)++posesMoved;
+    t.arms=arms;t.hidden=false;t.witnessBone=130;t.render=plan->render;t.left=left;t.pose=pose;t.frame=frame;t.plan=std::move(plan);std::memcpy(t.wrist.data(),wrist,64);if(DiagnosticOptions::hands)++posesMoved;
     if(left)if(DiagnosticOptions::hands)++leftPoses;
 }
 // Suppress only this VR-generated player palette; native third-person draws
@@ -207,11 +275,11 @@ inline bool Hidden(uintptr_t pose,uint64_t frame,uintptr_t render) {
     }
     return false;
 }
-inline std::shared_ptr<const Plan> Match(uintptr_t pose,uint64_t frame,bool* left=nullptr) {
+inline std::shared_ptr<const Plan> Match(uintptr_t pose,uint64_t frame,bool* left=nullptr,bool* arms=nullptr) {
     std::lock_guard lock(tagMutex);
     for(const auto& t:tags)if(t.pose==pose && t.plan && frame>=t.frame && frame-t.frame<=1) {
         std::array<unsigned char,64> now{};
-        if(HandMeshDiagnostic::Read(pose+16+130*64,now.data(),64) && now==t.wrist){if(left)*left=t.left;return t.plan;}
+        if(HandMeshDiagnostic::Read(pose+16+130*64,now.data(),64) && now==t.wrist){if(left)*left=t.left;if(arms)*arms=t.arms;return t.plan;}
     }
     return {};
 }
@@ -221,17 +289,29 @@ template<class Draw> inline bool DrawSelected(void* drawable,void* device,void* 
     if(!stream)return false;
     // Match the tagged plan, not the diagnostic capture (which stops after four models).
     if(!cached.load())return false;
-    bool left=false;auto p=Match(words[8],frame,&left);
+    bool left=false,arms=false;auto p=Match(words[8],frame,&left,&arms);
     if(!p || words[3]!=p->render){if(DiagnosticOptions::hands)++bypassed;return false;}
     auto gp=uintptr_t(words[6]);
     if(gp<p->groups || (gp-p->groups)%64)return false;
     auto group=(gp-p->groups)/64;
+    if(arms)for(const auto& part:p->arms)if(group==part.group){
+        if(words[5]!=part.batch || (words[13]>>8)!=part.triangles)return true;
+        alignas(16) uint32_t armDrawable[14],armGroup[16];
+        if(!HandMeshDiagnostic::Read(gp,armGroup,sizeof(armGroup)))return true;
+        std::memcpy(armDrawable,drawable,sizeof(armDrawable));armDrawable[6]=uint32_t(uintptr_t(armGroup));
+        for(unsigned side=0;side<2;side++)for(auto run:part.runs[side]){
+            armGroup[4]=run.start;armGroup[5]=run.triangles;armDrawable[13]=(words[13]&255)|(run.triangles<<8);
+            original(armDrawable,device,state,stream,twice);
+        }
+        return true;
+    }
     if(group==p->hiddenGroups[0] || group==p->hiddenGroups[1]){if(DiagnosticOptions::hands)++sleevesSkipped;return true;}
     unsigned slot=0;while(slot<p->partCount && p->groupIds[slot]!=group)++slot;
-    if(slot==p->partCount || words[5]!=p->partBatches[slot])return false;
-    if((words[13]>>8)!=p->triangleCounts[slot])return false;
+    // In the ride-along everything that is not an arm or hand stays undrawn.
+    if(slot==p->partCount || words[5]!=p->partBatches[slot])return arms;
+    if((words[13]>>8)!=p->triangleCounts[slot])return arms;
     alignas(16) uint32_t localDrawable[14],localGroup[16];
-    if(!HandMeshDiagnostic::Read(gp,localGroup,sizeof(localGroup)))return false;
+    if(!HandMeshDiagnostic::Read(gp,localGroup,sizeof(localGroup)))return arms;
     std::memcpy(localDrawable,drawable,sizeof(localDrawable));localDrawable[6]=uint32_t(uintptr_t(localGroup));
     auto drawRuns=[&](const std::vector<Run>& runs){for(auto run:runs) {
         localGroup[4]=run.start;localGroup[5]=run.triangles;

@@ -194,6 +194,12 @@ CeilingGuardLookAhead=1
 TwoHandedWeapons=1
 TwoHandedAim=1
 TwoHandedWeaponsLog=1
+; EXPERIMENTAL first-person takedowns, off by default. The game's animation still runs. Your
+; view rides along with Jensen's eyes and turns with his body, and only his arms are shown.
+; This can cause motion sickness. FirstPersonTakedownsLog=0 stops DeusExHRVR-takedown.log.
+; Restart after editing.
+FirstPersonTakedowns=0
+FirstPersonTakedownsLog=1
 ; The game's quickbar: 1 auto-hides it, 0 keeps it on screen. Leave this line out to
 ; let the game decide. VR Settings > Controls > Quickbar; the tilde key also changes it.
 ; QuickBarAutoHide=1

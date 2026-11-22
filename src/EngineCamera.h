@@ -26,6 +26,7 @@ int QuickBarAutoHide(bool set);
 unsigned QuickBarSetting();
 void SetQuickBar(bool autoHide);
 void InstallQuickBarHooks();
+void InstallTakedownHooks();
 bool ImmersiveScopeButton();
 // Arms hands calibration. Called from GamepadBridge so the trigger can be a
 // bindable [Buttons] target instead of a pose gesture or an INI edit.

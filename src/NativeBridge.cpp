@@ -576,10 +576,13 @@ struct Bridge {
                     // The two GPU copies read one native texture at ONE Present boundary.
                     // They target the same acquired image and are released together.
                     const auto image=ImageNow();
+                    // First-person takedowns: the game asks for a brief fade.
+                    const float visibility=1.f-float(renderInfo.markerReserved&255u)/255.f;
+                    const bool adjusted=!image.Neutral()||visibility<1.f;
                     for(UINT eye=0;eye<2;eye++) {
                         UINT srcEye=swap?1-eye:eye;
-                        if(!image.Neutral()&&imagePass.Draw(device.Get(),context.Get(),pair,images[index].texture,eye,srcEye*h,d.Width,h,image))continue;
-                        if(!image.Neutral()&&imagePass.Failed()&&!imagePassLogged){imagePassLogged=true;Log("Brightness/contrast unavailable; using the plain image");}
+                        if(adjusted&&imagePass.Draw(device.Get(),context.Get(),pair,images[index].texture,eye,srcEye*h,d.Width,h,image,visibility))continue;
+                        if(adjusted&&imagePass.Failed()&&!imagePassLogged){imagePassLogged=true;Log("Brightness/contrast unavailable; using the plain image");}
                         D3D11_BOX box{0,srcEye*h,0,d.Width,(srcEye+1)*h,1};
                         context->CopySubresourceRegion(images[index].texture,eye,0,0,0,pair,0,&box);
                     }

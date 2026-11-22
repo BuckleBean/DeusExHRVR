@@ -45,5 +45,15 @@ int main() {
         ImagePass pass;const bool drew=pass.Draw(dev.Get(),ctx.Get(),unsupported.Get(),target.Get(),0,0,W,H,settings);
         Check(!drew&&pass.Failed(),"an unsupported game image falls back to the plain copy");
     }
+    {
+        D3D11_TEXTURE2D_DESC td=pd;td.Height=H;td.ArraySize=2;ComPtr<ID3D11Texture2D> target;dev->CreateTexture2D(&td,nullptr,&target);
+        ImagePass pass;const ImageAdjust::Settings neutral{};
+        const bool half=pass.Draw(dev.Get(),ctx.Get(),pair.Get(),target.Get(),0,0,W,H,neutral,.5f);auto a=Read(dev.Get(),ctx.Get(),target.Get(),0);
+        bool ok=half;for(int i=0;i<3;++i)ok=ok&&std::abs(int(a[i])-int(top[i])/2)<=2;Check(ok,"a half fade darkens the image by half");
+        const bool black=pass.Draw(dev.Get(),ctx.Get(),pair.Get(),target.Get(),0,0,W,H,neutral,0.f);auto b=Read(dev.Get(),ctx.Get(),target.Get(),0);
+        Check(black&&!b[0]&&!b[1]&&!b[2],"a full fade is black");
+        const bool none=pass.Draw(dev.Get(),ctx.Get(),pair.Get(),target.Get(),0,0,W,H,neutral,1.f);auto c=Read(dev.Get(),ctx.Get(),target.Get(),0);
+        ok=none;for(int i=0;i<3;++i)ok=ok&&std::abs(int(c[i])-int(top[i]))<=2;Check(ok,"no fade leaves the image alone");
+    }
     return failures?1:0;
 }

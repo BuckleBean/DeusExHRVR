@@ -9,7 +9,7 @@
 class ImagePass {
     template<class T> using Ptr=Microsoft::WRL::ComPtr<T>;
     struct Target {ID3D11Texture2D* texture{};Ptr<ID3D11RenderTargetView> views[2];bool linear{};};
-    struct Constants {float exponent,contrast,linearOut;int yOffset;};
+    struct Constants {float exponent,contrast,linearOut;int yOffset;float visibility,pad[3];};
     Ptr<ID3D11Device> device;
     Ptr<ID3D11VertexShader> vs;
     Ptr<ID3D11PixelShader> ps;
@@ -22,13 +22,13 @@ class ImagePass {
     bool Init(ID3D11Device* dev) {
         static constexpr char shader[]=R"(
 Texture2D<float4> image:register(t0);
-cbuffer Settings:register(b0){float exponent;float contrast;float linearOut;int yOffset;};
+cbuffer Settings:register(b0){float exponent;float contrast;float linearOut;int yOffset;float visibility;float3 pad;};
 float4 VS(uint id:SV_VertexID):SV_POSITION{float2 p=float2((id<<1)&2,id&2);return float4(p*float2(2,-2)+float2(-1,1),0,1);}
 float3 ToLinear(float3 c){float3 low=c/12.92;float3 high=pow((c+0.055)/1.055,2.4);return lerp(high,low,step(c,0.04045));}
 float4 PS(float4 position:SV_POSITION):SV_TARGET{
     float4 s=image.Load(int3(int(position.x),int(position.y)+yOffset,0));
     float3 c=pow(saturate(s.rgb),exponent);
-    c=saturate((c-0.5)*contrast+0.5);
+    c=saturate((c-0.5)*contrast+0.5)*visibility;
     if(linearOut>0.5)c=ToLinear(c);
     return float4(c,s.a);
 }
@@ -75,7 +75,7 @@ public:
         ps.Reset();vs.Reset();device.Reset();failed=false;
     }
     bool Draw(ID3D11Device* dev,ID3D11DeviceContext* ctx,ID3D11Texture2D* pair,ID3D11Texture2D* texture,
-              UINT eye,UINT sourceY,UINT width,UINT height,const ImageAdjust::Settings& settings) {
+              UINT eye,UINT sourceY,UINT width,UINT height,const ImageAdjust::Settings& settings,float visibility=1.f) {
         if(failed||eye>1)return false;
         if(device.Get()!=dev){Reset();if(!Init(dev)){Reset();failed=true;return false;}}
         if(source.Get()!=pair) {
@@ -89,7 +89,7 @@ public:
         if(!target){failed=true;return false;}
         D3D11_MAPPED_SUBRESOURCE map{};
         if(FAILED(ctx->Map(constants.Get(),0,D3D11_MAP_WRITE_DISCARD,0,&map))){failed=true;return false;}
-        *static_cast<Constants*>(map.pData)={ImageAdjust::Exponent(settings.brightness),ImageAdjust::ContrastFactor(settings.contrast),target->linear?1.f:0.f,int(sourceY)};
+        *static_cast<Constants*>(map.pData)={ImageAdjust::Exponent(settings.brightness),ImageAdjust::ContrastFactor(settings.contrast),target->linear?1.f:0.f,int(sourceY),visibility<0?0.f:visibility>1?1.f:visibility,{0,0,0}};
         ctx->Unmap(constants.Get(),0);
         auto* output=target->views[eye].Get();auto* input=srv.Get();auto* buffer=constants.Get();
         ctx->OMSetRenderTargets(1,&output,nullptr);ctx->OMSetBlendState(nullptr,nullptr,0xffffffff);ctx->OMSetDepthStencilState(nullptr,0);
