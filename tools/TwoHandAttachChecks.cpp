@@ -24,6 +24,8 @@ int main() {
     {State s;s.Update(1000,true,true,NAN,300);Check(!s.attached,"a bad reading does not attach");}
     Check(WeaponReady(true,1,0,false,false),"a drawn weapon can be held");
     Check(!WeaponReady(true,4,0,false,false),"a holstered weapon cannot");
+    Check(!WeaponReady(true,6,0,false,false),"nor one that loaded holstered");
+    Check(WeaponReady(true,8,0,false,false),"a fully drawn weapon can");
     Check(!WeaponReady(true,1,7,false,false),"nor one being changed");
     Check(!WeaponReady(true,1,0,true,false)&&!WeaponReady(true,1,0,false,true),"nor during a grenade throw or a carry");
     Check(!WeaponReady(false,1,0,false,false),"nor an unconfirmed weapon");

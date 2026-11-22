@@ -48,8 +48,8 @@ int main(int argc,char** argv){try{
             Check(!Apply(palette.data(),count,d,.5f),"invalid rejected");Check(!memcmp(palette.data(),invalid.data(),sizeof(palette)),"no partial writes");
         }
     }
-    for(unsigned flags=0;flags<512;flags++)Check(Eligible(true,true,flags,0)==(flags==4),"strict state gate");
-    Check(!Eligible(false,true,4,0)&&!Eligible(true,false,4,0)&&!Eligible(true,true,4,1),"unknown/pending rejected");
+    for(unsigned flags=0;flags<512;flags++)Check(Eligible(true,true,flags,0)==(flags==4||flags==6),"strict state gate");
+    Check(!Eligible(false,true,4,0)&&!Eligible(true,false,4,0)&&!Eligible(true,true,4,1)&&!Eligible(true,true,6,1),"unknown/pending rejected");
     Envelope e;Check(e.Update(100,1,1,true,true)==0,"start neutral");auto half=e.Update(180,2,1,true,true);Check(std::abs(half-.5f)<.001f,"half closing");Check(e.Update(181,2,1,true,true)==half,"same scene stable");Check(e.Update(260,3,1,true,true)==1,"closed");Check(std::abs(e.Update(370,4,1,true,false)-.5f)<.001f,"half releasing");Check(e.Update(480,5,1,true,false)==0,"released");e.Update(640,6,1,true,true);Check(e.Update(641,6,1,false,true)==0,"weapon drawn immediate cancel even same scene");
     e.Update(700,7,1,true,true);e.Update(860,8,1,true,true);Check(e.Update(861,9,2,true,true)==0,"identity reset");Check(e.Update(2000,10,2,true,true)==0,"stale reset");
     puts("PASS InteractionCurl: live poses, three layouts, metadata, strict eligibility, envelope");return 0;

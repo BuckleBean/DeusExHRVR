@@ -128,5 +128,14 @@ int main() {
         Check((bits&1)==1&&std::abs(Transport::LeftGrip(bits)-.5f)<.005f&&Transport::RightGrip(bits)==1.f,"grip amounts cross the transport without touching the crosshair bit");
         Check(Transport::PackGrips(NAN,-1)==0&&Transport::PackGrips(2,0)==(255u<<8),"bad grip values are clamped");
     }
+    Check(InteractionCurl::HolderEmpty(true,false,false,false,0,0),"no weapon yet: the right hand can close");
+    Check(InteractionCurl::HolderEmpty(true,true,true,false,0,0),"a gun not yet drawn since loading: the right hand can close");
+    Check(InteractionCurl::HolderEmpty(true,true,true,true,4,0),"a holstered gun: the right hand can close");
+    Check(!InteractionCurl::HolderEmpty(true,true,true,true,8,0),"a drawn gun: it cannot");
+    Check(InteractionCurl::HolderEmpty(true,true,true,true,6,0)&&InteractionCurl::Eligible(true,true,6,0),"a gun that loaded holstered (state 6): the right hand can close");
+    for(unsigned moving:{0x10u,0x20u,0x40u,0x80u,1u,2u,5u})Check(!InteractionCurl::Eligible(true,true,moving,0),"a gun being drawn, holstered or set up: it cannot");
+    Check(!InteractionCurl::HolderEmpty(true,false,false,false,0,7)&&!InteractionCurl::HolderEmpty(true,true,true,false,0,7),"a weapon change in progress: it cannot");
+    Check(!InteractionCurl::HolderEmpty(true,true,false,false,0,0),"an unknown held object: it cannot");
+    Check(!InteractionCurl::HolderEmpty(false,false,false,false,0,0),"no holder information: it cannot");
     return failures?1:0;
 }

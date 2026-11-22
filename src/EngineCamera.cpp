@@ -2009,6 +2009,7 @@ bool twoHandedWeapons{},twoHandedLog{};
 // [VR] TwoHandedAim=0 leaves all aiming on the right hand.
 bool twoHandedAim{};
 std::atomic<uint64_t> leftSteerTick{};
+std::atomic<uint64_t> rightHandEmptyTick{}; // the holder shows no weapon in the right hand
 // The wrist HUD follows the visible hands: [0] left on the weapon, [1] right while steering.
 std::mutex twoHandHudMutex;
 TwoHandSteer::HudShift twoHandHud[2];
@@ -3470,7 +3471,7 @@ bool TryModelHand(void* model,unsigned char* data,CameraMath::Matrix* palette,ui
     const float onWeapon=twoHandedWeapons?TwoHandStep(palette,plan->leftBones,leftFrame,leftMoved,nativeLeft,haveNativeLeft,
         twoHandDelta,twoHandPaired,leftTarget,pose.gripTarget,handDrawScale,pose.weapon,pose.muzzle,Transport::LeftGrip(gripBits),pose.holder,pose.active):0.f;
     if(controllerHandsInteractCurl){
-        // Completed holster is state 4; do not infer empty from a missing muzzle.
+        // Holstered is state 4 or 6 (InteractionCurl::Holstered); do not infer empty from a missing muzzle.
         // Validate the current holder association, not just a cached weapon address.
         uint32_t weapon{},vtable{},flags{},pending{};auto now=GetTickCount64();
         bool known=pose.active && pose.holder && pose.weapon &&
@@ -3478,10 +3479,14 @@ bool TryModelHand(void* model,unsigned char* data,CameraMath::Matrix* palette,ui
             HandMeshDiagnostic::Read(weapon,&vtable,4) && vtable==base+0xab1944-0x400000 &&
             HandMeshDiagnostic::Read(weapon+0x50,&flags,4) &&
             HandMeshDiagnostic::Read(uintptr_t(pose.holder)+0x1c,&pending,4);
-        const bool rightFree=InteractionCurl::Eligible(known,curl.valid,flags,pending);
+        // A known weapon keeps the strict check. With no weapon pose yet, ask the holder.
+        const auto emptyTick=rightHandEmptyTick.load(std::memory_order_relaxed);
+        const bool holderEmpty=!known&&curl.valid&&emptyTick&&now>=emptyTick&&now-emptyTick<250;
+        const bool rightFree=InteractionCurl::Eligible(known,curl.valid,flags,pending)||holderEmpty;
+        const uintptr_t rightOwner=known?uintptr_t(weapon):uintptr_t(model);
         if(handGripClose) {
             static thread_local InteractionCurl::GripEnvelope rightGrip,leftGrip;
-            const float right=rightGrip.Update(now,frameId.load(),weapon,rightFree,
+            const float right=rightGrip.Update(now,frameId.load(),rightOwner,rightFree,
                 InteractionCurl::GripTarget(Transport::RightGrip(gripBits),GamepadBridge::InteractionVisualHeld(now)));
             if(right>0)InteractionCurl::Apply(palette,n,curl,right);
             bool leftReady=leftMoved&&leftCurl.valid;
@@ -3492,7 +3497,7 @@ bool TryModelHand(void* model,unsigned char* data,CameraMath::Matrix* palette,ui
             if(left>0&&onWeapon<1)InteractionCurl::Apply(palette,n,leftCurl,left*(1-onWeapon));
         } else {
             static thread_local InteractionCurl::Envelope envelope;
-            float amount=envelope.Update(now,frameId.load(),weapon,rightFree,GamepadBridge::InteractionVisualHeld(now));
+            float amount=envelope.Update(now,frameId.load(),rightOwner,rightFree,GamepadBridge::InteractionVisualHeld(now));
             if(amount>0)InteractionCurl::Apply(palette,n,curl,amount);
         }
     }
@@ -5010,6 +5015,19 @@ void __fastcall UpdateHook(void* self,void*) {
                 using Equipped=unsigned char*(__cdecl*)(void*);
                 auto holder=entity?reinterpret_cast<Equipped>(base+0x66af40-0x400000)(entity):nullptr;
                 auto weapon=holder?*reinterpret_cast<unsigned char**>(holder+0x14):nullptr;
+                {
+                    // Lets the hand close before any weapon has been drawn since loading.
+                    const bool gun=weapon&&*reinterpret_cast<uintptr_t*>(weapon)==base+0xab1944-0x400000;
+                    void* heldInstance{};
+                    if(gun) {
+                        using FindHeld=void*(__cdecl*)(uint32_t);
+                        const auto heldHandle=*reinterpret_cast<uint32_t*>(weapon+0x6c);
+                        if(heldHandle!=0x7fffffffu)heldInstance=reinterpret_cast<FindHeld>(base+0x6082a0-0x400000)(heldHandle);
+                    }
+                    const bool empty=InteractionCurl::HolderEmpty(holder!=nullptr,weapon!=nullptr,gun,heldInstance!=nullptr,
+                        gun?*reinterpret_cast<uint32_t*>(weapon+0x50):0u,holder?*reinterpret_cast<uint32_t*>(holder+0x1c):1u);
+                    rightHandEmptyTick.store(empty?now:0,std::memory_order_relaxed);
+                }
                 if(weapon && *reinterpret_cast<uintptr_t*>(weapon)==base+0xab1944-0x400000) {
                     using FindInstance=void*(__cdecl*)(uint32_t);
                     auto handle=*reinterpret_cast<uint32_t*>(weapon+0x6c);

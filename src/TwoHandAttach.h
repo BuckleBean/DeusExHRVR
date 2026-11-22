@@ -13,10 +13,10 @@ inline constexpr float InSeconds=.11f,OutSeconds=.14f;
 // A weapon qualifies when the game's left hand rests close to its right hand. A guess at
 // the limit until each weapon's logged value has been seen.
 inline bool Supported(float spread){return std::isfinite(spread)&&spread>=MinSpread&&spread<=MaxSpread;}
-// The weapon is out and in the right hand. State 4 is a completed holster; pending is a
-// weapon change in progress.
+// The weapon is out and in the right hand. States 4 and 6 are holstered (6: it started out
+// holstered); pending is a weapon change in progress.
 inline bool WeaponReady(bool known,uint32_t state,uint32_t pending,bool throwing,bool carrying) {
-    return known&&state!=4&&pending==0&&!throwing&&!carrying;
+    return known&&state!=4&&state!=6&&pending==0&&!throwing&&!carrying;
 }
 // Once on the weapon, the game's reload and firing animations may move its left hand
 // outside the resting range without that meaning the weapon stopped supporting it.

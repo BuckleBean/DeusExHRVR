@@ -131,8 +131,20 @@ struct GripEnvelope {
         return value;
     }
 };
-// Exact stable state only. Transition/read failure never means empty hand.
-inline bool Eligible(bool fresh,bool supported,uint32_t flags,uint32_t pending){return fresh&&supported&&flags==4&&pending==0;}
+// Weapon state at +0x50. 4: holstered by the player (0x750C80). 6: created holstered and set up
+// (0x761130 ORs in 4, then 0x761440 clears bit 1 and sets bit 2). 0x750C80 leaves 6 as it is.
+// Drawing goes through 0x40 to 8; holstering goes through 0x10.
+inline constexpr bool Holstered(uint32_t state){return state==4||state==6;}
+// Exact stable states only. Transition/read failure never means empty hand.
+inline bool Eligible(bool fresh,bool supported,uint32_t flags,uint32_t pending){return fresh&&supported&&Holstered(flags)&&pending==0;}
+// Before a weapon has been drawn since loading there is no weapon pose to check. The hand
+// is empty when the holder has no weapon, or its gun has no world object or is holstered,
+// and no weapon change is in progress. Anything else is not treated as empty.
+inline bool HolderEmpty(bool holder,bool weapon,bool gun,bool instance,uint32_t state,uint32_t pending) {
+    if(!holder||pending)return false;
+    if(!weapon)return true;
+    return gun&&(!instance||Holstered(state));
+}
 struct Envelope {
     uint64_t tick{},frame{};uintptr_t identity{};float value{};bool initialized{};
     float Update(uint64_t now,uint64_t scene,uintptr_t owner,bool eligible,bool pressed){
