@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <utility>
 namespace EngineCamera {
 bool nativeCover{};bool NativeCoverControls(){return nativeCover;}
 bool dialogue{},available=true;
@@ -40,6 +41,7 @@ bool throwMarker{},throwAiming{};uint64_t throwHeld{};
 bool ThrowMarkerEnabled(){return throwMarker;}void SetThrowAiming(bool v){throwAiming=v;}void NoteThrowRelease(uint64_t ms){throwHeld=ms;}
 bool detonate{};uint64_t detonateHeld{};
 bool leftOwns{};bool LeftHandOwnsPrompt(){return leftOwns;}
+bool leftCarry{};bool LeftHandCarrying(){return leftCarry;}
 bool DetonateReady(){return detonate;}void NoteDetonatePress(uint64_t ms){detonateHeld=ms;}
 unsigned CurrentScreenReasons(){return reasons;}
 bool SnapTurnView(float&){return reasons==0;}
@@ -240,8 +242,23 @@ int wmain(int argc,wchar_t** argv) {
         EngineCamera::leftOwns=true;t={};t.tick=GetTickCount64();t.gamepad.valid=1;t.gamepad.buttons=LB;Transport::WriteTracking(&h,t);
         visualPad={};GamepadBridge::Read(visualPad);
         assert(visualPad.wButtons==X&&GamepadBridge::InteractionHeld(GetTickCount64())&&!GamepadBridge::InteractionVisualHeld(GetTickCount64()));
+        assert(GamepadBridge::LastInteractWasLeft());
         EngineCamera::leftOwns=false;t.tick=GetTickCount64();t.gamepad.buttons=0;Transport::WriteTracking(&h,t);
         visualPad={};GamepadBridge::Read(visualPad);assert(!GamepadBridge::InteractionHeld(GetTickCount64()));
+        // Carrying with the left hand: the left trigger throws, the right does the left's job.
+        const auto savedLeftTrigger=GamepadBridge::leftTriggerTarget;
+        GamepadBridge::leftTriggerTarget=GamepadBridge::TargetLT;GamepadBridge::rightTriggerTarget=GamepadBridge::TargetRT;
+        auto trig=[&](BYTE l,BYTE r){XINPUT_GAMEPAD p{};p.bLeftTrigger=l;p.bRightTrigger=r;GamepadBridge::ApplyButtons(p);return std::pair<int,int>(p.bLeftTrigger,p.bRightTrigger);};
+        assert((trig(200,0)==std::pair<int,int>(200,0)));assert((trig(0,200)==std::pair<int,int>(0,200)));   // normal
+        EngineCamera::leftCarry=true;assert((trig(0,200)==std::pair<int,int>(0,0)));                          // already squeezed: nothing
+        assert((trig(0,0)==std::pair<int,int>(0,0)));assert((trig(200,0)==std::pair<int,int>(0,200)));        // left trigger throws
+        assert((trig(0,0)==std::pair<int,int>(0,0)));assert((trig(0,200)==std::pair<int,int>(200,0)));        // right does the left's job
+        assert((trig(0,0)==std::pair<int,int>(0,0)));assert((trig(200,0)==std::pair<int,int>(0,200)));
+        EngineCamera::leftCarry=false;assert((trig(200,0)==std::pair<int,int>(0,0)));                         // carry ended mid-squeeze: no cover
+        assert((trig(0,0)==std::pair<int,int>(0,0)));assert((trig(200,0)==std::pair<int,int>(200,0)));assert((trig(0,0)==std::pair<int,int>(0,0)));
+        GamepadBridge::remapActive=false;EngineCamera::leftCarry=true;trig(0,0);assert((trig(200,0)==std::pair<int,int>(0,200)));   // default layout
+        trig(0,0);EngineCamera::leftCarry=false;trig(0,0);GamepadBridge::remapActive=true;
+        GamepadBridge::leftTriggerTarget=savedLeftTrigger;
         GamepadBridge::buttonTarget[4]=0;GamepadBridge::buttonTarget[0]=X;GamepadBridge::rightTriggerTarget=savedTrigger;
     }
     GamepadBridge::EnableInteractionVisual(false);

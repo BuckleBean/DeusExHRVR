@@ -1,4 +1,5 @@
 #include "GamepadBridge.h"
+#include "LeftCarry.h"
 #include "DirectionConfig.h"
 #include "EngineCamera.h"
 #include "SettingsPersistence.h"
@@ -30,6 +31,8 @@ void PublishInteraction(bool down,uint64_t now,bool visual=true){
 // down, the rest of that press is swallowed so it cannot act as a new one.
 enum class LeftGrip {Normal,Interact,Swallow};
 bool leftGripInteract{},leftGripWait{},leftGripPrevious{};
+LeftCarry::TriggerSwap carryTriggers;
+std::atomic<bool> lastInteractLeft{};bool interactPrevious{};
 LeftGrip LeftGripStep(bool on,bool wheel) {
     if(leftGripWait){if(!on)leftGripWait=false;leftGripPrevious=on;return LeftGrip::Swallow;}
     if(on&&!leftGripPrevious&&!wheel)leftGripInteract=EngineCamera::LeftHandOwnsPrompt();
@@ -211,6 +214,7 @@ void ApplyButtons(XINPUT_GAMEPAD& pad) {
         const auto grip=LeftGripStep((pad.wButtons&XINPUT_GAMEPAD_LEFT_SHOULDER)!=0,(allReasons&128)!=0);
         if(grip!=LeftGrip::Normal)pad.wButtons&=~XINPUT_GAMEPAD_LEFT_SHOULDER;
         if(grip==LeftGrip::Interact)pad.wButtons|=XINPUT_GAMEPAD_X;
+        carryTriggers.Apply(EngineCamera::LeftHandCarrying()&&!(allReasons&128),pad.bLeftTrigger,pad.bRightTrigger);
         return;
     }
     const XINPUT_GAMEPAD in=pad;
@@ -263,8 +267,10 @@ void ApplyButtons(XINPUT_GAMEPAD& pad) {
         Emit(pad,buttonTarget[i],on,on?BYTE(255):BYTE(0));
     }
     EngineCamera::SetThrowAiming(aiming);
-    Emit(pad,leftTriggerTarget,in.bLeftTrigger>127,in.bLeftTrigger);
-    Emit(pad,rightTriggerTarget,in.bRightTrigger>127,in.bRightTrigger);
+    BYTE leftValue=in.bLeftTrigger,rightValue=in.bRightTrigger;
+    carryTriggers.Apply(EngineCamera::LeftHandCarrying()&&!wheel,leftValue,rightValue);
+    Emit(pad,leftTriggerTarget,leftValue>127,leftValue);
+    Emit(pad,rightTriggerTarget,rightValue>127,rightValue);
 }
 
 // ---- Local patch: snap turn via one injected relative mouse move ----
@@ -375,6 +381,11 @@ bool Read(XINPUT_GAMEPAD& pad) {
         else if(stickUpTarget || stickDownTarget)StickButtons(pad);
     }
     if(!fresh || !latest.gamepad.valid || !GameInForeground()){snapArmed=false;EngineCamera::CancelDirectSnap();}
+    {
+        const bool interact=fresh&&latest.gamepad.valid&&(pad.wButtons&XINPUT_GAMEPAD_X)!=0;
+        if(interact&&!interactPrevious)lastInteractLeft=leftGripInteract;
+        interactPrevious=interact;
+    }
     PublishInteraction(fresh && latest.gamepad.valid && (pad.wButtons&XINPUT_GAMEPAD_X)!=0,now,!leftGripInteract);
     // Keep the device connected after first activation, but release every
     // button/axis on focus loss, sleeping controllers or a stalled companion.
@@ -431,6 +442,7 @@ void Install() {
 }
 }
 void EnableInteractionVisual(bool on){interactionVisualEnabled=on;interactionVisualPress=0;}
+bool LastInteractWasLeft(){return lastInteractLeft.load();}
 bool InteractionHeld(uint64_t now){auto tick=interactionPress.load(std::memory_order_relaxed);return tick&&now>=tick&&now-tick<250;}
 bool InteractionVisualHeld(uint64_t now){auto tick=interactionVisualPress.load(std::memory_order_relaxed);return tick&&now>=tick&&now-tick<250;}
 void SetChannel(Transport::Header* header) {

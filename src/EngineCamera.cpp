@@ -1990,6 +1990,11 @@ bool interactionProbesReady{};
 bool forgivingAimEnabled{};
 bool leftHandInteract{}; // [VR] LeftHandInteract=0 keeps interaction on the right hand only
 std::atomic<uint64_t> leftPromptTick{};
+// [VR] LeftHandCarryThrow=0 keeps the throw on the right trigger.
+bool leftCarryThrow{};
+std::atomic<bool> grabActive{},grabLeft{};
+std::atomic<uintptr_t> grabManager{},forgivingPlayer{};
+std::atomic<uint64_t> grabStart{};
 bool forgivingAimLog{}; // [VR] ForgivingAimLog=1 writes its diagnostic lines
 float forgivingTan=.26795f;
 ForgivingAim::Selector forgivingSelector;
@@ -2037,12 +2042,56 @@ void* __fastcall InteractionEventHook(void* out,void*,void* object,void* descrip
     }
     return result;
 }
+uintptr_t VA(uintptr_t preferred);
+// The game announces a grab's start (0x53) and end (0x54) with the name GrabObject.
+using GrabDispatch=int(__cdecl*)(int,void*,void*);
+GrabDispatch originalGrabDispatch{};
+int __cdecl GrabDispatchHook(int id,void* value,void* key) {
+    if((id==0x53||id==0x54)&&reinterpret_cast<uintptr_t>(value)==VA(0xaa6124)&&
+       key&&reinterpret_cast<uintptr_t>(key)==forgivingPlayer.load()) {
+        if(id==0x53){grabLeft=GamepadBridge::LastInteractWasLeft();grabStart=GetTickCount64();grabActive=true;}
+        else grabActive=false;
+        if(forgivingAimLog) {
+            FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")){fprintf(f,"left carry %s leftHand=%d\n",id==0x53?"start":"end",int(grabLeft.load()));fclose(f);}
+        }
+    }
+    return originalGrabDispatch(id,value,key);
+}
+// The player's grab object, learned from the game's own target message.
+void GrabNoteManager(void* self,void* message) {
+    __try {
+        const auto handle=*reinterpret_cast<uint32_t*>(static_cast<unsigned char*>(self)+0x10);
+        if(handle==0x7fffffff)return;
+        const auto owner=reinterpret_cast<uintptr_t(__cdecl*)(uint32_t)>(VA(0x6082a0))(handle);
+        if(owner&&owner==*reinterpret_cast<uintptr_t*>(static_cast<unsigned char*>(message)+0x20)&&owner==forgivingPlayer.load())
+            grabManager=reinterpret_cast<uintptr_t>(self);
+    } __except(EXCEPTION_EXECUTE_HANDLER) {}
+}
+using GrabTarget=void(__thiscall*)(void*,void*);
+GrabTarget originalGrabTarget{};
+void __fastcall GrabTargetHook(void* self,void*,void* message) {
+    if(senseQueries&&message)GrabNoteManager(self,message);
+    originalGrabTarget(self,message);
+}
+int GrabStateRaw(uintptr_t manager) {
+    __try {return *reinterpret_cast<int*>(manager+0x128);}
+    __except(EXCEPTION_EXECUTE_HANDLER) {return -1;}
+}
+// Safety net if an end announcement is ever missed: states 0 and 1 mean nothing is held.
+void GrabTick(uint64_t now) {
+    if(!grabActive.load()||now-grabStart.load()<500)return;
+    const auto manager=grabManager.load();
+    if(!manager)return;
+    const int state=GrabStateRaw(manager);
+    if(state==0||state==1)grabActive=false;
+}
 void InstallInteractionProbes(){
     wchar_t diagConfig[MAX_PATH]{};GetFullPathNameW(L"DeusExHRVR.ini",MAX_PATH,diagConfig,nullptr);
     interactionDiagLog=GetPrivateProfileIntW(L"VR",L"InteractionDiagnosticLog",0,diagConfig)!=0;
     forgivingAimEnabled=GetPrivateProfileIntW(L"VR",L"ForgivingAim",1,diagConfig)!=0;
     forgivingAimLog=GetPrivateProfileIntW(L"VR",L"ForgivingAimLog",0,diagConfig)!=0;
     leftHandInteract=GetPrivateProfileIntW(L"VR",L"LeftHandInteract",1,diagConfig)!=0;
+    leftCarryThrow=leftHandInteract&&GetPrivateProfileIntW(L"VR",L"LeftHandCarryThrow",1,diagConfig)!=0;
     float forgivingDegrees=15.f;
     {
         wchar_t degreesText[32]{};GetPrivateProfileStringW(L"VR",L"ForgivingAimDegrees",L"15",degreesText,32,diagConfig);
@@ -2072,6 +2121,20 @@ void InstallInteractionProbes(){
         if(madeEvent){MH_DisableHook(event);MH_RemoveHook(event);}
     }
     if(forgivingAimEnabled&&!interactionProbesReady)forgivingAimEnabled=false;
+    if(leftCarryThrow) {
+        // Hooked on their own: a mismatch only turns this option off.
+        auto dispatch=reinterpret_cast<void*>(VA(0x8206d0)),target=reinterpret_cast<void*>(VA(0x661680));
+        bool carryHooks=forgivingAimEnabled&&!memcmp(dispatch,"\x83\xec\x0c\x8b\x4c\x24\x18",7)&&!memcmp(target,"\x55\x8b\xec\x83\xe4\xf0\x83\xec\x08\x56\x8b\xf1",12);
+        bool madeDispatch=false,madeTarget=false;
+        if(carryHooks)madeDispatch=MH_CreateHook(dispatch,(void*)&GrabDispatchHook,(void**)&originalGrabDispatch)==MH_OK;
+        if(madeDispatch)madeTarget=MH_CreateHook(target,(void*)&GrabTargetHook,(void**)&originalGrabTarget)==MH_OK;
+        carryHooks=madeDispatch&&madeTarget&&MH_EnableHook(dispatch)==MH_OK&&MH_EnableHook(target)==MH_OK;
+        if(!carryHooks) {
+            if(madeDispatch){MH_DisableHook(dispatch);MH_RemoveHook(dispatch);}
+            if(madeTarget){MH_DisableHook(target);MH_RemoveHook(target);}
+            leftCarryThrow=false;
+        }
+    }
     if(forgivingAimLog){FILE* aimLog{};if(!fopen_s(&aimLog,"DeusExHRVR-camera.log","a")){
         fprintf(aimLog,"forgiving aim enabled=%d degrees=%g layoutMatch=%d\n",int(forgivingAimEnabled),double(forgivingDegrees),int(match));fclose(aimLog);
     }}
@@ -2272,7 +2335,11 @@ void __fastcall SenseUpdateHook(void* self,void*,float dt) {
     bool sample=false;
     uint64_t now{};
     const bool forgivingDrive=forgivingAimEnabled&&interactionProbesReady&&!previous&&senseQueries&&dt>0;
-    if(forgivingDrive)ForgivingBegin(self);
+    if(forgivingDrive) {
+        forgivingPlayer=*reinterpret_cast<uintptr_t*>(static_cast<unsigned char*>(self)+8);
+        GrabTick(GetTickCount64());
+        ForgivingBegin(self);
+    }
     if(interactionDiagLog&&interactionProbesReady&&!previous&&senseQueries&&dt>0&&interactionSampleCount.load()<300){
         now=GetTickCount64();
         auto next=interactionNextSample.load();
@@ -5813,6 +5880,7 @@ void SetImmersiveScope(bool value){if(immersiveScopeReady.load())immersiveScope.
 void SetThrowAiming(bool aiming){throwAiming=aiming;}
 void NoteThrowRelease(uint64_t heldMs){throwHeldMs=heldMs;}
 bool DetonateReady(){return detonateReady.load();}
+bool LeftHandCarrying(){return leftCarryThrow&&grabActive.load()&&grabLeft.load();}
 bool LeftHandOwnsPrompt(){const auto tick=leftPromptTick.load(std::memory_order_relaxed);const auto now=GetTickCount64();return forgivingAimEnabled&&leftHandInteract&&tick&&now>=tick&&now-tick<250;}
 void NoteDetonatePress(uint64_t heldMs){NoteDetonate("press passed through as RB",heldMs);}
 void SetMovementDirection(unsigned value){if(value<=3)movementDirection.store(static_cast<DirectionConfig::Source>(value));}
