@@ -179,7 +179,7 @@ struct Bridge {
         bool eligible=Transport::Fresh(menuGame.gameTick,t.tick)&&menuGame.eligible&&renderInfo.mode==0&&anchorValid;
         if(!menuUI.request)menuUI.request=menuGame.acknowledged;
         if(!menuRecenterRequest)menuRecenterRequest=menuGame.recenterAck;
-        float x{},y{};Transport::Pose panel{};memcpy(&panel,&anchor,sizeof(panel));
+        float x{},y{};Transport::Pose panel{};memcpy(&panel,&anchor,sizeof(panel));panel=SettingsMenu::PanelPose(panel);
         bool ray=t.rightController.valid&&SettingsMenu::Hit(t.rightController.aim,panel,x,y);
         menuUI.Update(eligible&&EnsureMenu(),state==XR_SESSION_STATE_FOCUSED,ray,x,y,controller.raw,menuGame);
         if(menuUI.visible!=menuWasVisible||menuUI.open!=menuWasOpen||menuUI.request!=menuLastRequest||
@@ -232,7 +232,9 @@ struct Bridge {
         context->UpdateSubresource(menuImages[index].texture,0,nullptr,pixels,SettingsMenu::Width*4,0);context->Flush();
         if(XR_FAILED(xrReleaseSwapchainImage(menuChain,&ri)))return fail();
         menuLayer={XR_TYPE_COMPOSITION_LAYER_QUAD};menuLayer.layerFlags=XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
-        menuLayer.space=space;menuLayer.eyeVisibility=XR_EYE_VISIBILITY_BOTH;menuLayer.pose=anchor;menuLayer.size={3.2f,1.8f};
+        menuLayer.space=space;menuLayer.eyeVisibility=XR_EYE_VISIBILITY_BOTH;menuLayer.size={3.2f,1.8f};
+        {Transport::Pose screen{};memcpy(&screen,&anchor,sizeof(screen));const auto lifted=SettingsMenu::PanelPose(screen);
+         static_assert(sizeof(lifted)==sizeof(menuLayer.pose));memcpy(&menuLayer.pose,&lifted,sizeof(lifted));}
         menuLayer.subImage.swapchain=menuChain;menuLayer.subImage.imageRect={{0,0},{SettingsMenu::Width,SettingsMenu::Height}};
         return true;
     }

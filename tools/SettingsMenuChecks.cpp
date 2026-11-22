@@ -284,6 +284,18 @@ int wmain(int argc,wchar_t** argv) {
     XINPUT_GAMEPAD physical{};physical.wButtons=XINPUT_GAMEPAD_A;
     assert(gate.Physical(true,physical));assert(gate.Physical(false,physical));
     physical={};assert(!gate.Physical(false,physical));
+    {   // The panel sits 1 cm in front of the game screen, toward the viewer, whatever the screen's heading (Nov 18).
+        for(float yaw:{0.f,.7f,-2.f,3.1f}){
+            Transport::Pose screen{{0,std::sin(yaw*.5f),0,std::cos(yaw*.5f)},{-2.f*std::sin(yaw),1.6f,-2.f*std::cos(yaw)}};
+            auto p=SettingsMenu::PanelPose(screen);
+            const float dx=p.position.x-screen.position.x,dy=p.position.y-screen.position.y,dz=p.position.z-screen.position.z;
+            assert(std::abs(std::hypot(dx,dy,dz)-SettingsMenu::PanelLift)<1e-5f&&std::abs(dy)<1e-6f);
+            assert(std::hypot(p.position.x,p.position.z)<std::hypot(screen.position.x,screen.position.z)); // nearer the viewer at the origin
+            assert(p.orientation.y==screen.orientation.y&&p.orientation.w==screen.orientation.w);
+            Transport::Pose eye{{0,std::sin(yaw*.5f),0,std::cos(yaw*.5f)},{0,1.6f,0}};float px{},py{};
+            assert(SettingsMenu::Hit(eye,p,px,py)&&std::abs(px-800)<.01f&&std::abs(py-450)<.01f); // still centred on the lifted plane
+        }
+    }
     Transport::Pose panel{{0,0,0,1},{0,0,-2}},aim{{0,0,0,1},{0,0,0}};float x{},y{};
     assert(SettingsMenu::Hit(aim,panel,x,y));assert(std::abs(x-800)<.01&&std::abs(y-450)<.01);
     aim.position.x=.8f;assert(SettingsMenu::Hit(aim,panel,x,y));assert(std::abs(x-1200)<.01);
@@ -586,5 +598,5 @@ int wmain(int argc,wchar_t** argv) {
     s.listening=true;assert(draw.Save((out/L"menu-listen.bmp").c_str(),s,game));
     s.listening=false;s.confirming=true;s.candidate=0;
     assert(draw.Save((out/L"menu-confirm.bmp").c_str(),s,game));
-    printf("PASS %zu-bit: ABI, stale channel, menu tabs (rows per tab, one save, new rows, older-DLL rows inert), pointer geometry, click/release/focus, pending requests, bounds, existing chords, persistence and native UI previews, shortcut in the top-right corner, see-through like the game's buttons\n",sizeof(void*)*8);
+    printf("PASS %zu-bit: ABI, stale channel, panel 1 cm in front of the game screen, menu tabs (rows per tab, one save, new rows, older-DLL rows inert), pointer geometry, click/release/focus, pending requests, bounds, existing chords, persistence and native UI previews, shortcut in the top-right corner, see-through like the game's buttons\n",sizeof(void*)*8);
 }

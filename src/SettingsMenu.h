@@ -82,6 +82,15 @@ inline Transport::Vector Rotate(Transport::Quaternion q,Transport::Vector v) {
     Transport::Vector t{2*(q.y*v.z-q.z*v.y),2*(q.z*v.x-q.x*v.z),2*(q.x*v.y-q.y*v.x)};
     return {v.x+q.w*t.x+q.y*t.z-q.z*t.y,v.y+q.w*t.y+q.z*t.x-q.x*t.z,v.z+q.w*t.z+q.x*t.y-q.y*t.x};
 }
+// The panel's own plane: PanelLift metres in front of the game screen it covers,
+// toward the viewer (the screen's local +Z, the side Hit accepts). With both on
+// one plane SteamVR flickered the game menu through the panel (Mark, Nov 18);
+// Virtual Desktop / VDXR did not. The pointer uses this same plane.
+inline constexpr float PanelLift=.01f;
+inline Transport::Pose PanelPose(Transport::Pose screen) {
+    const auto n=Rotate(screen.orientation,{0,0,PanelLift});
+    screen.position.x+=n.x;screen.position.y+=n.y;screen.position.z+=n.z;return screen;
+}
 // Aim and panel are in the same LOCAL space; panel is 3.2 x 1.8 metres.
 inline bool Hit(const Transport::Pose& aim,const Transport::Pose& panel,float& x,float& y) {
     auto q=panel.orientation;q.x=-q.x;q.y=-q.y;q.z=-q.z;
