@@ -1988,6 +1988,7 @@ bool interactionProbesReady{};
 // Forgiving aim (November 21): see ForgivingAim.h. [VR] ForgivingAim=0 turns it
 // off; ForgivingAimDegrees sets the cone around the aim line (default 15).
 bool forgivingAimEnabled{};
+bool forgivingAimLog{}; // [VR] ForgivingAimLog=1 writes its diagnostic lines
 float forgivingTan=.26795f;
 ForgivingAim::Selector forgivingSelector;
 thread_local bool forgivingRayActive{};
@@ -2038,6 +2039,7 @@ void InstallInteractionProbes(){
     wchar_t diagConfig[MAX_PATH]{};GetFullPathNameW(L"DeusExHRVR.ini",MAX_PATH,diagConfig,nullptr);
     interactionDiagLog=GetPrivateProfileIntW(L"VR",L"InteractionDiagnosticLog",0,diagConfig)!=0;
     forgivingAimEnabled=GetPrivateProfileIntW(L"VR",L"ForgivingAim",1,diagConfig)!=0;
+    forgivingAimLog=GetPrivateProfileIntW(L"VR",L"ForgivingAimLog",0,diagConfig)!=0;
     float forgivingDegrees=15.f;
     {
         wchar_t degreesText[32]{};GetPrivateProfileStringW(L"VR",L"ForgivingAimDegrees",L"15",degreesText,32,diagConfig);
@@ -2067,7 +2069,7 @@ void InstallInteractionProbes(){
         if(madeEvent){MH_DisableHook(event);MH_RemoveHook(event);}
     }
     if(forgivingAimEnabled&&!interactionProbesReady)forgivingAimEnabled=false;
-    {FILE* aimLog{};if(!fopen_s(&aimLog,"DeusExHRVR-camera.log","a")){
+    if(forgivingAimLog){FILE* aimLog{};if(!fopen_s(&aimLog,"DeusExHRVR-camera.log","a")){
         fprintf(aimLog,"forgiving aim enabled=%d degrees=%g layoutMatch=%d\n",int(forgivingAimEnabled),double(forgivingDegrees),int(match));fclose(aimLog);
     }}
     if(!interactionDiagLog)return;
@@ -2186,7 +2188,7 @@ bool ForgivingQueryRaw(void* self,const float* origin,const float* dir,float min
     return ok;
 }
 void ForgivingRefusedLog(uintptr_t owner) {
-    if(forgivingLogged>=100)return;
+    if(!forgivingAimLog||forgivingLogged>=100)return;
     ++forgivingLogged;
     FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")){
         fprintf(f,"forgiving aim refused tick=%llu target=%p\n",GetTickCount64(),reinterpret_cast<void*>(owner));fclose(f);
@@ -2195,7 +2197,7 @@ void ForgivingRefusedLog(uintptr_t owner) {
 // One short line every 10 seconds at most, only when there was activity. A blink
 // is a prompt that cleared and came back on the same object within a second.
 void ForgivingSummary(uint64_t now) {
-    if(now<forgivingNextSummary)return;
+    if(!forgivingAimLog||now<forgivingNextSummary)return;
     forgivingNextSummary=now+10000;
     if(!forgivingPrompts&&!forgivingClears)return;
     const auto& s=forgivingSelector.GetStats();
