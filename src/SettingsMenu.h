@@ -39,7 +39,7 @@ inline constexpr Rect Minus{760,MainRowY(1),100,52},Plus{1190,MainRowY(1),100,52
 inline constexpr Rect Movement=MainRow(2),Response=MainRow(3),WorldScale=MainRow(4),Recenter=MainRow(5);
 // Controls tab. Grenade aim cycles RIGHT HAND, LEFT HAND, HEAD, DEFAULT (the
 // game's own throw); the landing ring needs a hand or the head.
-inline constexpr Rect Interaction=MainRow(0),ThrowAimRow=MainRow(1),ThrowMarkerRow=MainRow(2),Remap=MainRow(3);
+inline constexpr Rect Interaction=MainRow(0),ThrowAimRow=MainRow(1),ThrowMarkerRow=MainRow(2),Remap=MainRow(3),QuickBarRow=MainRow(4);
 // View tab. Scope zoom 0.5x steps, menu range 3-12 (Mark, Nov 16).
 inline constexpr Rect HandHud=MainRow(0),ScopeRow=MainRow(1);
 inline constexpr Rect ZoomMinus{760,MainRowY(2),100,52},ZoomPlus{1190,MainRowY(2),100,52};
@@ -152,14 +152,16 @@ struct State {
     bool draftCoverFollow{},originalCoverFollow{},coverFollowAvailable{};uint32_t requestedCoverFollow{};
     bool draftScope{},originalScope{},scopeAvailable{};uint32_t requestedImmersiveScope{};
     uint32_t draftCrosshair{},originalCrosshair{},requestedCrosshair{}; // CoverCrosshair mode, 0 = unavailable
-    void ResetTabDrafts(){draftThrowAim=originalThrowAim;draftThrowMarker=originalThrowMarker;draftCoverFollow=originalCoverFollow;draftScope=originalScope;draftCrosshair=originalCrosshair;}
-    bool TabDirty() const {return draftThrowAim!=originalThrowAim||draftThrowMarker!=originalThrowMarker||draftCoverFollow!=originalCoverFollow||draftScope!=originalScope||draftCrosshair!=originalCrosshair;}
+    uint32_t draftQuickBar{},originalQuickBar{},requestedQuickBar{}; // 1 always shown, 2 auto-hide, 0 = unavailable
+    void ResetTabDrafts(){draftThrowAim=originalThrowAim;draftThrowMarker=originalThrowMarker;draftCoverFollow=originalCoverFollow;draftScope=originalScope;draftCrosshair=originalCrosshair;draftQuickBar=originalQuickBar;}
+    bool TabDirty() const {return draftThrowAim!=originalThrowAim||draftThrowMarker!=originalThrowMarker||draftCoverFollow!=originalCoverFollow||draftScope!=originalScope||draftCrosshair!=originalCrosshair||draftQuickBar!=originalQuickBar;}
     void LoadTabDrafts(const Transport::MenuState& game){
         draftThrowAim=originalThrowAim=game.throwAim<=4?game.throwAim:0;
         throwMarkerAvailable=game.throwMarker==1||game.throwMarker==2;draftThrowMarker=originalThrowMarker=game.throwMarker==2;
         coverFollowAvailable=game.coverFollow==1||game.coverFollow==2;draftCoverFollow=originalCoverFollow=game.coverFollow==2;
         scopeAvailable=game.immersiveScope==1||game.immersiveScope==2;draftScope=originalScope=game.immersiveScope==2;
         draftCrosshair=originalCrosshair=game.crosshair<=4?game.crosshair:0;
+        draftQuickBar=originalQuickBar=game.quickBar<=2?game.quickBar:0;
     }
     float draftZoom{},originalZoom{},requestedZoom{}; // requestedZoom 0 = unchanged
     bool scalePage{};float draftScale{LiveWorldScale::Default},originalScale{LiveWorldScale::Default},requestedScale{LiveWorldScale::Default};
@@ -167,7 +169,7 @@ struct State {
     bool listening{},captureReady{},confirming{},captureRelease{},scrollArmed{};
     int candidate{-1},pressedSlot{-1};uint64_t pressAt{};
     Rect Area() const {return open?(remapping?ListPanel:Panel):Entry;}
-    void Submit(){requestedCrosshair=originalCrosshair&&draftCrosshair!=originalCrosshair?draftCrosshair:0u;requestedThrowAim=originalThrowAim&&draftThrowAim!=originalThrowAim?draftThrowAim:0u;requestedThrowMarker=throwMarkerAvailable&&draftThrowMarker!=originalThrowMarker?(draftThrowMarker?2u:1u):0u;requestedCoverFollow=coverFollowAvailable&&draftCoverFollow!=originalCoverFollow?(draftCoverFollow?2u:1u):0u;requestedImmersiveScope=scopeAvailable&&draftScope!=originalScope?(draftScope?2u:1u):0u;requestedHandHud=handHudAvailable&&draftHandHud!=originalHandHud?(draftHandHud?2u:1u):0u;requestedZoom=draftZoom!=originalZoom?draftZoom:0.f;requestedDialogue=draftDialogue;requestedScale=draftScale;requestedInteraction=draftInteraction;requestedReset=draftReset;requestedResponse=draftResponse;requested=draft;requestedSnap=draftSnap;requestedMovement=draftMovement;requestedBindings=draftBindings;if(draftReset)requestedBindingMask=(1u<<ButtonBindings::Count)-1;requestedBindingMask|=ButtonBindings::Changes(draftBindings,originalBindings);++request;saving=true;committed=true;}
+    void Submit(){requestedQuickBar=originalQuickBar&&draftQuickBar!=originalQuickBar?draftQuickBar:0u;requestedCrosshair=originalCrosshair&&draftCrosshair!=originalCrosshair?draftCrosshair:0u;requestedThrowAim=originalThrowAim&&draftThrowAim!=originalThrowAim?draftThrowAim:0u;requestedThrowMarker=throwMarkerAvailable&&draftThrowMarker!=originalThrowMarker?(draftThrowMarker?2u:1u):0u;requestedCoverFollow=coverFollowAvailable&&draftCoverFollow!=originalCoverFollow?(draftCoverFollow?2u:1u):0u;requestedImmersiveScope=scopeAvailable&&draftScope!=originalScope?(draftScope?2u:1u):0u;requestedHandHud=handHudAvailable&&draftHandHud!=originalHandHud?(draftHandHud?2u:1u):0u;requestedZoom=draftZoom!=originalZoom?draftZoom:0.f;requestedDialogue=draftDialogue;requestedScale=draftScale;requestedInteraction=draftInteraction;requestedReset=draftReset;requestedResponse=draftResponse;requested=draft;requestedSnap=draftSnap;requestedMovement=draftMovement;requestedBindings=draftBindings;if(draftReset)requestedBindingMask=(1u<<ButtonBindings::Count)-1;requestedBindingMask|=ButtonBindings::Changes(draftBindings,originalBindings);++request;saving=true;committed=true;}
     void Assign(){
         const auto target=ButtonBindings::Targets[selected].value;
         for(auto& value:draftBindings)if(value==target)value=0;
@@ -275,6 +277,7 @@ struct State {
             else if(!saving&&tab==TabControls&&Interaction.Has(x,y)){draftInteraction=draftInteraction==1?2:1;}
             else if(!saving&&tab==TabControls&&originalThrowAim&&ThrowAimRow.Has(x,y)){draftThrowAim=NextThrowAim(draftThrowAim);}
             else if(!saving&&tab==TabControls&&throwMarkerAvailable&&ThrowMarkerRow.Has(x,y)){draftThrowMarker=!draftThrowMarker;}
+            else if(!saving&&tab==TabControls&&originalQuickBar&&QuickBarRow.Has(x,y)){draftQuickBar=draftQuickBar==2?1:2;}
             else if(!saving&&tab==TabControls&&Remap.Has(x,y)){remapping=true;}
             // View tab.
             else if(!saving&&tab==TabView&&handHudAvailable&&HandHud.Has(x,y)){draftHandHud=!draftHandHud;}

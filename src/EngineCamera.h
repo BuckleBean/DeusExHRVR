@@ -22,6 +22,10 @@ bool RequestDirectSnap(float rightDegrees);
 // Local patch: the game's quickbar auto-hide setting (tilde). Returns the value
 // found, setting it to 1 first if asked, or -1 if the game's layout doesn't match.
 int QuickBarAutoHide(bool set);
+// VR menu: 0 unavailable, 1 always shown, 2 auto-hide. SetQuickBar applies live and is remembered.
+unsigned QuickBarSetting();
+void SetQuickBar(bool autoHide);
+void InstallQuickBarHooks();
 bool ImmersiveScopeButton();
 // Arms hands calibration. Called from GamepadBridge so the trigger can be a
 // bindable [Buttons] target instead of a pose gesture or an INI edit.

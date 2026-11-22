@@ -176,9 +176,9 @@ int main() {
     }
     // 8. Transport 22 added the cover target; 23 adds the hand HUD setting to the
     // menu state at the END of the header, so RenderInfo and its offsets are unchanged.
-    static_assert(Transport::Version==26);
-    static_assert(sizeof(Transport::MenuState)==424 && offsetof(Transport::MenuState,handHud)==372 && offsetof(Transport::MenuState,throwAim)==388 && offsetof(Transport::Header,menu)==712);
-    static_assert(sizeof(Transport::RenderInfo)==344 && sizeof(Transport::Header)==1136);
+    static_assert(Transport::Version==27);
+    static_assert(sizeof(Transport::MenuState)==432 && offsetof(Transport::MenuState,handHud)==372 && offsetof(Transport::MenuState,throwAim)==388 && offsetof(Transport::Header,menu)==712);
+    static_assert(sizeof(Transport::RenderInfo)==344 && sizeof(Transport::Header)==1144);
     static_assert(offsetof(Transport::RenderInfo,markerPosition)==296 && offsetof(Transport::RenderInfo,markerState)==308 &&
                   offsetof(Transport::RenderInfo,markerNormal)==312);
     static_assert(offsetof(Transport::RenderInfo,coverPosition)==328 && offsetof(Transport::RenderInfo,coverState)==340);

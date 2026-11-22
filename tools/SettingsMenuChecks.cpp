@@ -260,6 +260,20 @@ int wmain(int argc,wchar_t** argv) {
      click(SettingsMenu::Tab(SettingsMenu::TabMovement));click(SettingsMenu::Response);click(SettingsMenu::Save);
      assert(ui.saving&&!ui.requestedThrowAim&&!ui.requestedThrowMarker&&!ui.requestedCoverFollow&&!ui.requestedImmersiveScope);
     }
+    // Quickbar row: toggles on the Controls tab; nothing sent unless changed; inert if unavailable.
+    {SettingsMenu::State ui;Transport::MenuState gm{};gm.degrees=30;gm.worldScale=gm.activeWorldScale=300;gm.quickBar=1;
+     GamepadMapping::Input input{};input.active=true;
+     auto click=[&](SettingsMenu::Rect rect){input.rightTrigger=0;ui.Update(true,true,true,float(rect.x+30),float(rect.y+25),input,gm);input.rightTrigger=1;ui.Update(true,true,true,float(rect.x+30),float(rect.y+25),input,gm);};
+     click(SettingsMenu::Entry);click(SettingsMenu::Tab(SettingsMenu::TabControls));assert(ui.draftQuickBar==1&&!ui.Dirty());
+     click(SettingsMenu::QuickBarRow);assert(ui.draftQuickBar==2&&ui.Dirty());
+     click(SettingsMenu::QuickBarRow);assert(ui.draftQuickBar==1&&!ui.Dirty());
+     click(SettingsMenu::QuickBarRow);click(SettingsMenu::Save);assert(ui.saving&&ui.requestedQuickBar==2);
+    }
+    {SettingsMenu::State ui;Transport::MenuState gm{};gm.degrees=30;gm.worldScale=gm.activeWorldScale=300;
+     GamepadMapping::Input input{};input.active=true;
+     auto click=[&](SettingsMenu::Rect rect){input.rightTrigger=0;ui.Update(true,true,true,float(rect.x+30),float(rect.y+25),input,gm);input.rightTrigger=1;ui.Update(true,true,true,float(rect.x+30),float(rect.y+25),input,gm);};
+     click(SettingsMenu::Entry);click(SettingsMenu::Tab(SettingsMenu::TabControls));click(SettingsMenu::QuickBarRow);assert(!ui.draftQuickBar&&!ui.Dirty());
+    }
     // Crosshair row: cycles on the View tab, one Save, nothing sent when unchanged.
     {SettingsMenu::State ui;Transport::MenuState gm{};gm.degrees=30;gm.worldScale=gm.activeWorldScale=300;gm.crosshair=CoverCrosshair::Third;
      GamepadMapping::Input input{};input.active=true;
@@ -586,7 +600,7 @@ int wmain(int argc,wchar_t** argv) {
     game.throwAim=3;game.throwMarker=2;game.coverFollow=2;game.immersiveScope=2;game.dialogueAvailable=1;
     s.LoadTabDrafts(game);s.x=80;s.y=450;
     s.tab=SettingsMenu::TabMovement;assert(draw.Save((out/L"menu-tab-movement.bmp").c_str(),s,game));
-    s.tab=SettingsMenu::TabControls;assert(draw.Save((out/L"menu-tab-controls.bmp").c_str(),s,game));pixels=static_cast<const uint32_t*>(draw.Draw(s,game));assert(pixels);
+    s.tab=SettingsMenu::TabControls;s.draftQuickBar=s.originalQuickBar=2;assert(draw.Save((out/L"menu-tab-controls.bmp").c_str(),s,game));pixels=static_cast<const uint32_t*>(draw.Draw(s,game));assert(pixels);
     for(auto r:{SettingsMenu::Interaction,SettingsMenu::ThrowAimRow,SettingsMenu::ThrowMarkerRow,SettingsMenu::Remap})assert(bright(r)>100);
     for(int i=0;i<4;++i)assert(bright({240,SettingsMenu::MainRowY(i),470,52})>100);
     s.tab=SettingsMenu::TabView;s.draftCrosshair=s.originalCrosshair=CoverCrosshair::Third;assert(draw.Save((out/L"menu-tab-view.bmp").c_str(),s,game));pixels=static_cast<const uint32_t*>(draw.Draw(s,game));assert(pixels);

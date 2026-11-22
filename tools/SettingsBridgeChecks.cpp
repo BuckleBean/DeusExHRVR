@@ -51,6 +51,7 @@ void SetDirectSnapEnabled(bool value){directEnabled=value;directPending=false;}
 void CancelDirectSnap(){directPending=false;}
 bool RequestDirectSnap(float){return true;}
 int QuickBarAutoHide(bool){return 1;}
+unsigned quickBarSetting=1;unsigned QuickBarSetting(){return quickBarSetting;}void SetQuickBar(bool v){quickBarSetting=v?2:1;}
 bool ImmersiveScopeButton(){return false;}
 void ArmHandCalibration(){}
 unsigned recenterCount{};void Recenter(){++recenterCount;}
@@ -345,6 +346,14 @@ int wmain(int argc,wchar_t** argv) {
         for(int n=0;n<200&&h.menu.saved!=131;++n){Sleep(10);GamepadBridge::MenuTick(2);}
         h.menu.requestedCrosshair=5;request(132,30);assert(h.menu.result==2&&EngineCamera::crosshairSetting==4);
         h.menu.requestedCrosshair=0;EngineCamera::crosshairSetting=3;
+        // Quickbar (transport 27): nothing written until chosen; saved when chosen; bad values refused.
+        GamepadBridge::MenuTick(2);assert(h.menu.quickBar==1&&GetPrivateProfileIntW(L"VR",L"QuickBarAutoHide",7,path.c_str())==7);
+        h.menu.requestedQuickBar=2;request(133,30);assert(h.menu.result!=2&&EngineCamera::quickBarSetting==2&&h.menu.quickBar==2);
+        for(int n=0;n<200&&h.menu.saved!=133;++n){Sleep(10);GamepadBridge::MenuTick(2);}
+        assert(h.menu.saved==133&&GetPrivateProfileIntW(L"VR",L"QuickBarAutoHide",7,path.c_str())==1);
+        h.menu.requestedQuickBar=3;request(134,30);assert(h.menu.result==2&&EngineCamera::quickBarSetting==2);
+        EngineCamera::quickBarSetting=0;GamepadBridge::MenuTick(2);h.menu.requestedQuickBar=1;request(135,30);assert(h.menu.result==2&&EngineCamera::quickBarSetting==0);
+        h.menu.requestedQuickBar=0;EngineCamera::quickBarSetting=1;
         EngineCamera::throwAimSetting=3;EngineCamera::throwMarkerSetting=2;EngineCamera::scopeSetting=1;
         request(119,30);wait(119);
         printf("PASS %zu-bit menu tabs: grenade aim, landing ring, cover camera and immersive scope reported, switched at once, saved (ThrowAim Mouse/LeftController/Controller), 0 keeps, bad or unavailable refused\n",sizeof(void*)*8);

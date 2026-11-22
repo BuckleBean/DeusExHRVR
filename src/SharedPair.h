@@ -5,7 +5,7 @@
 #include <cstddef>
 #include "ButtonBindings.h"
 namespace Transport {
-inline constexpr uint32_t Magic=0x52485844, Version=26;
+inline constexpr uint32_t Magic=0x52485844, Version=27;
 struct alignas(8) MenuState {
     uint64_t gameTick,hostTick;
     uint32_t eligible,blocked,snapEnabled,request;
@@ -35,8 +35,10 @@ struct alignas(8) MenuState {
     // 4 left hand); the others 1 off / 2 on.
     uint32_t throwAim,requestedThrowAim,throwMarker,requestedThrowMarker;
     uint32_t coverFollow,requestedCoverFollow,immersiveScope,requestedImmersiveScope;
+    // Transport 27: quickbar. 0 unavailable, 1 always shown, 2 auto-hide; request 0 = keep.
+    uint32_t quickBar,requestedQuickBar;
 };
-static_assert(sizeof(MenuState)==424 && offsetof(MenuState,throwAim)==388);
+static_assert(sizeof(MenuState)==432 && offsetof(MenuState,throwAim)==388);
 struct Quaternion {float x,y,z,w;};
 struct Vector {float x,y,z;};
 struct Pose {Quaternion orientation;Vector position;};
@@ -88,7 +90,7 @@ struct alignas(8) Header {
     uint32_t menuPadding;
     MenuState menu;
 };
-static_assert(sizeof(Header)==1136);
+static_assert(sizeof(Header)==1144);
 static_assert(offsetof(Header,tracking)==72 && offsetof(Header,rendered)==360);
 inline bool Compatible(const Header* h,DWORD pid) {
     return h && h->magic==Magic && h->version==Version && h->pid==pid;

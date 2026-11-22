@@ -1,6 +1,7 @@
 #include "ModelWristHud.h"
 #include "NativeCover.h"
 #include "CoverCrosshair.h"
+#include "CeilingGuard.h"
 #include "ForgivingAim.h"
 #include "CoverFollow.h"
 #include "WorldScaleConfig.h"
@@ -358,6 +359,9 @@ std::atomic<uint64_t> handDriveRejected{};
 // off until it has tests that do not depend on them.
 bool controllerHandsPose=false;
 bool controllerHandsInteractCurl=false;
+// [VR] CeilingGuard=0 turns it off; CeilingGuardCm is the gap kept below a ceiling.
+std::atomic<bool> ceilingGuardOn{true};float ceilingMarginMetres=.15f;
+std::atomic<float> ceilingRoom{CeilingGuard::NoCeiling};
 std::atomic<uint32_t> crosshairMode{CoverCrosshair::Third}; // [VR] Crosshair=Off|FirstPerson|ThirdPerson|Both
 bool handGripClose=true; // [VR] HandGripClose=0 returns to the gentle right-hand Interact curl
 uint32_t controllerHandsPoseMask=0x4000;     // XINPUT_GAMEPAD_X    = interact
@@ -3054,6 +3058,45 @@ void UpdateCoverTarget() {
     current.coverTargetValid=ok;
     if(ok)memcpy(current.coverTarget,point,sizeof(point));
 }
+// Ceiling guard: how much room is above the player, measured straight up from the
+// body with the same collision query as the crosshair. Runs outside the state lock;
+// the camera uses the newest result on its next update.
+bool CeilingRaw(void* owner,float x,float y,float z,float& room) {
+    __try {
+        room=CeilingGuard::NoCeiling;
+        void* ignored[2]={owner,nullptr};
+        using Inventory=unsigned char*(__cdecl*)(void*);
+        auto inventory=reinterpret_cast<Inventory>(VA(0x66af40))(owner);
+        auto weapon=inventory?*reinterpret_cast<unsigned char**>(inventory+0x14):nullptr;
+        if(weapon && *reinterpret_cast<uintptr_t*>(weapon)==VA(0xab1944)) {
+            auto handle=*reinterpret_cast<uint32_t*>(weapon+0x6c);
+            if(handle!=0x7fffffff)ignored[1]=reinterpret_cast<void*(__cdecl*)(uint32_t)>(VA(0x6082a0))(handle);
+        }
+        auto world=*reinterpret_cast<void**>(VA(0x1c7bf64));
+        if(!world)return false;
+        using Query=bool(__thiscall*)(void*,uint32_t,const float*,const float*,void*,void**,unsigned);
+        auto query=reinterpret_cast<Query>((*reinterpret_cast<uintptr_t**>(world))[0x54/4]);
+        alignas(16) unsigned char hit[0x200]{};
+        alignas(16) float start[4]{x,y,z+40.f,1};
+        alignas(16) float end[4]{x,y,z+900.f,0};
+        if(query(world,0xc72c1ba3,start,end,hit,ignored,2)) {
+            const float height=*reinterpret_cast<float*>(hit+0x18)-z;
+            // A hit this low means the ray began inside something: not a ceiling.
+            if(std::isfinite(height)&&height>=150.f)room=height;
+        }
+        return true;
+    } __except(EXCEPTION_EXECUTE_HANDLER) {return false;}
+}
+void UpdateCeilingRoom() {
+    float room=CeilingGuard::NoCeiling;
+    if(ceilingGuardOn.load()&&!grabActive.load()&&handBodyOriginValid.load()) {
+        void* owner{};bool ready{};
+        {std::lock_guard lock(stateMutex);owner=current.playerInstance;ready=requested&&current.active&&!screenReasons&&!gameMenuOpen&&!wheelOpen;}
+        if(owner&&ready&&!CeilingRaw(owner,handBodyOrigin[0].load(),handBodyOrigin[1].load(),handBodyOrigin[2].load(),room))
+            room=CeilingGuard::NoCeiling;
+    }
+    ceilingRoom.store(room);
+}
 // The game's own crosshair would mark where Jensen's camera looks, not where
 // the controller points. 0x804A30 (called only by the reticle controller's
 // update, 0x805230) gives the reticle type to show; 0 is the answer the game
@@ -4751,6 +4794,18 @@ void __fastcall UpdateHook(void* self,void*) {
                         for(int i=0;i<12;i++)renderBase.m[i]=cc.heading.m[i];
                     }
                 }
+                {
+                    // Keep the view, including the player's real head height, below a low ceiling.
+                    static CeilingGuard::State ceiling;
+                    auto guardEntity=*reinterpret_cast<const unsigned char* const*>(active+0xaa0);
+                    const bool guarded=ceilingGuardOn.load()&&guardEntity&&referenceValid&&t.valid&&!coverCamera.held&&!dialogue&&
+                        !gameMenuOpen&&!wheelOpen&&!immersiveScopeActive&&!handsSuspendedByMode.load();
+                    if(guarded) {
+                        const float bodyZ=*reinterpret_cast<const float*>(guardEntity+0x28);
+                        const float eye=CameraMath::HeadWorld(renderBase,reference,t.head,worldScale).m[14]-bodyZ;
+                        if(std::isfinite(eye))renderBase.m[14]-=ceiling.Update(eye,ceilingRoom.load(),ceilingMarginMetres*worldScale,.5f*worldScale,ms);
+                    } else ceiling.Reset();
+                }
                 if(bobTrace)BobTrace(ms,current.originalWorld,renderBase.m+12,t);
                 if(fixedDialogueCamera.load()){
                 auto entity=*reinterpret_cast<const unsigned char* const*>(active+0xaa0);
@@ -4905,6 +4960,7 @@ void __fastcall UpdateHook(void* self,void*) {
         if(!calibrationUpdated)calibration.Cancel();
     }
     UpdateCoverTarget();
+    UpdateCeilingRoom();
     UpdateThrowMarker();
     if(budget.load()<=0)return;
     std::lock_guard lock(output);
@@ -5453,6 +5509,7 @@ void Install() {
     if(!enabled)for(auto& h:hooks){MH_DisableHook((void*)VA(h.address));MH_RemoveHook((void*)VA(h.address));}
 #if defined(_M_IX86)
     if(enabled)InstallInteractionProbes();
+    if(enabled)InstallQuickBarHooks();
     if(enabled)InstallScreenHooks(); // after, and independent of, the camera hooks
     if(enabled) {
         // HandHud in [VR] (default 1): HUD on the hands (1) or the game's own (0).
@@ -5587,6 +5644,12 @@ void Install() {
     controllerHandsInteractCurl=GetPrivateProfileIntW(L"VR",L"ControllerHandsInteractCurl",1,config)!=0;
     handGripClose=GetPrivateProfileIntW(L"VR",L"HandGripClose",1,config)!=0;
     {wchar_t crosshairText[32]{};GetPrivateProfileStringW(L"VR",L"Crosshair",L"ThirdPerson",crosshairText,32,config);crosshairMode=CoverCrosshair::Parse(crosshairText);}
+    ceilingGuardOn=GetPrivateProfileIntW(L"VR",L"CeilingGuard",1,config)!=0;
+    {
+        wchar_t gapText[32]{};GetPrivateProfileStringW(L"VR",L"CeilingGuardCm",L"15",gapText,32,config);
+        const float cm=float(_wtof(gapText));
+        if(std::isfinite(cm)&&cm>=3.f&&cm<=40.f)ceilingMarginMetres=cm*.01f;
+    }
     GamepadBridge::EnableInteractionVisual(controllerHandsInteractCurl);
     controllerHandsRadius=float(GetPrivateProfileIntW(L"VR",L"ControllerHandsRadiusCm",15,config));
     controllerHandsSplitA=int(GetPrivateProfileIntW(L"VR",L"ControllerHandsSplitA",74,config));
@@ -5966,6 +6029,88 @@ int QuickBarAutoHide(bool set) {
     int found=*flag;
     if(set && !found)*flag=1;
     return found;
+}
+// VR menu quickbar option. The HUD reads the value when it starts (slot 4, 0x7FE2A0)
+// and is told of a change through its own InitAutoHide message, sent from inside its
+// per-frame update (slot 6, 0x7FE370) so the object is known to be alive.
+// [VR] QuickBarAutoHide absent: the mod never changes the game's value.
+bool quickBarHooks{};
+std::atomic<int> quickBarPreference{-1};
+std::atomic<bool> quickBarRefresh{};
+bool QuickBarWrite(bool on) {
+    if(QuickBarAutoHide(false)<0)return false;
+    __try {
+        const bool value=on;
+        reinterpret_cast<void(__thiscall*)(void*,const bool*)>(VA(0x5ad290))(reinterpret_cast<void*>(VA(0x01c7bb60)),&value);
+        return true;
+    } __except(EXCEPTION_EXECUTE_HANDLER) {return false;}
+}
+// The tilde key changed a quickbar choice the player had saved: keep the file in step.
+bool QuickBarSaveFile(const wchar_t* path,bool autoHide) {
+    FILE* f{};if(_wfopen_s(&f,path,L"rb")||!f)return false;
+    unsigned char start[4]{};const auto n=fread(start,1,4,f);fclose(f);
+    if(n!=4||memcmp(start,"[VR]",4))return false;
+    return WritePrivateProfileStringW(L"VR",L"QuickBarAutoHide",autoHide?L"1":L"0",path)!=0;
+}
+struct QuickBarValue {void* object;uint32_t type;uint32_t data;uint32_t padding;};
+void QuickBarNotifyRaw(void* self,bool autoHide) {
+    __try {
+        const bool hidden=*reinterpret_cast<const unsigned char*>(VA(0x00b23e54))==0||autoHide; // the game's own rule
+        QuickBarValue result{},argument{};argument.type=2;argument.data=hidden?1:0;
+        using Call=bool(__thiscall*)(void*,const char*,QuickBarValue*,QuickBarValue*,unsigned);
+        reinterpret_cast<Call>(VA(0x7c07b0))(self,reinterpret_cast<const char*>(VA(0xabd8e8)),&result,&argument,1);
+        if((result.type>>6)&1) {
+            using Release=void(__thiscall*)(void*,QuickBarValue*,uint32_t);
+            reinterpret_cast<Release>(VA(0x858ab0))(result.object,&result,result.data);
+        }
+    } __except(EXCEPTION_EXECUTE_HANDLER) {}
+}
+using QuickBarStart=void(__thiscall*)(void*);
+using QuickBarFrame=void(__thiscall*)(void*,float);
+QuickBarStart originalQuickBarStart{};
+QuickBarFrame originalQuickBarFrame{};
+void __fastcall QuickBarStartHook(void* self,void*) {
+    const int preference=quickBarPreference.load();
+    if(preference>=0)QuickBarWrite(preference!=0);
+    originalQuickBarStart(self);
+    quickBarRefresh=false;
+}
+void __fastcall QuickBarFrameHook(void* self,void*,float dt) {
+    const int preference=quickBarPreference.load(),live=QuickBarAutoHide(false);
+    if(quickBarRefresh.exchange(false)) {
+        if(live>=0)QuickBarNotifyRaw(self,live!=0);
+    } else if(preference>=0&&live>=0&&live!=preference) {
+        // The tilde key changed it: follow the player, and remember it.
+        quickBarPreference=live;
+        wchar_t config[MAX_PATH]{};GetFullPathNameW(L"DeusExHRVR.ini",MAX_PATH,config,nullptr);
+        QuickBarSaveFile(config,live!=0);
+    }
+    originalQuickBarFrame(self,dt);
+}
+void InstallQuickBarHooks() {
+    auto start=reinterpret_cast<void*>(VA(0x7fe2a0)),frame=reinterpret_cast<void*>(VA(0x7fe370));
+    if(QuickBarAutoHide(false)<0 || memcmp(start,"\x83\xec\x20\x53\x55\x56\x57",7) || memcmp(frame,"\x53\x57\x8b\xf9\x8b\x47\x20",7) ||
+       memcmp(reinterpret_cast<void*>(VA(0x5ad290)),"\x80\xb9\x08\x01\x00\x00\x00",7) ||
+       strcmp(reinterpret_cast<const char*>(VA(0xabd8e8)),"InitAutoHide"))return;
+    bool madeStart=MH_CreateHook(start,(void*)&QuickBarStartHook,(void**)&originalQuickBarStart)==MH_OK;
+    bool madeFrame=madeStart&&MH_CreateHook(frame,(void*)&QuickBarFrameHook,(void**)&originalQuickBarFrame)==MH_OK;
+    quickBarHooks=madeFrame&&MH_EnableHook(start)==MH_OK&&MH_EnableHook(frame)==MH_OK;
+    if(!quickBarHooks) {
+        if(madeStart){MH_DisableHook(start);MH_RemoveHook(start);}
+        if(madeFrame){MH_DisableHook(frame);MH_RemoveHook(frame);}
+        return;
+    }
+    wchar_t config[MAX_PATH]{};GetFullPathNameW(L"DeusExHRVR.ini",MAX_PATH,config,nullptr);
+    const UINT saved=GetPrivateProfileIntW(L"VR",L"QuickBarAutoHide",2,config);
+    if(saved<=1){quickBarPreference=int(saved);QuickBarWrite(saved==1);}
+}
+unsigned QuickBarSetting() {
+    if(!quickBarHooks)return 0;
+    const int value=QuickBarAutoHide(false);
+    return value<0?0u:value?2u:1u;
+}
+void SetQuickBar(bool autoHide) {
+    if(quickBarHooks&&QuickBarWrite(autoHide)){quickBarPreference=autoHide?1:0;quickBarRefresh=true;}
 }
 
 void SetShaderSwapDevice(ID3D11Device* device){

@@ -192,6 +192,8 @@ public:
                 label(1,L"Grenade aim");
                 label(2,s.draftThrowAim==1?L"Grenade landing ring (inactive)":L"Grenade landing ring");
                 label(3,L"Gameplay controls");
+                label(4,L"Quickbar");
+                row(SettingsMenu::QuickBarRow,s.originalQuickBar!=0,s.draftQuickBar==2?L"AUTO-HIDE":L"ALWAYS SHOWN");
                 Button(SettingsMenu::Interaction,s.draftInteraction==1?L"HEAD":s.draftInteraction==2?L"RIGHT HAND":L"FROM CONFIG",!s.saving&&hovered(SettingsMenu::Interaction));
                 row(SettingsMenu::ThrowAimRow,s.originalThrowAim!=0,s.draftThrowAim==2?L"HEAD":s.draftThrowAim==3?L"RIGHT HAND":s.draftThrowAim==4?L"LEFT HAND":L"DEFAULT");
                 row(SettingsMenu::ThrowMarkerRow,s.throwMarkerAvailable,s.draftThrowMarker?L"ON":L"OFF");
