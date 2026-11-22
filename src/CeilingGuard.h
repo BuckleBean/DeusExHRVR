@@ -23,5 +23,9 @@ struct State {
         else {drop-=UpRate*dt;if(drop<want)drop=want;}
         return drop;
     }
+    // Wheel, menu, scope or lost tracking: stay exactly where the view is.
+    float Hold(double nowMs){if(!have)return 0;last=nowMs;return drop;}
+    // Cover, conversation or a special camera: ease away instead of cutting off.
+    float Release(double nowMs){return Update(0,NoCeiling,0,0,nowMs);}
 };
 }

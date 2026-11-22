@@ -2,6 +2,7 @@
 #include "NativeCover.h"
 #include "CoverCrosshair.h"
 #include "CeilingGuard.h"
+#include "QuickBarRule.h"
 #include "ForgivingAim.h"
 #include "CoverFollow.h"
 #include "WorldScaleConfig.h"
@@ -3079,7 +3080,7 @@ bool CeilingRaw(void* owner,float x,float y,float z,float& room) {
         alignas(16) unsigned char hit[0x200]{};
         alignas(16) float start[4]{x,y,z+40.f,1};
         alignas(16) float end[4]{x,y,z+900.f,0};
-        if(query(world,0xc72c1ba3,start,end,hit,ignored,2)) {
+        if(query(world,0xc72c1ba3,start,end,hit,ignored,ignored[1]?2u:1u)) {
             const float height=*reinterpret_cast<float*>(hit+0x18)-z;
             // A hit this low means the ray began inside something: not a ceiling.
             if(std::isfinite(height)&&height>=150.f)room=height;
@@ -3089,10 +3090,14 @@ bool CeilingRaw(void* owner,float x,float y,float z,float& room) {
 }
 void UpdateCeilingRoom() {
     float room=CeilingGuard::NoCeiling;
-    if(ceilingGuardOn.load()&&!grabActive.load()&&handBodyOriginValid.load()) {
-        void* owner{};bool ready{};
-        {std::lock_guard lock(stateMutex);owner=current.playerInstance;ready=requested&&current.active&&!screenReasons&&!gameMenuOpen&&!wheelOpen;}
-        if(owner&&ready&&!CeilingRaw(owner,handBodyOrigin[0].load(),handBodyOrigin[1].load(),handBodyOrigin[2].load(),room))
+    if(ceilingGuardOn.load()) {
+        // Carrying (the load could read as a ceiling) or a screen, wheel or scope:
+        // keep the last measurement so the view does not rise in a low space.
+        if(grabActive.load())return;
+        void* owner{};bool ready{},paused{};
+        {std::lock_guard lock(stateMutex);owner=current.playerInstance;ready=requested&&current.active;paused=screenReasons||gameMenuOpen||wheelOpen||immersiveScopeActive;}
+        if(ready&&paused)return;
+        if(owner&&ready&&handBodyOriginValid.load()&&!CeilingRaw(owner,handBodyOrigin[0].load(),handBodyOrigin[1].load(),handBodyOrigin[2].load(),room))
             room=CeilingGuard::NoCeiling;
     }
     ceilingRoom.store(room);
@@ -3113,8 +3118,9 @@ uint32_t __fastcall ReticleTypeHook(void* self,void*,void* descriptor) {
         // the camera's aim, not the controller's, so "off" there hides it too.
         const auto mode=crosshairMode.load();
         const bool ours=current.coverTargetValid && (current.tracking.reserved&1);
+        // Off means no crosshair at all, including the game's in first person.
         hide=NativeCoverActiveLocked()?(!CoverCrosshair::ShowsThird(mode)||ours):
-            (CoverCrosshair::ShowsFirst(mode)&&ours&&FirstPersonAimLocked());
+            (mode==CoverCrosshair::Off||(CoverCrosshair::ShowsFirst(mode)&&ours&&FirstPersonAimLocked()));
     }
     static int last=-1;
     if(last!=int(hide)) {
@@ -4798,13 +4804,15 @@ void __fastcall UpdateHook(void* self,void*) {
                     // Keep the view, including the player's real head height, below a low ceiling.
                     static CeilingGuard::State ceiling;
                     auto guardEntity=*reinterpret_cast<const unsigned char* const*>(active+0xaa0);
-                    const bool guarded=ceilingGuardOn.load()&&guardEntity&&referenceValid&&t.valid&&!coverCamera.held&&!dialogue&&
-                        !gameMenuOpen&&!wheelOpen&&!immersiveScopeActive&&!handsSuspendedByMode.load();
-                    if(guarded) {
+                    if(!ceilingGuardOn.load()||!guardEntity)ceiling.Reset();
+                    else if(coverCamera.held||dialogue||handsSuspendedByMode.load())renderBase.m[14]-=ceiling.Release(ms);
+                    else if(!referenceValid||!t.valid||gameMenuOpen||wheelOpen||immersiveScopeActive)renderBase.m[14]-=ceiling.Hold(ms);
+                    else {
                         const float bodyZ=*reinterpret_cast<const float*>(guardEntity+0x28);
                         const float eye=CameraMath::HeadWorld(renderBase,reference,t.head,worldScale).m[14]-bodyZ;
                         if(std::isfinite(eye))renderBase.m[14]-=ceiling.Update(eye,ceilingRoom.load(),ceilingMarginMetres*worldScale,.5f*worldScale,ms);
-                    } else ceiling.Reset();
+                        else renderBase.m[14]-=ceiling.Hold(ms);
+                    }
                 }
                 if(bobTrace)BobTrace(ms,current.originalWorld,renderBase.m+12,t);
                 if(fixedDialogueCamera.load()){
@@ -6052,11 +6060,11 @@ bool QuickBarSaveFile(const wchar_t* path,bool autoHide) {
     if(n!=4||memcmp(start,"[VR]",4))return false;
     return WritePrivateProfileStringW(L"VR",L"QuickBarAutoHide",autoHide?L"1":L"0",path)!=0;
 }
+unsigned char QuickBarInputByte(){return *reinterpret_cast<const unsigned char*>(VA(0x00b23e54));} // 0 = controller
 struct QuickBarValue {void* object;uint32_t type;uint32_t data;uint32_t padding;};
 void QuickBarNotifyRaw(void* self,bool autoHide) {
     __try {
-        const bool hidden=*reinterpret_cast<const unsigned char*>(VA(0x00b23e54))==0||autoHide; // the game's own rule
-        QuickBarValue result{},argument{};argument.type=2;argument.data=hidden?1:0;
+        QuickBarValue result{},argument{};argument.type=2;argument.data=autoHide?1:0;
         using Call=bool(__thiscall*)(void*,const char*,QuickBarValue*,QuickBarValue*,unsigned);
         reinterpret_cast<Call>(VA(0x7c07b0))(self,reinterpret_cast<const char*>(VA(0xabd8e8)),&result,&argument,1);
         if((result.type>>6)&1) {
@@ -6073,12 +6081,20 @@ void __fastcall QuickBarStartHook(void* self,void*) {
     const int preference=quickBarPreference.load();
     if(preference>=0)QuickBarWrite(preference!=0);
     originalQuickBarStart(self);
+    // The game just applied its controller rule; a saved choice replaces it.
     quickBarRefresh=false;
+    const int chosen=quickBarPreference.load();
+    if(chosen>=0)QuickBarNotifyRaw(self,chosen!=0);
 }
 void __fastcall QuickBarFrameHook(void* self,void*,float dt) {
+    const bool refresh=quickBarRefresh.exchange(false);
     const int preference=quickBarPreference.load(),live=QuickBarAutoHide(false);
-    if(quickBarRefresh.exchange(false)) {
-        if(live>=0)QuickBarNotifyRaw(self,live!=0);
+    static int lastInput=-1;
+    const int input=QuickBarInputByte();
+    const bool inputChanged=lastInput>=0&&input!=lastInput;
+    lastInput=input;
+    if(refresh||(preference>=0&&inputChanged)) {
+        if(preference>=0)QuickBarNotifyRaw(self,preference!=0);
     } else if(preference>=0&&live>=0&&live!=preference) {
         // The tilde key changed it: follow the player, and remember it.
         quickBarPreference=live;
@@ -6092,6 +6108,10 @@ void InstallQuickBarHooks() {
     if(QuickBarAutoHide(false)<0 || memcmp(start,"\x83\xec\x20\x53\x55\x56\x57",7) || memcmp(frame,"\x53\x57\x8b\xf9\x8b\x47\x20",7) ||
        memcmp(reinterpret_cast<void*>(VA(0x5ad290)),"\x80\xb9\x08\x01\x00\x00\x00",7) ||
        strcmp(reinterpret_cast<const char*>(VA(0xabd8e8)),"InitAutoHide"))return;
+    {   // cmp byte ptr [input byte],bl in the HUD's start: confirms what the byte is used for.
+        auto rule=reinterpret_cast<const unsigned char*>(VA(0x7fe2da));uint32_t address;memcpy(&address,rule+2,4);
+        if(rule[0]!=0x38||rule[1]!=0x1d||uintptr_t(address)!=VA(0x00b23e54))return;
+    }
     bool madeStart=MH_CreateHook(start,(void*)&QuickBarStartHook,(void**)&originalQuickBarStart)==MH_OK;
     bool madeFrame=madeStart&&MH_CreateHook(frame,(void*)&QuickBarFrameHook,(void**)&originalQuickBarFrame)==MH_OK;
     quickBarHooks=madeFrame&&MH_EnableHook(start)==MH_OK&&MH_EnableHook(frame)==MH_OK;
@@ -6107,10 +6127,14 @@ void InstallQuickBarHooks() {
 unsigned QuickBarSetting() {
     if(!quickBarHooks)return 0;
     const int value=QuickBarAutoHide(false);
-    return value<0?0u:value?2u:1u;
+    return value<0?0u:QuickBarRule::MenuValue(quickBarPreference.load(),value!=0,QuickBarInputByte());
 }
 void SetQuickBar(bool autoHide) {
-    if(quickBarHooks&&QuickBarWrite(autoHide)){quickBarPreference=autoHide?1:0;quickBarRefresh=true;}
+    if(!quickBarHooks)return;
+    // The choice is stored first so the frame hook cannot mistake this for the tilde key.
+    const int previous=quickBarPreference.exchange(autoHide?1:0);
+    if(QuickBarWrite(autoHide))quickBarRefresh=true;
+    else quickBarPreference=previous;
 }
 
 void SetShaderSwapDevice(ID3D11Device* device){
