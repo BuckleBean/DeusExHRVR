@@ -14,23 +14,25 @@
 #include "DirectionConfig.h"
 #include "ButtonBindings.h"
 #include "CoverCrosshair.h"
+#include "ImageAdjust.h"
 
 // One worker owns menu-setting writes and learned snap calibration.
 // Single-key profile writes preserve unrelated settings and existing comments.
 class SettingsPersistence {
     std::mutex mutex;std::condition_variable wake;
     std::chrono::steady_clock::time_point saveAfter{};
-    std::wstring path;bool pending{},anglePending{};float angle{};double counts{};uint32_t sequence{};int snapMode{-1},movementMode{-1},responseMode{-1},interactionMode{-1};bool resetPending{};float pendingScale{-1};int pendingDialogue{-1};float pendingZoom{-1};int pendingHandHud{-1};int pendingThrowAim{-1},pendingThrowMarker{-1},pendingCoverFollow{-1},pendingScope{-1},pendingCrosshair{-1},pendingQuickBar{-1};
+    std::wstring path;bool pending{},anglePending{};float angle{};double counts{};uint32_t sequence{};int snapMode{-1},movementMode{-1},responseMode{-1},interactionMode{-1};bool resetPending{};float pendingScale{-1};int pendingDialogue{-1};float pendingZoom{-1};int pendingHandHud{-1};int pendingThrowAim{-1},pendingThrowMarker{-1},pendingCoverFollow{-1},pendingScope{-1},pendingCrosshair{-1},pendingQuickBar{-1};uint32_t pendingBrightness{},pendingContrast{};
     ButtonBindings::Layout bindings{};uint32_t bindingMask{};
 public:
     std::atomic<uint32_t> completed{},failed{};
-    static bool Save(const std::wstring& path,bool angle,float degrees,double count,int snap=-1,int movement=-1,const ButtonBindings::Layout& bindings={},uint32_t mask=0,int response=-1,int interaction=-1,bool reset=false,float worldScale=-1,int dialogue=-1,float scopeZoom=-1,int handHud=-1,int throwAim=-1,int throwMarker=-1,int coverFollow=-1,int immersiveScope=-1,int crosshair=-1,int quickBar=-1) {
+    static bool Save(const std::wstring& path,bool angle,float degrees,double count,int snap=-1,int movement=-1,const ButtonBindings::Layout& bindings={},uint32_t mask=0,int response=-1,int interaction=-1,bool reset=false,float worldScale=-1,int dialogue=-1,float scopeZoom=-1,int handHud=-1,int throwAim=-1,int throwMarker=-1,int coverFollow=-1,int immersiveScope=-1,int crosshair=-1,int quickBar=-1,uint32_t brightness=0,uint32_t contrast=0) {
         if(dialogue < -1 || dialogue > 1)return false;
         if(throwAim < -1 || throwAim > 3)return false;
         for(int v:{throwMarker,coverFollow,immersiveScope})if(v < -1 || v > 1)return false;
         if(handHud < -1 || handHud > 1)return false;
         if(crosshair!=-1&&(crosshair<1||crosshair>4))return false;
         if(quickBar < -1 || quickBar > 1)return false;
+        if(!ImageAdjust::ValidWire(brightness)||!ImageAdjust::ValidWire(contrast))return false;
         if(scopeZoom!=-1&&(!std::isfinite(scopeZoom)||scopeZoom<1||scopeZoom>12))return false;
         if(worldScale!=-1&&(!std::isfinite(worldScale)||worldScale<10||worldScale>1000))return false;
         if(interaction < -1 || interaction > 3)return false;
@@ -53,6 +55,8 @@ public:
         if(angle&&immersiveScope>=0&&!WritePrivateProfileStringW(L"VR",L"ImmersiveScope",immersiveScope?L"1":L"0",path.c_str()))return false;
         if(angle&&crosshair>=1&&!WritePrivateProfileStringW(L"VR",L"Crosshair",CoverCrosshair::Value(uint32_t(crosshair)),path.c_str()))return false;
         if(angle&&quickBar>=0&&!WritePrivateProfileStringW(L"VR",L"QuickBarAutoHide",quickBar?L"1":L"0",path.c_str()))return false;
+        if(angle&&brightness&&!ImageAdjust::Write(L"Brightness",brightness,path.c_str()))return false;
+        if(angle&&contrast&&!ImageAdjust::Write(L"Contrast",contrast,path.c_str()))return false;
         if(angle&&snap>=0&&!WritePrivateProfileStringW(L"VR",L"SnapTurn",snap?L"1":L"0",path.c_str()))return false;
         if(angle&&response>=0&&!WritePrivateProfileStringW(L"VR",L"MovementResponse",response==2?L"2":response==1?L"1":L"0",path.c_str()))return false;
         if(angle&&interaction>=0&&!WritePrivateProfileStringW(L"VR",L"InteractionAim",DirectionConfig::Value(unsigned(interaction)),path.c_str()))return false;
@@ -91,16 +95,16 @@ public:
             std::unique_lock lock(mutex);wake.wait(lock,[&]{return pending;});
             // Coalesce rapid adjustments without holding the producer lock during IO.
             while(std::chrono::steady_clock::now()<saveAfter){auto deadline=saveAfter;wake.wait_until(lock,deadline);}
-            auto file=path;auto a=angle;auto c=counts;auto seq=sequence;bool saveAngle=anglePending;auto snap=snapMode;auto movement=movementMode;auto response=responseMode;auto interaction=interactionMode;auto scale=pendingScale;auto dialogue=pendingDialogue;auto zoom=pendingZoom;auto handHud=pendingHandHud;auto throwAimMode=pendingThrowAim;auto marker=pendingThrowMarker;auto follow=pendingCoverFollow;auto scope=pendingScope;auto crosshair=pendingCrosshair;auto quickBarMode=pendingQuickBar;auto reset=resetPending;resetPending=false;
+            auto file=path;auto a=angle;auto c=counts;auto seq=sequence;bool saveAngle=anglePending;auto snap=snapMode;auto movement=movementMode;auto response=responseMode;auto interaction=interactionMode;auto scale=pendingScale;auto dialogue=pendingDialogue;auto zoom=pendingZoom;auto handHud=pendingHandHud;auto throwAimMode=pendingThrowAim;auto marker=pendingThrowMarker;auto follow=pendingCoverFollow;auto scope=pendingScope;auto crosshair=pendingCrosshair;auto quickBarMode=pendingQuickBar;auto brightnessWire=pendingBrightness;auto contrastWire=pendingContrast;auto reset=resetPending;resetPending=false;
             auto layout=bindings;auto mask=bindingMask;bindingMask=0;
             pending=anglePending=false;lock.unlock();
-            bool ok=Save(file,saveAngle,a,c,snap,movement,layout,mask,response,interaction,reset,scale,dialogue,zoom,handHud,throwAimMode,marker,follow,scope,crosshair,quickBarMode);
+            bool ok=Save(file,saveAngle,a,c,snap,movement,layout,mask,response,interaction,reset,scale,dialogue,zoom,handHud,throwAimMode,marker,follow,scope,crosshair,quickBarMode,brightnessWire,contrastWire);
             if(saveAngle){if(!ok)failed=seq;completed=seq;}
         }}).detach();
     }
-    void Queue(const wchar_t* file,double count,uint32_t seq=0,float degrees=0,int snap=-1,int movement=-1,const ButtonBindings::Layout& layout={},uint32_t mask=0,int response=-1,int interaction=-1,bool reset=false,float worldScale=-1,int dialogue=-1,float scopeZoom=-1,int handHud=-1,int throwAim=-1,int throwMarker=-1,int coverFollow=-1,int immersiveScope=-1,int crosshair=-1,int quickBar=-1) {
+    void Queue(const wchar_t* file,double count,uint32_t seq=0,float degrees=0,int snap=-1,int movement=-1,const ButtonBindings::Layout& layout={},uint32_t mask=0,int response=-1,int interaction=-1,bool reset=false,float worldScale=-1,int dialogue=-1,float scopeZoom=-1,int handHud=-1,int throwAim=-1,int throwMarker=-1,int coverFollow=-1,int immersiveScope=-1,int crosshair=-1,int quickBar=-1,uint32_t brightness=0,uint32_t contrast=0) {
         std::lock_guard lock(mutex);path=file;counts=count;pending=true;
-        if(seq){sequence=seq;angle=degrees;anglePending=true;snapMode=snap;movementMode=movement;responseMode=response;interactionMode=interaction;resetPending|=reset;pendingScale=worldScale;pendingDialogue=dialogue;pendingZoom=scopeZoom;pendingHandHud=handHud;pendingThrowAim=throwAim;pendingThrowMarker=throwMarker;pendingCoverFollow=coverFollow;pendingScope=immersiveScope;pendingCrosshair=crosshair;pendingQuickBar=quickBar;
+        if(seq){sequence=seq;angle=degrees;anglePending=true;snapMode=snap;movementMode=movement;responseMode=response;interactionMode=interaction;resetPending|=reset;pendingScale=worldScale;pendingDialogue=dialogue;pendingZoom=scopeZoom;pendingHandHud=handHud;pendingThrowAim=throwAim;pendingThrowMarker=throwMarker;pendingCoverFollow=coverFollow;pendingScope=immersiveScope;pendingCrosshair=crosshair;pendingQuickBar=quickBar;pendingBrightness=brightness;pendingContrast=contrast;
             for(size_t i=0;i<ButtonBindings::Count;++i)if(mask&(1u<<i))bindings[i]=layout[i];bindingMask|=mask;}
         saveAfter=std::chrono::steady_clock::now()+std::chrono::milliseconds(500);
         wake.notify_one();

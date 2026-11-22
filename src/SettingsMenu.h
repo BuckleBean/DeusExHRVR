@@ -3,6 +3,7 @@
 #include "LiveWorldScale.h"
 #include "GamepadMapping.h"
 #include "CoverCrosshair.h"
+#include "ImageAdjust.h"
 #include <cmath>
 #include <algorithm>
 #include <string>
@@ -23,8 +24,8 @@ inline constexpr Rect ListSave{940,790,420,60},ListDiscard{490,790,420,60},ListB
 // to be added). One draft and one Save & Back cover all three tabs; the tab
 // shown is remembered while the game runs. Rows are 52 px tall, 66 px apart
 // from y 216, under the tab strip; at most six rows per tab.
-inline constexpr int Tabs=3,TabMovement=0,TabControls=1,TabView=2;
-inline constexpr Rect Tab(int i){return {240+i*380,128,360,56};}
+inline constexpr int Tabs=4,TabMovement=0,TabControls=1,TabView=2,TabImage=3;
+inline constexpr Rect Tab(int i){return {240+i*285,128,270,56};}
 inline int TabAt(float x,float y){for(int i=0;i<Tabs;++i)if(Tab(i).Has(x,y))return i;return -1;}
 inline constexpr int MainRowY(int i){return 216+i*66;}
 inline constexpr Rect MainRow(int i){return {760,MainRowY(i),530,52};}
@@ -44,6 +45,10 @@ inline constexpr Rect Interaction=MainRow(0),ThrowAimRow=MainRow(1),ThrowMarkerR
 inline constexpr Rect HandHud=MainRow(0),ScopeRow=MainRow(1);
 inline constexpr Rect ZoomMinus{760,MainRowY(2),100,52},ZoomPlus{1190,MainRowY(2),100,52};
 inline constexpr Rect CoverFollowRow=MainRow(3),Dialogue=MainRow(4),CrosshairRow=MainRow(5);
+// Image tab. The game's own brightness reaches only the desktop.
+inline constexpr Rect BrightnessMinus{760,MainRowY(0),100,52},BrightnessPlus{1190,MainRowY(0),100,52};
+inline constexpr Rect ContrastMinus{760,MainRowY(1),100,52},ContrastPlus{1190,MainRowY(1),100,52};
+inline constexpr Rect ImageReset=MainRow(2);
 // Next grenade aim: transport values (Source + 1) 3 right, 4 left, 2 head, 1 game.
 inline constexpr uint32_t NextThrowAim(uint32_t v){return v==3?4:v==4?2:v==2?1:3;}
 inline constexpr Rect ResetBindings{1040,110,320,45};
@@ -153,8 +158,10 @@ struct State {
     bool draftScope{},originalScope{},scopeAvailable{};uint32_t requestedImmersiveScope{};
     uint32_t draftCrosshair{},originalCrosshair{},requestedCrosshair{}; // CoverCrosshair mode, 0 = unavailable
     uint32_t draftQuickBar{},originalQuickBar{},requestedQuickBar{}; // 1 always shown, 2 auto-hide, 0 = unavailable
-    void ResetTabDrafts(){draftThrowAim=originalThrowAim;draftThrowMarker=originalThrowMarker;draftCoverFollow=originalCoverFollow;draftScope=originalScope;draftCrosshair=originalCrosshair;draftQuickBar=originalQuickBar;}
-    bool TabDirty() const {return draftThrowAim!=originalThrowAim||draftThrowMarker!=originalThrowMarker||draftCoverFollow!=originalCoverFollow||draftScope!=originalScope||draftCrosshair!=originalCrosshair||draftQuickBar!=originalQuickBar;}
+    bool imageAvailable{};int draftBrightness{},originalBrightness{},draftContrast{},originalContrast{};
+    uint32_t requestedBrightness{},requestedContrast{}; // ImageAdjust wire values, 0 = unchanged
+    void ResetTabDrafts(){draftThrowAim=originalThrowAim;draftThrowMarker=originalThrowMarker;draftCoverFollow=originalCoverFollow;draftScope=originalScope;draftCrosshair=originalCrosshair;draftQuickBar=originalQuickBar;draftBrightness=originalBrightness;draftContrast=originalContrast;}
+    bool TabDirty() const {return draftThrowAim!=originalThrowAim||draftThrowMarker!=originalThrowMarker||draftCoverFollow!=originalCoverFollow||draftScope!=originalScope||draftCrosshair!=originalCrosshair||draftQuickBar!=originalQuickBar||draftBrightness!=originalBrightness||draftContrast!=originalContrast;}
     void LoadTabDrafts(const Transport::MenuState& game){
         draftThrowAim=originalThrowAim=game.throwAim<=4?game.throwAim:0;
         throwMarkerAvailable=game.throwMarker==1||game.throwMarker==2;draftThrowMarker=originalThrowMarker=game.throwMarker==2;
@@ -162,6 +169,9 @@ struct State {
         scopeAvailable=game.immersiveScope==1||game.immersiveScope==2;draftScope=originalScope=game.immersiveScope==2;
         draftCrosshair=originalCrosshair=game.crosshair<=4?game.crosshair:0;
         draftQuickBar=originalQuickBar=game.quickBar<=2?game.quickBar:0;
+        imageAvailable=game.brightness&&game.contrast&&ImageAdjust::ValidWire(game.brightness)&&ImageAdjust::ValidWire(game.contrast);
+        draftBrightness=originalBrightness=imageAvailable?ImageAdjust::Decode(game.brightness):0;
+        draftContrast=originalContrast=imageAvailable?ImageAdjust::Decode(game.contrast):0;
     }
     float draftZoom{},originalZoom{},requestedZoom{}; // requestedZoom 0 = unchanged
     bool scalePage{};float draftScale{LiveWorldScale::Default},originalScale{LiveWorldScale::Default},requestedScale{LiveWorldScale::Default};
@@ -169,7 +179,7 @@ struct State {
     bool listening{},captureReady{},confirming{},captureRelease{},scrollArmed{};
     int candidate{-1},pressedSlot{-1};uint64_t pressAt{};
     Rect Area() const {return open?(remapping?ListPanel:Panel):Entry;}
-    void Submit(){requestedQuickBar=originalQuickBar&&draftQuickBar!=originalQuickBar?draftQuickBar:0u;requestedCrosshair=originalCrosshair&&draftCrosshair!=originalCrosshair?draftCrosshair:0u;requestedThrowAim=originalThrowAim&&draftThrowAim!=originalThrowAim?draftThrowAim:0u;requestedThrowMarker=throwMarkerAvailable&&draftThrowMarker!=originalThrowMarker?(draftThrowMarker?2u:1u):0u;requestedCoverFollow=coverFollowAvailable&&draftCoverFollow!=originalCoverFollow?(draftCoverFollow?2u:1u):0u;requestedImmersiveScope=scopeAvailable&&draftScope!=originalScope?(draftScope?2u:1u):0u;requestedHandHud=handHudAvailable&&draftHandHud!=originalHandHud?(draftHandHud?2u:1u):0u;requestedZoom=draftZoom!=originalZoom?draftZoom:0.f;requestedDialogue=draftDialogue;requestedScale=draftScale;requestedInteraction=draftInteraction;requestedReset=draftReset;requestedResponse=draftResponse;requested=draft;requestedSnap=draftSnap;requestedMovement=draftMovement;requestedBindings=draftBindings;if(draftReset)requestedBindingMask=(1u<<ButtonBindings::Count)-1;requestedBindingMask|=ButtonBindings::Changes(draftBindings,originalBindings);++request;saving=true;committed=true;}
+    void Submit(){requestedBrightness=imageAvailable&&draftBrightness!=originalBrightness?ImageAdjust::Encode(draftBrightness):0u;requestedContrast=imageAvailable&&draftContrast!=originalContrast?ImageAdjust::Encode(draftContrast):0u;requestedQuickBar=originalQuickBar&&draftQuickBar!=originalQuickBar?draftQuickBar:0u;requestedCrosshair=originalCrosshair&&draftCrosshair!=originalCrosshair?draftCrosshair:0u;requestedThrowAim=originalThrowAim&&draftThrowAim!=originalThrowAim?draftThrowAim:0u;requestedThrowMarker=throwMarkerAvailable&&draftThrowMarker!=originalThrowMarker?(draftThrowMarker?2u:1u):0u;requestedCoverFollow=coverFollowAvailable&&draftCoverFollow!=originalCoverFollow?(draftCoverFollow?2u:1u):0u;requestedImmersiveScope=scopeAvailable&&draftScope!=originalScope?(draftScope?2u:1u):0u;requestedHandHud=handHudAvailable&&draftHandHud!=originalHandHud?(draftHandHud?2u:1u):0u;requestedZoom=draftZoom!=originalZoom?draftZoom:0.f;requestedDialogue=draftDialogue;requestedScale=draftScale;requestedInteraction=draftInteraction;requestedReset=draftReset;requestedResponse=draftResponse;requested=draft;requestedSnap=draftSnap;requestedMovement=draftMovement;requestedBindings=draftBindings;if(draftReset)requestedBindingMask=(1u<<ButtonBindings::Count)-1;requestedBindingMask|=ButtonBindings::Changes(draftBindings,originalBindings);++request;saving=true;committed=true;}
     void Assign(){
         const auto target=ButtonBindings::Targets[selected].value;
         for(auto& value:draftBindings)if(value==target)value=0;
@@ -279,6 +289,14 @@ struct State {
             else if(!saving&&tab==TabControls&&throwMarkerAvailable&&ThrowMarkerRow.Has(x,y)){draftThrowMarker=!draftThrowMarker;}
             else if(!saving&&tab==TabControls&&originalQuickBar&&QuickBarRow.Has(x,y)){draftQuickBar=draftQuickBar==2?1:2;}
             else if(!saving&&tab==TabControls&&Remap.Has(x,y)){remapping=true;}
+            // Image tab.
+            else if(!saving&&tab==TabImage&&imageAvailable&&(BrightnessMinus.Has(x,y)||BrightnessPlus.Has(x,y))){
+                draftBrightness=ImageAdjust::Clean(draftBrightness+(BrightnessPlus.Has(x,y)?ImageAdjust::Step:-ImageAdjust::Step));
+            }
+            else if(!saving&&tab==TabImage&&imageAvailable&&(ContrastMinus.Has(x,y)||ContrastPlus.Has(x,y))){
+                draftContrast=ImageAdjust::Clean(draftContrast+(ContrastPlus.Has(x,y)?ImageAdjust::Step:-ImageAdjust::Step));
+            }
+            else if(!saving&&tab==TabImage&&imageAvailable&&ImageReset.Has(x,y)){draftBrightness=draftContrast=0;}
             // View tab.
             else if(!saving&&tab==TabView&&handHudAvailable&&HandHud.Has(x,y)){draftHandHud=!draftHandHud;}
             else if(!saving&&tab==TabView&&scopeAvailable&&ScopeRow.Has(x,y)){draftScope=!draftScope;}

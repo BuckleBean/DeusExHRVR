@@ -354,6 +354,16 @@ int wmain(int argc,wchar_t** argv) {
         h.menu.requestedQuickBar=3;request(134,30);assert(h.menu.result==2&&EngineCamera::quickBarSetting==2);
         EngineCamera::quickBarSetting=0;GamepadBridge::MenuTick(2);h.menu.requestedQuickBar=1;request(135,30);assert(h.menu.result==2&&EngineCamera::quickBarSetting==0);
         h.menu.requestedQuickBar=0;EngineCamera::quickBarSetting=1;
+        // Brightness and contrast (transport 28): negative values survive the file; bad values refused.
+        {
+            GamepadBridge::MenuTick(2);assert(h.menu.brightness==ImageAdjust::Encode(0)&&h.menu.contrast==ImageAdjust::Encode(0));
+            h.menu.requestedBrightness=ImageAdjust::Encode(15);h.menu.requestedContrast=ImageAdjust::Encode(-10);request(136,30);
+            assert(h.menu.result!=2&&h.menu.brightness==ImageAdjust::Encode(15)&&h.menu.contrast==ImageAdjust::Encode(-10));
+            for(int n=0;n<200&&h.menu.saved!=136;++n){Sleep(10);GamepadBridge::MenuTick(2);}
+            assert(h.menu.saved==136&&ImageAdjust::Read(L"Brightness",path.c_str())==15&&ImageAdjust::Read(L"Contrast",path.c_str())==-10);
+            h.menu.requestedBrightness=108;h.menu.requestedContrast=0;request(137,30);assert(h.menu.result==2&&h.menu.brightness==ImageAdjust::Encode(15));
+            h.menu.requestedBrightness=h.menu.requestedContrast=0;
+        }
         EngineCamera::throwAimSetting=3;EngineCamera::throwMarkerSetting=2;EngineCamera::scopeSetting=1;
         request(119,30);wait(119);
         printf("PASS %zu-bit menu tabs: grenade aim, landing ring, cover camera and immersive scope reported, switched at once, saved (ThrowAim Mouse/LeftController/Controller), 0 keeps, bad or unavailable refused\n",sizeof(void*)*8);

@@ -165,7 +165,7 @@ public:
             using SettingsMenu::MainRowY;
             Text(heading,240,60,1120,55,true,true);
             // Tabs: the shown one is drawn lit, with a gold bar under it.
-            static const wchar_t* tabNames[SettingsMenu::Tabs]{L"MOVEMENT",L"CONTROLS",L"VIEW"};
+            static const wchar_t* tabNames[SettingsMenu::Tabs]{L"MOVEMENT",L"CONTROLS",L"VIEW",L"IMAGE"};
             for(int i=0;i<SettingsMenu::Tabs;++i){
                 const auto r=SettingsMenu::Tab(i);
                 Button(r,tabNames[i],s.tab==i||(!s.saving&&hovered(r)));
@@ -198,6 +198,19 @@ public:
                 row(SettingsMenu::ThrowAimRow,s.originalThrowAim!=0,s.draftThrowAim==2?L"HEAD":s.draftThrowAim==3?L"RIGHT HAND":s.draftThrowAim==4?L"LEFT HAND":L"DEFAULT");
                 row(SettingsMenu::ThrowMarkerRow,s.throwMarkerAvailable,s.draftThrowMarker?L"ON":L"OFF");
                 Button(SettingsMenu::Remap,L"BUTTON REMAPPING",!s.saving&&hovered(SettingsMenu::Remap));
+            }else if(s.tab==SettingsMenu::TabImage){
+                label(0,L"Brightness");
+                label(1,L"Contrast");
+                label(2,L"Original image");
+                auto stepper=[&](SettingsMenu::Rect minus,SettingsMenu::Rect plus,int line,int value){
+                    if(!s.imageAvailable){Text(L"UNAVAILABLE",870,MainRowY(line),310,52,true);return;}
+                    wchar_t number[16];swprintf_s(number,value>0?L"+%d":L"%d",value);Text(number,870,MainRowY(line),310,52,true);
+                    Button(minus,L"-",!s.saving&&value>ImageAdjust::Min&&hovered(minus));
+                    Button(plus,L"+",!s.saving&&value<ImageAdjust::Max&&hovered(plus));
+                };
+                stepper(SettingsMenu::BrightnessMinus,SettingsMenu::BrightnessPlus,0,s.draftBrightness);
+                stepper(SettingsMenu::ContrastMinus,SettingsMenu::ContrastPlus,1,s.draftContrast);
+                row(SettingsMenu::ImageReset,s.imageAvailable,L"RESET TO 0");
             }else{
                 label(0,L"HUD");
                 label(1,L"Immersive scope");

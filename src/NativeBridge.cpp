@@ -6,6 +6,8 @@
 #include "SettingsMenuDraw.h"
 #include "ThrowMarker.h"
 #include "CoverCrosshair.h"
+#include "ImagePass.h"
+#include "RenderScale.h"
 #include <windows.h>
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
@@ -55,6 +57,9 @@ struct Bridge {
     uint64_t rateTick=0,ratePairs=0;
     XrDuration lastPeriod{};
     PairHistory history;
+    ImagePass imagePass;
+    ImageAdjust::Settings imageSaved{};
+    bool imagePassLogged{};
     ControllerInput controller;
     SettingsMenu::State menuUI;
     uint32_t menuRecenterRequest{};
@@ -200,7 +205,7 @@ struct Bridge {
             m.requestedDialogue=menuUI.requestedDialogue;
             m.requestedHandHud=menuUI.requestedHandHud;
             m.requestedThrowAim=menuUI.requestedThrowAim;m.requestedThrowMarker=menuUI.requestedThrowMarker;
-            m.requestedCrosshair=menuUI.requestedCrosshair;m.requestedQuickBar=menuUI.requestedQuickBar;m.requestedCoverFollow=menuUI.requestedCoverFollow;m.requestedImmersiveScope=menuUI.requestedImmersiveScope;
+            m.requestedCrosshair=menuUI.requestedCrosshair;m.requestedQuickBar=menuUI.requestedQuickBar;m.requestedBrightness=menuUI.requestedBrightness;m.requestedContrast=menuUI.requestedContrast;m.requestedCoverFollow=menuUI.requestedCoverFollow;m.requestedImmersiveScope=menuUI.requestedImmersiveScope;
             m.requestedScopeZoom=menuUI.requestedZoom;
             m.requestedInteraction=menuUI.requestedInteraction;m.resetBindings=menuUI.requestedReset;
             m.request=menuUI.request;m.requestedDegrees=menuUI.requested;m.requestedSnap=menuUI.requestedSnap;m.requestedMovement=menuUI.requestedMovement;
@@ -283,6 +288,7 @@ struct Bridge {
     }
 
     void DestroySwapchain() {
+        imagePass.Reset();
         images.clear();
         if(swapchain) xrDestroySwapchain(swapchain);
         swapchain=XR_NULL_HANDLE; width=height=0;
@@ -331,7 +337,23 @@ struct Bridge {
         uint32_t views=0;
         if(!Good(xrEnumerateViewConfigurationViews(instance,system,XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,2,&views,viewConfig),"xrEnumerateViewConfigurationViews") || views!=2)return false;
         display.magic=HeadsetDisplay::Magic;
-        for(auto& v:viewConfig){display.width=std::max(display.width,v.recommendedImageRectWidth);display.height=std::max(display.height,v.recommendedImageRectHeight);}
+        uint32_t limitWidth=16384,limitHeight=8192;
+        for(auto& v:viewConfig){
+            display.width=std::max(display.width,v.recommendedImageRectWidth);display.height=std::max(display.height,v.recommendedImageRectHeight);
+            if(v.maxImageRectWidth)limitWidth=std::min(limitWidth,v.maxImageRectWidth);
+            if(v.maxImageRectHeight)limitHeight=std::min(limitHeight,v.maxImageRectHeight);
+        }
+        {
+            wchar_t imageConfig[MAX_PATH]{},scaleText[32]{};GetFullPathNameW(L"DeusExHRVR.ini",MAX_PATH,imageConfig,nullptr);
+            imageSaved={ImageAdjust::Read(L"Brightness",imageConfig),ImageAdjust::Read(L"Contrast",imageConfig)};
+            GetPrivateProfileStringW(L"VR",L"ExperimentalRenderScale",L"1",scaleText,32,imageConfig);
+            const float scale=RenderScale::Parse(scaleText);
+            if(scale!=RenderScale::Off) {
+                const auto scaled=RenderScale::Apply(display.width,display.height,limitWidth,limitHeight,scale);
+                Log("EXPERIMENTAL ExperimentalRenderScale=%.2f: eye %ux%u -> %ux%u. Can cause stutter or crashes; set it to 1.0 to turn it off.",scale,display.width,display.height,scaled.width,scaled.height);
+                display.width=scaled.width;display.height=scaled.height;
+            }
+        }
         if(!HeadsetDisplay::Valid(display)){Log("Headset dimensions exceed the native pair texture limits");return false;}
         PFN_xrGetD3D11GraphicsRequirementsKHR requirements{};
         if(!Good(xrGetInstanceProcAddr(instance,"xrGetD3D11GraphicsRequirementsKHR",reinterpret_cast<PFN_xrVoidFunction*>(&requirements)),"xrGetInstanceProcAddr"))return false;
@@ -449,6 +471,13 @@ struct Bridge {
         Log("Native pair swapchain: %ux%u per eye, arraySize=2 format=%d images=%u",width,height,format,n);
         return true;
     }
+    // While the menu is open its unsaved values preview on the game image.
+    ImageAdjust::Settings ImageNow() const {
+        if(menuUI.open&&menuUI.imageAvailable)return {menuUI.draftBrightness,menuUI.draftContrast};
+        if(menuGame.brightness&&menuGame.contrast&&ImageAdjust::ValidWire(menuGame.brightness)&&ImageAdjust::ValidWire(menuGame.contrast))
+            return {ImageAdjust::Decode(menuGame.brightness),ImageAdjust::Decode(menuGame.contrast)};
+        return imageSaved;
+    }
     void Capture(ID3D11Texture2D* pair,UINT h,uint64_t id) {
         D3D11_TEXTURE2D_DESC d{}; pair->GetDesc(&d);
         if(d.Format!=DXGI_FORMAT_R8G8B8A8_UNORM && d.Format!=DXGI_FORMAT_R8G8B8A8_UNORM_SRGB &&
@@ -546,8 +575,11 @@ struct Bridge {
                 if(wait==XR_SUCCESS && index<images.size()) {
                     // The two GPU copies read one native texture at ONE Present boundary.
                     // They target the same acquired image and are released together.
+                    const auto image=ImageNow();
                     for(UINT eye=0;eye<2;eye++) {
                         UINT srcEye=swap?1-eye:eye;
+                        if(!image.Neutral()&&imagePass.Draw(device.Get(),context.Get(),pair,images[index].texture,eye,srcEye*h,d.Width,h,image))continue;
+                        if(!image.Neutral()&&imagePass.Failed()&&!imagePassLogged){imagePassLogged=true;Log("Brightness/contrast unavailable; using the plain image");}
                         D3D11_BOX box{0,srcEye*h,0,d.Width,(srcEye+1)*h,1};
                         context->CopySubresourceRegion(images[index].texture,eye,0,0,0,pair,0,&box);
                     }

@@ -188,6 +188,15 @@ CeilingGuardCm=15
 ; The game's quickbar: 1 auto-hides it, 0 keeps it on screen. Leave this line out to
 ; let the game decide. VR Settings > Controls > Quickbar; the tilde key also changes it.
 ; QuickBarAutoHide=1
+; Headset image, -50 to 50 in steps of 5. 0 is the game's original image.
+; Also at VR Settings > Image.
+Brightness=0
+Contrast=0
+; EXPERIMENTAL, USE AT YOUR OWN RISK. Multiplies the resolution your VR runtime asks for
+; (1.0 to 2.0). Costs far more GPU power: 1.25 is 56% more pixels, 1.5 is 125% more.
+; This 32-bit game can stutter, run out of memory or crash at higher values. If it
+; does, set this back to 1.0. Restart the game after editing. Not in the VR menu.
+ExperimentalRenderScale=1.0
 ; Keep the view at Jensen's eyes during conversations instead of following the
 ; game's shot cuts between the NPC and Jensen; turn your head to look around.
 ; Jensen's own model is hidden while the view is held. Restart to apply.

@@ -274,6 +274,22 @@ int wmain(int argc,wchar_t** argv) {
      auto click=[&](SettingsMenu::Rect rect){input.rightTrigger=0;ui.Update(true,true,true,float(rect.x+30),float(rect.y+25),input,gm);input.rightTrigger=1;ui.Update(true,true,true,float(rect.x+30),float(rect.y+25),input,gm);};
      click(SettingsMenu::Entry);click(SettingsMenu::Tab(SettingsMenu::TabControls));click(SettingsMenu::QuickBarRow);assert(!ui.draftQuickBar&&!ui.Dirty());
     }
+    // Image tab: steps, limits, reset, one Save, nothing sent unless changed; inert if unavailable.
+    {SettingsMenu::State ui;Transport::MenuState gm{};gm.degrees=30;gm.worldScale=gm.activeWorldScale=300;gm.brightness=ImageAdjust::Encode(45);gm.contrast=ImageAdjust::Encode(0);
+     GamepadMapping::Input input{};input.active=true;
+     auto click=[&](SettingsMenu::Rect rect){input.rightTrigger=0;ui.Update(true,true,true,float(rect.x+30),float(rect.y+25),input,gm);input.rightTrigger=1;ui.Update(true,true,true,float(rect.x+30),float(rect.y+25),input,gm);};
+     click(SettingsMenu::Entry);click(SettingsMenu::Tab(SettingsMenu::TabImage));assert(ui.tab==SettingsMenu::TabImage&&ui.imageAvailable&&ui.draftBrightness==45&&!ui.Dirty());
+     click(SettingsMenu::BrightnessPlus);click(SettingsMenu::BrightnessPlus);assert(ui.draftBrightness==50&&ui.Dirty());
+     click(SettingsMenu::ContrastMinus);assert(ui.draftContrast==-5);
+     click(SettingsMenu::ImageReset);assert(ui.draftBrightness==0&&ui.draftContrast==0);
+     click(SettingsMenu::BrightnessPlus);click(SettingsMenu::Save);assert(ui.saving&&ui.requestedBrightness==ImageAdjust::Encode(5)&&ui.requestedContrast==0);
+    }
+    {SettingsMenu::State ui;Transport::MenuState gm{};gm.degrees=30;gm.worldScale=gm.activeWorldScale=300;
+     GamepadMapping::Input input{};input.active=true;
+     auto click=[&](SettingsMenu::Rect rect){input.rightTrigger=0;ui.Update(true,true,true,float(rect.x+30),float(rect.y+25),input,gm);input.rightTrigger=1;ui.Update(true,true,true,float(rect.x+30),float(rect.y+25),input,gm);};
+     click(SettingsMenu::Entry);click(SettingsMenu::Tab(SettingsMenu::TabImage));click(SettingsMenu::BrightnessPlus);assert(!ui.imageAvailable&&!ui.draftBrightness&&!ui.Dirty());
+    }
+    static_assert(SettingsMenu::Tab(3).x+SettingsMenu::Tab(3).w<=SettingsMenu::Panel.x+SettingsMenu::Panel.w-40);
     // Crosshair row: cycles on the View tab, one Save, nothing sent when unchanged.
     {SettingsMenu::State ui;Transport::MenuState gm{};gm.degrees=30;gm.worldScale=gm.activeWorldScale=300;gm.crosshair=CoverCrosshair::Third;
      GamepadMapping::Input input{};input.active=true;
@@ -586,6 +602,9 @@ int wmain(int argc,wchar_t** argv) {
     s.draftResponse=2;assert(draw.Save((out/L"menu-gentler.bmp").c_str(),s,game));s.draftResponse=0;
     s.draftDialogue=true;assert(draw.Save((out/L"menu-dialogue.bmp").c_str(),s,game));s.draftDialogue=false;
     s.scalePage=true;assert(draw.Save((out/L"menu-world-scale.bmp").c_str(),s,game));s.scalePage=false;
+    s.tab=SettingsMenu::TabImage;s.imageAvailable=true;s.draftBrightness=s.originalBrightness=15;s.draftContrast=s.originalContrast=-10;
+    assert(draw.Save((out/L"menu-tab-image.bmp").c_str(),s,game));
+    s.imageAvailable=false;s.draftBrightness=s.originalBrightness=0;s.draftContrast=s.originalContrast=0;
     s.tab=SettingsMenu::TabView;game.scopeZoom=4;s.draftZoom=s.originalZoom=3;assert(draw.Save((out/L"menu-scope-zoom.bmp").c_str(),s,game));
     pixels=static_cast<const uint32_t*>(draw.Draw(s,game));assert(pixels);
     assert(bright({870,SettingsMenu::MainRowY(2),310,52})>100&&bright(SettingsMenu::ZoomMinus)>5&&bright(SettingsMenu::ZoomPlus)>20); // "3x", "-", "+" (measured 299/14/52)
