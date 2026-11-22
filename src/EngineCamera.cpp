@@ -2,6 +2,8 @@
 #include "NativeCover.h"
 #include "CoverCrosshair.h"
 #include "CeilingGuard.h"
+#include "TwoHandAttach.h"
+#include "TwoHandSteer.h"
 #include "QuickBarRule.h"
 #include "ForgivingAim.h"
 #include "CoverFollow.h"
@@ -2001,6 +2003,34 @@ std::atomic<uint64_t> leftPromptTick{};
 // [VR] LeftHandCarryThrow=0 keeps the throw on the right trigger.
 bool leftCarryThrow{};
 std::atomic<bool> grabActive{},grabLeft{};
+// Two-handed weapons, stage one. [VR] TwoHandedWeapons=0 turns it off;
+// TwoHandedWeaponsLog=0 stops DeusExHRVR-twohand.log.
+bool twoHandedWeapons{},twoHandedLog{};
+// [VR] TwoHandedAim=0 leaves all aiming on the right hand.
+bool twoHandedAim{};
+std::atomic<uint64_t> leftSteerTick{};
+// The wrist HUD follows the visible hands: [0] left on the weapon, [1] right while steering.
+std::mutex twoHandHudMutex;
+TwoHandSteer::HudShift twoHandHud[2];
+uint64_t twoHandHudTick[2]{};
+void PublishTwoHandHud(int hand,const TwoHandSteer::HudShift* shift) {
+    std::lock_guard lock(twoHandHudMutex);
+    twoHandHudTick[hand]=shift?GetTickCount64():0;
+    if(shift)twoHandHud[hand]=*shift;
+}
+Transport::Pose TwoHandHudPose(bool right,const Transport::Pose& grip) {
+    if(!twoHandedWeapons)return grip;
+    TwoHandSteer::HudShift shift;
+    {
+        std::lock_guard lock(twoHandHudMutex);
+        const auto tick=twoHandHudTick[right?1:0];const auto now=GetTickCount64();
+        if(!tick||now<tick||now-tick>=250)return grip;
+        shift=twoHandHud[right?1:0];
+    }
+    return TwoHandSteer::ApplyShift(grip,shift);
+}
+std::atomic<bool> leftOnWeapon{},gameSprintHeld{};
+std::atomic<uint64_t> leftNearWeaponTick{};
 std::atomic<uintptr_t> grabManager{},forgivingPlayer{};
 std::atomic<uint64_t> grabStart{};
 bool forgivingAimLog{}; // [VR] ForgivingAimLog=1 writes its diagnostic lines
@@ -2100,6 +2130,9 @@ void InstallInteractionProbes(){
     forgivingAimLog=GetPrivateProfileIntW(L"VR",L"ForgivingAimLog",0,diagConfig)!=0;
     leftHandInteract=GetPrivateProfileIntW(L"VR",L"LeftHandInteract",1,diagConfig)!=0;
     leftCarryThrow=leftHandInteract&&GetPrivateProfileIntW(L"VR",L"LeftHandCarryThrow",1,diagConfig)!=0;
+    twoHandedWeapons=GetPrivateProfileIntW(L"VR",L"TwoHandedWeapons",1,diagConfig)!=0;
+    twoHandedLog=twoHandedWeapons&&GetPrivateProfileIntW(L"VR",L"TwoHandedWeaponsLog",1,diagConfig)!=0;
+    twoHandedAim=twoHandedWeapons&&GetPrivateProfileIntW(L"VR",L"TwoHandedAim",1,diagConfig)!=0;
     float forgivingDegrees=15.f;
     {
         wchar_t degreesText[32]{};GetPrivateProfileStringW(L"VR",L"ForgivingAimDegrees",L"15",degreesText,32,diagConfig);
@@ -3292,6 +3325,90 @@ void MotionContext(HandWeaponMotionDiagnostic::Sample& sample,const WeaponPose& 
     std::lock_guard lock(stateMutex);sample.tracking=current.tracking.id;
     sample.base=current.controllerBase;sample.viewWorld=current.world;
 }
+void TwoHandNote(const char* what,uint32_t key,float spread,float reach,float gap,uint32_t weaponState=0,uint32_t pending=0) {
+    static unsigned lines{};
+    if(!twoHandedLog||lines>=200)return;
+    ++lines;FILE* f{};
+    if(!fopen_s(&f,"DeusExHRVR-twohand.log","a")&&f) {
+        fprintf(f,"[%llu] %s weapon=%08x palmSpread=%.1f reach=%.1f handGap=%.1f state=%u pending=%u\n",GetTickCount64(),what,key,spread,reach,gap,weaponState,pending);
+        fclose(f);
+    }
+}
+float WorldDistance(const CameraMath::Matrix& a,const CameraMath::Matrix& b) {
+    const float x=a.m[12]-b.m[12],y=a.m[13]-b.m[13],z=a.m[14]-b.m[14];
+    return std::sqrt(x*x+y*y+z*z);
+}
+// After the left hand has been placed on the controller: while the grip holds it on
+// the weapon, blend it to the game's own left-hand pose, carried along with the right
+// hand. Returns how far it is on the weapon (0 to 1).
+float TwoHandStep(CameraMath::Matrix* palette,const std::array<bool,223>& selected,const CameraMath::Matrix& leftFrame,
+                  bool leftMoved,const std::array<CameraMath::Matrix,17>& nativeLeft,bool haveNative,
+                  const CameraMath::Matrix& delta,bool paired,const CameraMath::Matrix& leftTarget,
+                  const CameraMath::Matrix& rightTarget,float scale,void* weapon,
+                  const CameraMath::Matrix& muzzle,float leftGrip,void* holder,bool poseActive) {
+    static thread_local TwoHandAttach::State state;
+    std::array<CameraMath::Matrix,17> placed{};
+    bool valid=leftMoved&&haveNative&&paired&&selected[101];
+    for(unsigned i=0;valid&&i<17;i++)if(selected[100+i]) {
+        placed[i]=CameraMath::MoveSkinMatrix(nativeLeft[i],delta);
+        valid=ModelHandAlignment::Finite(placed[i]);
+    }
+    float spread=NAN,reach=NAN;
+    if(valid) {
+        const auto palm=CameraMath::Multiply(leftFrame,ModelHandAlignment::Affine(placed[1]));
+        valid=ModelHandAlignment::Finite(palm);
+        if(valid){spread=WorldDistance(palm,rightTarget);reach=TwoHandAttach::GrabDistance(leftTarget.m+12,rightTarget.m+12,muzzle.m+12,palm.m+12);}
+    }
+    const float gap=WorldDistance(leftTarget,rightTarget);
+    uint32_t key{};
+    if(weapon)HandMeshDiagnostic::Read(uintptr_t(weapon)+0x58,&key,4);
+    // What the game actually receives as sprint. The raw pad's LB is the left grip itself.
+    const bool sprinting=gameSprintHeld.load();
+    if(valid&&!sprinting&&key) {
+        static thread_local uint32_t seen[32]{};static thread_local unsigned seenCount{};
+        bool known=false;for(unsigned i=0;i<seenCount;i++)known=known||seen[i]==key;
+        if(!known&&seenCount<32) {
+            seen[seenCount++]=key;
+            TwoHandNote(TwoHandAttach::Supported(spread)?"weapon supported":"weapon not supported",key,spread,reach,gap);
+        }
+    }
+    // The same holder check the hand curl uses: is this weapon really out right now?
+    uint32_t heldWeapon{},weaponVtable{},weaponState{},pendingWeapon{};
+    const bool known=poseActive&&holder&&weapon&&
+        HandMeshDiagnostic::Read(uintptr_t(holder)+0x14,&heldWeapon,4)&&heldWeapon==uintptr_t(weapon)&&
+        HandMeshDiagnostic::Read(heldWeapon,&weaponVtable,4)&&weaponVtable==base+0xab1944-0x400000&&
+        HandMeshDiagnostic::Read(heldWeapon+0x50,&weaponState,4)&&
+        HandMeshDiagnostic::Read(uintptr_t(holder)+0x1c,&pendingWeapon,4);
+    const bool ready=TwoHandAttach::WeaponReady(known,weaponState,pendingWeapon,throwAiming.load(),grabActive.load());
+    const bool eligible=TwoHandAttach::Eligible(valid,sprinting,ready,state.attached,spread);
+    const bool inReach=valid&&!sprinting&&ready&&TwoHandAttach::Supported(spread)&&reach<=TwoHandAttach::GrabMetres*scale;
+    if(inReach)leftNearWeaponTick.store(GetTickCount64(),std::memory_order_relaxed);
+    {
+        static thread_local bool gripWas{};
+        const bool grip=leftGrip>.5f;
+        if(grip&&!gripWas&&weapon)TwoHandNote(!valid?"press: no weapon pose":!ready?"press: weapon not out":sprinting?"press: sprinting":
+            !TwoHandAttach::Supported(spread)?"press: weapon not supported":inReach?"press: on the gun":"press: too far from the gun",key,spread,reach,gap,weaponState,pendingWeapon);
+        gripWas=grip;
+    }
+    const bool wasAttached=state.attached;
+    static thread_local uint32_t lastKey{};
+    if(key!=lastKey){if(lastKey)state.Drop(leftOnWeapon.load());lastKey=key;}
+    const float amount=state.Update(double(GetTickCount64()),leftOnWeapon.load(),eligible&&(state.attached||!state.broken),gap,scale);
+    if(state.attached!=wasAttached)TwoHandNote(state.attached?"attached":(state.broken?"pulled away":"released"),key,spread,reach,gap);
+    if(twoHandedAim&&state.attached&&eligible)leftSteerTick.store(GetTickCount64(),std::memory_order_relaxed);
+    if(!valid||amount<=0){PublishTwoHandHud(0,nullptr);return 0;}
+    {
+        // The cuff is carried by the wrist bone.
+        const auto visible=CameraMath::Multiply(leftFrame,ModelHandAlignment::Affine(placed[selected[100]?0:1]));
+        TwoHandSteer::HudShift shift;
+        PublishTwoHandHud(0,TwoHandSteer::MakeShift(visible,leftTarget,scale,amount,shift)?&shift:nullptr);
+    }
+    for(unsigned i=0;i<17;i++)if(selected[100+i])for(int j=0;j<16;j++) {
+        if(j==3||j==7||j==11||j==15)continue; // the shader's fourth column stays as it is
+        palette[100+i].m[j]+=(placed[i].m[j]-palette[100+i].m[j])*amount;
+    }
+    return amount;
+}
 bool TryModelHand(void* model,unsigned char* data,CameraMath::Matrix* palette,uint32_t n) {
     CameraMath::Matrix target{},leftTarget{};bool leftValid=false;uint32_t gripBits{};
     {
@@ -3313,6 +3430,10 @@ bool TryModelHand(void* model,unsigned char* data,CameraMath::Matrix* palette,ui
     bool capture=HandWeaponMotionDiagnostic::enabled && HandWeaponMotionDiagnostic::Wanted(0,frameId.load());
     HandWeaponMotionDiagnostic::Sample motion{};
     if(capture){MotionContext(motion,pose,0);motion.count=2;motion.before[0]=palette[129];motion.before[1]=palette[130];}
+    // The game's own left-hand pose, before anything below replaces it.
+    std::array<CameraMath::Matrix,17> nativeLeft{};CameraMath::Matrix twoHandDelta{};bool twoHandPaired=false;
+    const bool haveNativeLeft=twoHandedWeapons&&pose.nativeRequested&&n>116;
+    if(haveNativeLeft)for(unsigned i=0;i<17;i++)nativeLeft[i]=palette[100+i];
     if(pose.nativeRequested){
         CameraMath::Matrix skin{},delta{};
         bool paired=pose.active && ReadNativePalm(pose,skin,delta);
@@ -3334,6 +3455,7 @@ bool TryModelHand(void* model,unsigned char* data,CameraMath::Matrix* palette,ui
         bool moved=paired?ModelHandAlignment::MoveWithDelta(palette,n,plan->bones,delta):
             ModelHandAlignment::Move(palette,n,plan->bones,frame,pose.gripTarget);
         if(!moved){if(DiagnosticOptions::hands)++modelHandBadTransform;return false;}
+        if(paired){twoHandDelta=delta;twoHandPaired=true;}
     }else if(!ModelHandAlignment::Move(palette,n,plan->bones,frame,target)){
         if(DiagnosticOptions::hands)++modelHandBadTransform;return false;
     }
@@ -3345,6 +3467,8 @@ bool TryModelHand(void* model,unsigned char* data,CameraMath::Matrix* palette,ui
     InteractionCurl::Definition leftCurl;
     bool leftMoved=leftValid && LeftModelFrame(model,plan,leftFrame,unused,&leftCurl) &&
         ModelHandAlignment::RestLeft(palette,n,plan->leftBones,leftFrame,leftTarget);
+    const float onWeapon=twoHandedWeapons?TwoHandStep(palette,plan->leftBones,leftFrame,leftMoved,nativeLeft,haveNativeLeft,
+        twoHandDelta,twoHandPaired,leftTarget,pose.gripTarget,handDrawScale,pose.weapon,pose.muzzle,Transport::LeftGrip(gripBits),pose.holder,pose.active):0.f;
     if(controllerHandsInteractCurl){
         // Completed holster is state 4; do not infer empty from a missing muzzle.
         // Validate the current holder association, not just a cached weapon address.
@@ -3364,7 +3488,8 @@ bool TryModelHand(void* model,unsigned char* data,CameraMath::Matrix* palette,ui
             for(unsigned i=101;leftReady&&i<=116;i++)leftReady=plan->leftBones[i];
             const float left=leftGrip.Update(now,frameId.load(),uintptr_t(model),leftReady,
                 InteractionCurl::GripTarget(Transport::LeftGrip(gripBits),false));
-            if(left>0)InteractionCurl::Apply(palette,n,leftCurl,left);
+            // On the weapon the fingers are the game's own grip.
+            if(left>0&&onWeapon<1)InteractionCurl::Apply(palette,n,leftCurl,left*(1-onWeapon));
         } else {
             static thread_local InteractionCurl::Envelope envelope;
             float amount=envelope.Update(now,frameId.load(),weapon,rightFree,GamepadBridge::InteractionVisualHeld(now));
@@ -4901,6 +5026,27 @@ void __fastcall UpdateHook(void* self,void*) {
                         bool nativeRequested=controllerHandsModelAlignment.load() && controllerHands && controllerHandsWeapon &&
                             controllerHandsMode==15 && !handsSuspendedByMode.load() && !handsAsideForScope.load() && activeCameraIsPlayer.load() && !handsFarFromBody.load();
                         bool targetValid=nativeRequested && ModelHandAlignment::GripTarget(t,now,renderBase,reference,worldScale,modelTarget);
+                        if(twoHandedAim) {
+                            // The hand, barrel, shots and crosshair all derive from these.
+                            static TwoHandSteer::Steer steer;
+                            CameraMath::Matrix steerRight{},steerLeft{};
+                            const bool poses=ModelHandAlignment::GripTarget(t,now,renderBase,reference,worldScale,steerRight)&&
+                                ModelHandAlignment::GripTarget(t,now,renderBase,reference,worldScale,steerLeft,true);
+                            const auto steerTick=leftSteerTick.load(std::memory_order_relaxed);
+                            const bool show=poses&&nativeRequested&&steerTick&&now>=steerTick&&now-steerTick<250;
+                            bool turned=false;
+                            if(!poses)steer.Reset();
+                            else if(steer.Update(double(now),show,steerRight,steerLeft,worldScale)) {
+                                steer.Apply(raw,steerRight);steer.Apply(rawController,steerRight);
+                                if(targetValid) {
+                                    steer.Apply(modelTarget,steerRight);
+                                    TwoHandSteer::HudShift hud;
+                                    turned=TwoHandSteer::MakeShift(modelTarget,steerRight,worldScale,1.f,hud);
+                                    if(turned)PublishTwoHandHud(1,&hud);
+                                }
+                            }
+                            if(!turned)PublishTwoHandHud(1,nullptr);
+                        }
                         const CameraMath::Matrix* grip=
                             (controllerHandsWeapon && controllerHands)?FindHandGrip(key):nullptr;
                         if(nativeRequested){
@@ -5259,7 +5405,7 @@ void __fastcall MatricesHook(void* self,void*) {
                 // Smooth band: the replacement vertex shader (HandBand.h) bends
                 // every vertex round the wrist from its flat layout position.
                 CameraMath::BandFrame frame;
-                if(ModelWristHud::Frame(t,eye,grip.pose,piece,uiSnapshot.scale,centreX,centreY,frame,
+                if(ModelWristHud::Frame(t,eye,TwoHandHudPose(right,grip.pose),piece,uiSnapshot.scale,centreX,centreY,frame,
                         bandPerUnit[band][0],bandPerUnit[band][1],uiHandShift)) {
                     HandBand::renderer.Prepare(HandBand::Pack(frame));
                     // Fail-safe: the game's own shader is given the hiding
@@ -6029,6 +6175,9 @@ void SetThrowAiming(bool aiming){throwAiming=aiming;}
 void NoteThrowRelease(uint64_t heldMs){throwHeldMs=heldMs;}
 bool DetonateReady(){return detonateReady.load();}
 bool LeftHandCarrying(){return leftCarryThrow&&grabActive.load()&&grabLeft.load();}
+bool LeftHandNearWeapon(){const auto tick=leftNearWeaponTick.load(std::memory_order_relaxed);const auto now=GetTickCount64();return twoHandedWeapons&&tick&&now>=tick&&now-tick<250;}
+void SetLeftHandOnWeapon(bool on){leftOnWeapon=on;}
+void SetGameSprintHeld(bool on){gameSprintHeld=on;}
 bool LeftHandOwnsPrompt(){const auto tick=leftPromptTick.load(std::memory_order_relaxed);const auto now=GetTickCount64();return forgivingAimEnabled&&leftHandInteract&&tick&&now>=tick&&now-tick<250;}
 void NoteDetonatePress(uint64_t heldMs){NoteDetonate("press passed through as RB",heldMs);}
 void SetMovementDirection(unsigned value){if(value<=3)movementDirection.store(static_cast<DirectionConfig::Source>(value));}

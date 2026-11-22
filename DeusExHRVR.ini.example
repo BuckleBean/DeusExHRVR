@@ -187,6 +187,13 @@ Crosshair=ThirdPerson
 CeilingGuard=1
 CeilingGuardCm=20
 CeilingGuardLookAhead=1
+; Two-handed weapons: hold the left grip with your left hand near the weapon and it
+; takes the game's own grip pose. 0 turns it off. TwoHandedAim=1 lets the left hand
+; steer the barrel while it holds the weapon; 0 leaves aiming on the right hand.
+; TwoHandedWeaponsLog=0 stops DeusExHRVR-twohand.log. Restart after editing.
+TwoHandedWeapons=1
+TwoHandedAim=1
+TwoHandedWeaponsLog=1
 ; The game's quickbar: 1 auto-hides it, 0 keeps it on screen. Leave this line out to
 ; let the game decide. VR Settings > Controls > Quickbar; the tilde key also changes it.
 ; QuickBarAutoHide=1

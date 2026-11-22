@@ -30,19 +30,30 @@ void PublishInteraction(bool down,uint64_t now,bool visual=true){
 // it does whatever the layout says. If Interact opens a screen with the grip still
 // down, the rest of that press is swallowed so it cannot act as a new one.
 enum class LeftGrip {Normal,Interact,Swallow};
-bool leftGripInteract{},leftGripWait{},leftGripPrevious{};
+bool leftGripInteract{},leftGripWeapon{},leftGripWait{},leftGripPrevious{};
 LeftCarry::TriggerSwap carryTriggers;
 std::atomic<bool> lastInteractLeft{};bool interactPrevious{};
 LeftGrip LeftGripStep(bool on,bool wheel) {
     if(leftGripWait){if(!on)leftGripWait=false;leftGripPrevious=on;return LeftGrip::Swallow;}
-    if(on&&!leftGripPrevious&&!wheel)leftGripInteract=EngineCamera::LeftHandOwnsPrompt();
+    if(on&&!leftGripPrevious&&!wheel) {
+        // A prompt comes first, so holding the weapon never makes interaction harder.
+        leftGripInteract=EngineCamera::LeftHandOwnsPrompt();
+        leftGripWeapon=!leftGripInteract&&EngineCamera::LeftHandNearWeapon();
+        if(leftGripWeapon)EngineCamera::SetLeftHandOnWeapon(true);
+    }
     leftGripPrevious=on;
-    if(!on){const bool was=leftGripInteract;leftGripInteract=false;return was?LeftGrip::Swallow:LeftGrip::Normal;}
-    return leftGripInteract?LeftGrip::Interact:LeftGrip::Normal;
+    if(!on) {
+        const bool was=leftGripInteract||leftGripWeapon;
+        if(leftGripWeapon)EngineCamera::SetLeftHandOnWeapon(false);
+        leftGripInteract=leftGripWeapon=false;
+        return was?LeftGrip::Swallow:LeftGrip::Normal;
+    }
+    return leftGripInteract?LeftGrip::Interact:leftGripWeapon?LeftGrip::Swallow:LeftGrip::Normal;
 }
 void LeftGripOnScreen(XINPUT_GAMEPAD& pad) {
     const bool on=(pad.wButtons&XINPUT_GAMEPAD_LEFT_SHOULDER)!=0;
     if(leftGripInteract){leftGripInteract=false;leftGripWait=true;}
+    if(leftGripWeapon){leftGripWeapon=false;leftGripWait=true;EngineCamera::SetLeftHandOnWeapon(false);}
     if(leftGripWait) {
         if(on)pad.wButtons&=~XINPUT_GAMEPAD_LEFT_SHOULDER;
         else leftGripWait=false;
@@ -387,6 +398,7 @@ bool Read(XINPUT_GAMEPAD& pad) {
         if(interact&&!interactPrevious)lastInteractLeft=leftGripInteract;
         interactPrevious=interact;
     }
+    EngineCamera::SetGameSprintHeld(fresh&&latest.gamepad.valid&&(pad.wButtons&XINPUT_GAMEPAD_LEFT_SHOULDER)!=0);
     PublishInteraction(fresh && latest.gamepad.valid && (pad.wButtons&XINPUT_GAMEPAD_X)!=0,now,!leftGripInteract);
     // Keep the device connected after first activation, but release every
     // button/axis on focus loss, sleeping controllers or a stalled companion.

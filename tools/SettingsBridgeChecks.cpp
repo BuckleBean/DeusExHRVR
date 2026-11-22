@@ -43,6 +43,7 @@ bool ThrowMarkerEnabled(){return throwMarker;}void SetThrowAiming(bool v){throwA
 bool detonate{};uint64_t detonateHeld{};
 bool leftOwns{};bool LeftHandOwnsPrompt(){return leftOwns;}
 bool leftCarry{};bool LeftHandCarrying(){return leftCarry;}
+bool leftNear{},leftOnWeapon{};bool LeftHandNearWeapon(){return leftNear;}void SetLeftHandOnWeapon(bool v){leftOnWeapon=v;}bool gameSprint{};void SetGameSprintHeld(bool v){gameSprint=v;}
 bool DetonateReady(){return detonate;}void NoteDetonatePress(uint64_t ms){detonateHeld=ms;}
 unsigned CurrentScreenReasons(){return reasons;}
 bool SnapTurnView(float&){return reasons==0;}
@@ -237,12 +238,23 @@ int wmain(int argc,wchar_t** argv) {
         assert(grip(true)==X);EngineCamera::reasons=1;assert(!(grip(true)&(LB|Y)));         // Interact opened a screen
         EngineCamera::leftOwns=false;EngineCamera::reasons=0;assert(grip(true)==0);         // still held: not a new wheel press
         assert(grip(false)==0);assert(grip(true)==Y);assert(grip(false)==0);                // next press is normal
+        // Two-handed weapons: near the weapon the grip holds it and never opens the wheel.
+        EngineCamera::leftNear=true;assert(grip(true)==0&&EngineCamera::leftOnWeapon);
+        EngineCamera::leftNear=false;assert(grip(true)==0&&EngineCamera::leftOnWeapon);
+        assert(grip(false)==0&&!EngineCamera::leftOnWeapon);
+        EngineCamera::leftNear=true;EngineCamera::leftOwns=true;assert(grip(true)==X&&!EngineCamera::leftOnWeapon); // a prompt comes first
+        EngineCamera::leftNear=false;EngineCamera::leftOwns=false;assert(grip(false)==0);
+        EngineCamera::leftNear=true;assert(grip(true)==0&&EngineCamera::leftOnWeapon);
+        EngineCamera::reasons=1;grip(true);assert(!EngineCamera::leftOnWeapon);              // a screen lets go
+        EngineCamera::leftNear=false;EngineCamera::reasons=0;assert(grip(true)==0);assert(grip(false)==0);
+        assert(grip(true)==Y);assert(grip(false)==0);                                        // next press is the wheel again
         GamepadBridge::remapActive=false;EngineCamera::leftOwns=true;assert(grip(true)==X);assert(grip(false)==0); // default layout
         EngineCamera::leftOwns=false;assert(grip(true)==LB);assert(grip(false)==0);
         GamepadBridge::remapActive=true;
         // A left-hand Interact counts as held but must not curl the right hand's fingers.
         EngineCamera::leftOwns=true;t={};t.tick=GetTickCount64();t.gamepad.valid=1;t.gamepad.buttons=LB;Transport::WriteTracking(&h,t);
         visualPad={};GamepadBridge::Read(visualPad);
+        assert(!EngineCamera::gameSprint); // the physical left grip is LB in the raw pad, but is not sprint
         assert(visualPad.wButtons==X&&GamepadBridge::InteractionHeld(GetTickCount64())&&!GamepadBridge::InteractionVisualHeld(GetTickCount64()));
         assert(GamepadBridge::LastInteractWasLeft());
         EngineCamera::leftOwns=false;t.tick=GetTickCount64();t.gamepad.buttons=0;Transport::WriteTracking(&h,t);
