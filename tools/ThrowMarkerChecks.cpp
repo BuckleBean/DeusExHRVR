@@ -176,12 +176,12 @@ int main() {
     }
     // 8. Transport 22 added the cover target; 23 adds the hand HUD setting to the
     // menu state at the END of the header, so RenderInfo and its offsets are unchanged.
-    static_assert(Transport::Version==28);
-    static_assert(sizeof(Transport::MenuState)==448 && offsetof(Transport::MenuState,handHud)==372 && offsetof(Transport::MenuState,throwAim)==388 && offsetof(Transport::Header,menu)==712);
-    static_assert(sizeof(Transport::RenderInfo)==344 && sizeof(Transport::Header)==1160);
+    static_assert(Transport::Version==29);
+    static_assert(sizeof(Transport::MenuState)==456 && offsetof(Transport::MenuState,handHud)==372 && offsetof(Transport::MenuState,throwAim)==388 && offsetof(Transport::Header,menu)==744 && offsetof(Transport::RenderInfo,handPointer)==344 && offsetof(Transport::RenderInfo,handPointerState)==368 && offsetof(Transport::MenuState,handPointers)==444);
+    static_assert(sizeof(Transport::RenderInfo)==376 && sizeof(Transport::Header)==1200);
     static_assert(offsetof(Transport::RenderInfo,markerPosition)==296 && offsetof(Transport::RenderInfo,markerState)==308 &&
                   offsetof(Transport::RenderInfo,markerNormal)==312);
     static_assert(offsetof(Transport::RenderInfo,coverPosition)==328 && offsetof(Transport::RenderInfo,coverState)==340);
-    std::printf("PASS %zu-bit transport 24: RenderInfo 344 bytes, marker at 296, surface at 312, cover target at 328, menu hand HUD at 372, menu tabs settings at 388, header 1136\n",sizeof(void*)*8);
+    std::printf("PASS %zu-bit transport 29: RenderInfo 376 bytes, marker at 296, surface at 312, cover target at 328, hand pointers at 344, menu hand HUD at 372, menu tabs settings at 388, menu at 744, header 1200\n",sizeof(void*)*8);
     return 0;
 }

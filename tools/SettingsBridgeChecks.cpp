@@ -19,6 +19,7 @@ unsigned throwAimSetting=3,throwMarkerSetting=2,coverFollowSetting=2,scopeSettin
 unsigned ThrowAimSetting(){return throwAimSetting;}void SetThrowAim(unsigned s){if(throwAimSetting&&s<=3)throwAimSetting=s+1;}
 unsigned ThrowMarkerSetting(){return throwMarkerSetting;}void SetThrowMarker(bool v){if(throwMarkerSetting)throwMarkerSetting=v?2:1;}
 unsigned crosshairSetting=3;unsigned CrosshairSetting(){return crosshairSetting;}void SetCrosshair(unsigned v){crosshairSetting=v;}
+unsigned handPointerSetting=4;unsigned HandPointerSetting(){return handPointerSetting;}void SetHandPointers(unsigned v){handPointerSetting=v;}
 unsigned CoverFollowSetting(){return coverFollowSetting;}void SetCoverFollow(bool v){if(coverFollowSetting)coverFollowSetting=v?2:1;}
 unsigned ImmersiveScopeSetting(){return scopeSetting;}void SetImmersiveScope(bool v){if(scopeSetting)scopeSetting=v?2:1;}
 LiveWorldScale scale;
@@ -358,6 +359,13 @@ int wmain(int argc,wchar_t** argv) {
         for(int n=0;n<200&&h.menu.saved!=131;++n){Sleep(10);GamepadBridge::MenuTick(2);}
         h.menu.requestedCrosshair=5;request(132,30);assert(h.menu.result==2&&EngineCamera::crosshairSetting==4);
         h.menu.requestedCrosshair=0;EngineCamera::crosshairSetting=3;
+        // Hand pointers (transport 29): saved when chosen, bad values refused.
+        GamepadBridge::MenuTick(2);assert(h.menu.handPointers==4);
+        h.menu.requestedHandPointers=1;request(128,30);assert(h.menu.result!=2&&EngineCamera::handPointerSetting==1&&h.menu.handPointers==1);
+        for(int n=0;n<200&&h.menu.saved!=128;++n){Sleep(10);GamepadBridge::MenuTick(2);}
+        {wchar_t saved[16]{};GetPrivateProfileStringW(L"VR",L"HandPointers",L"",saved,16,path.c_str());assert(h.menu.saved==128&&!_wcsicmp(saved,L"Off"));}
+        h.menu.requestedHandPointers=9;request(129,30);assert(h.menu.result==2&&EngineCamera::handPointerSetting==1);
+        h.menu.requestedHandPointers=0;EngineCamera::handPointerSetting=4;
         // Quickbar (transport 27): nothing written until chosen; saved when chosen; bad values refused.
         GamepadBridge::MenuTick(2);assert(h.menu.quickBar==1&&GetPrivateProfileIntW(L"VR",L"QuickBarAutoHide",7,path.c_str())==7);
         h.menu.requestedQuickBar=2;request(133,30);assert(h.menu.result!=2&&EngineCamera::quickBarSetting==2&&h.menu.quickBar==2);

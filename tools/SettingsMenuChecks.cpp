@@ -274,6 +274,19 @@ int wmain(int argc,wchar_t** argv) {
      auto click=[&](SettingsMenu::Rect rect){input.rightTrigger=0;ui.Update(true,true,true,float(rect.x+30),float(rect.y+25),input,gm);input.rightTrigger=1;ui.Update(true,true,true,float(rect.x+30),float(rect.y+25),input,gm);};
      click(SettingsMenu::Entry);click(SettingsMenu::Tab(SettingsMenu::TabControls));click(SettingsMenu::QuickBarRow);assert(!ui.draftQuickBar&&!ui.Dirty());
     }
+    // Hand pointers row: cycles on the Controls tab; nothing sent unless changed; inert if unavailable.
+    {SettingsMenu::State ui;Transport::MenuState gm{};gm.degrees=30;gm.worldScale=gm.activeWorldScale=300;gm.handPointers=HandPointer::Both;
+     GamepadMapping::Input input{};input.active=true;
+     auto click=[&](SettingsMenu::Rect rect){input.rightTrigger=0;ui.Update(true,true,true,float(rect.x+30),float(rect.y+25),input,gm);input.rightTrigger=1;ui.Update(true,true,true,float(rect.x+30),float(rect.y+25),input,gm);};
+     click(SettingsMenu::Entry);click(SettingsMenu::Tab(SettingsMenu::TabControls));assert(ui.draftHandPointers==HandPointer::Both&&!ui.Dirty());
+     click(SettingsMenu::HandPointerRow);assert(ui.draftHandPointers==HandPointer::Off&&ui.Dirty());
+     click(SettingsMenu::Save);assert(ui.saving&&ui.requestedHandPointers==HandPointer::Off);
+    }
+    {SettingsMenu::State ui;Transport::MenuState gm{};gm.degrees=30;gm.worldScale=gm.activeWorldScale=300;
+     GamepadMapping::Input input{};input.active=true;
+     auto click=[&](SettingsMenu::Rect rect){input.rightTrigger=0;ui.Update(true,true,true,float(rect.x+30),float(rect.y+25),input,gm);input.rightTrigger=1;ui.Update(true,true,true,float(rect.x+30),float(rect.y+25),input,gm);};
+     click(SettingsMenu::Entry);click(SettingsMenu::Tab(SettingsMenu::TabControls));click(SettingsMenu::HandPointerRow);assert(!ui.draftHandPointers&&!ui.Dirty());
+    }
     // Image tab: steps, limits, reset, one Save, nothing sent unless changed; inert if unavailable.
     {SettingsMenu::State ui;Transport::MenuState gm{};gm.degrees=30;gm.worldScale=gm.activeWorldScale=300;gm.brightness=ImageAdjust::Encode(45);gm.contrast=ImageAdjust::Encode(0);
      GamepadMapping::Input input{};input.active=true;

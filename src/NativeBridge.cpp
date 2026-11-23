@@ -6,6 +6,7 @@
 #include "SettingsMenuDraw.h"
 #include "ThrowMarker.h"
 #include "CoverCrosshair.h"
+#include "HandPointer.h"
 #include "ImagePass.h"
 #include "RenderScale.h"
 #include <windows.h>
@@ -117,6 +118,46 @@ struct Bridge {
     XrSwapchain crosshairChain{};
     XrCompositionLayerQuad crosshairLayer{XR_TYPE_COMPOSITION_LAYER_QUAD};
     bool crosshairReady{},crosshairFailed{},crosshairWasShown{};
+    // The two hand pointers: one texture, one cell per hand.
+    XrSwapchain pointerChain{};
+    XrCompositionLayerQuad pointerLayers[2]{{XR_TYPE_COMPOSITION_LAYER_QUAD},{XR_TYPE_COMPOSITION_LAYER_QUAD}};
+    bool pointerReady{},pointerFailed{};
+    bool EnsureHandPointers() {
+        if(pointerReady)return true;
+        if(pointerFailed)return false;
+        pointerFailed=true;
+        XrSystemProperties props{XR_TYPE_SYSTEM_PROPERTIES};
+        if(XR_FAILED(xrGetSystemProperties(instance,system,&props))||props.graphicsProperties.maxLayerCount<6){Log("Hand pointers unavailable: fewer than 6 layers");return false;}
+        uint32_t n{};if(XR_FAILED(xrEnumerateSwapchainFormats(session,0,&n,nullptr)))return false;
+        std::vector<int64_t> formats(n);if(XR_FAILED(xrEnumerateSwapchainFormats(session,n,&n,formats.data())))return false;
+        DXGI_FORMAT format=DXGI_FORMAT_UNKNOWN;
+        for(auto candidate:{DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,DXGI_FORMAT_B8G8R8A8_UNORM_SRGB,
+                            DXGI_FORMAT_R8G8B8A8_UNORM,DXGI_FORMAT_B8G8R8A8_UNORM}) {
+            if(std::find(formats.begin(),formats.end(),int64_t(candidate))!=formats.end()){format=candidate;break;}
+        }
+        if(format==DXGI_FORMAT_UNKNOWN){Log("Hand pointers unavailable: no RGBA/BGRA swapchain format");return false;}
+        XrSwapchainCreateInfo ci{XR_TYPE_SWAPCHAIN_CREATE_INFO};ci.usageFlags=XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT|XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
+        ci.format=format;ci.sampleCount=1;ci.width=HandPointer::AtlasWidth;ci.height=HandPointer::Cell;ci.faceCount=ci.arraySize=ci.mipCount=1;
+        if(XR_FAILED(xrCreateSwapchain(session,&ci,&pointerChain))){Log("Hand pointer swapchain creation failed");return false;}
+        if(XR_FAILED(xrEnumerateSwapchainImages(pointerChain,0,&n,nullptr)))return false;
+        std::vector<XrSwapchainImageD3D11KHR> images(n,{XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR});
+        if(XR_FAILED(xrEnumerateSwapchainImages(pointerChain,n,&n,reinterpret_cast<XrSwapchainImageBaseHeader*>(images.data()))))return false;
+        auto pixels=HandPointer::Pixels();
+        if(format==DXGI_FORMAT_B8G8R8A8_UNORM_SRGB||format==DXGI_FORMAT_B8G8R8A8_UNORM)ThrowMarker::SwapRedBlue(pixels);
+        for(uint32_t k=0;k<n;k++) {
+            uint32_t index{};XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+            if(XR_FAILED(xrAcquireSwapchainImage(pointerChain,&ai,&index)))return false;
+            XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};wi.timeout=XR_INFINITE_DURATION;
+            XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+            if(XR_FAILED(xrWaitSwapchainImage(pointerChain,&wi))){xrReleaseSwapchainImage(pointerChain,&ri);return false;}
+            if(index<images.size())context->UpdateSubresource(images[index].texture,0,nullptr,pixels.data(),HandPointer::AtlasWidth*4,0);
+            context->Flush();
+            if(XR_FAILED(xrReleaseSwapchainImage(pointerChain,&ri)))return false;
+        }
+        pointerReady=true;pointerFailed=false;
+        Log("Hand pointers ready format=%d images=%u",int(format),n);
+        return true;
+    }
     bool EnsureCrosshair() {
         if(crosshairReady)return true;
         if(crosshairFailed)return false;
@@ -205,7 +246,7 @@ struct Bridge {
             m.requestedDialogue=menuUI.requestedDialogue;
             m.requestedHandHud=menuUI.requestedHandHud;
             m.requestedThrowAim=menuUI.requestedThrowAim;m.requestedThrowMarker=menuUI.requestedThrowMarker;
-            m.requestedCrosshair=menuUI.requestedCrosshair;m.requestedQuickBar=menuUI.requestedQuickBar;m.requestedBrightness=menuUI.requestedBrightness;m.requestedContrast=menuUI.requestedContrast;m.requestedCoverFollow=menuUI.requestedCoverFollow;m.requestedImmersiveScope=menuUI.requestedImmersiveScope;
+            m.requestedCrosshair=menuUI.requestedCrosshair;m.requestedHandPointers=menuUI.requestedHandPointers;m.requestedQuickBar=menuUI.requestedQuickBar;m.requestedBrightness=menuUI.requestedBrightness;m.requestedContrast=menuUI.requestedContrast;m.requestedCoverFollow=menuUI.requestedCoverFollow;m.requestedImmersiveScope=menuUI.requestedImmersiveScope;
             m.requestedScopeZoom=menuUI.requestedZoom;
             m.requestedInteraction=menuUI.requestedInteraction;m.resetBindings=menuUI.requestedReset;
             m.request=menuUI.request;m.requestedDegrees=menuUI.requested;m.requestedSnap=menuUI.requestedSnap;m.requestedMovement=menuUI.requestedMovement;
@@ -298,6 +339,7 @@ struct Bridge {
         DestroySwapchain();
         menuImages.clear();if(menuChain)xrDestroySwapchain(menuChain);menuChain=XR_NULL_HANDLE;
         if(markerChain)xrDestroySwapchain(markerChain);markerChain=XR_NULL_HANDLE;markerReady=markerFailed=markerWasShown=false;
+        if(pointerChain)xrDestroySwapchain(pointerChain);pointerChain=XR_NULL_HANDLE;pointerReady=pointerFailed=false;
         if(crosshairChain)xrDestroySwapchain(crosshairChain);crosshairChain=XR_NULL_HANDLE;crosshairReady=crosshairFailed=crosshairWasShown=false;
         menuDraw.Reset();menuUI={};menuGame={};menuRecenterRequest=0;menuReady=menuFailed=false;
         menuFormat=DXGI_FORMAT_UNKNOWN;menuPixels.clear();menuWasVisible=menuWasOpen=false;
@@ -566,7 +608,7 @@ struct Bridge {
         XrCompositionLayerQuad quads[2]{{XR_TYPE_COMPOSITION_LAYER_QUAD},{XR_TYPE_COMPOSITION_LAYER_QUAD}};
         XrCompositionLayerProjection projection{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
         XrCompositionLayerProjectionView projectionViews[2]{{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW},{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
-        const XrCompositionLayerBaseHeader* layers[4]{}; uint32_t layerCount=0;
+        const XrCompositionLayerBaseHeader* layers[6]{}; uint32_t layerCount=0;
         if(fs.shouldRender && EnsureSwapchain(d,h)) {
             uint32_t index=0; XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
             if(Good(xrAcquireSwapchainImage(swapchain,&ai,&index),"xrAcquireSwapchainImage")) {
@@ -626,6 +668,28 @@ struct Bridge {
                                 }
                             }
                             if(crosshair!=crosshairWasShown){crosshairWasShown=crosshair;Log("Cover crosshair %s",crosshair?"shown":"hidden");}
+                            // Where each hand's interaction line lands.
+                            if((renderInfo.handPointerState&3)&&EnsureHandPointers()) {
+                                const auto& head=renderInfo.tracking.head.position;
+                                for(uint32_t hand=0;hand<2;hand++) {
+                                    if(!(renderInfo.handPointerState&(1u<<hand)))continue;
+                                    const float* at=renderInfo.handPointer[hand];
+                                    float dx=head.x-at[0],dy=head.y-at[1],dz=head.z-at[2];
+                                    const float distance=std::sqrt(dx*dx+dy*dy+dz*dz);
+                                    if(!std::isfinite(distance)||distance<=.05f)continue;
+                                    auto o=ThrowMarker::Facing(dx,dy,dz);
+                                    XrPosef pose{{o.x,o.y,o.z,o.w},{at[0],at[1],at[2]}};
+                                    if(frozenShift)pose=Shift(pose);
+                                    auto& q=pointerLayers[hand];
+                                    q={XR_TYPE_COMPOSITION_LAYER_QUAD};
+                                    q.layerFlags=XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+                                    q.space=space;q.eyeVisibility=XR_EYE_VISIBILITY_BOTH;q.pose=pose;
+                                    const float size=HandPointer::Width(distance);q.size={size,size};
+                                    q.subImage.swapchain=pointerChain;
+                                    q.subImage.imageRect={{int32_t(hand*HandPointer::Cell),0},{int32_t(HandPointer::Cell),int32_t(HandPointer::Cell)}};
+                                    layers[layerCount++]=reinterpret_cast<XrCompositionLayerBaseHeader*>(&q);
+                                }
+                            }
 
                             // The landing marker shares this frame's space and tracking.
                             bool marker=(renderInfo.markerState&ThrowMarker::StateShow) && EnsureMarker();

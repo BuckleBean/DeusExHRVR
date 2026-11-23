@@ -17,7 +17,7 @@ bool view=true;float requestedAngle{};unsigned requests{},cancels{};
 bool DialogueEnabled(){return false;}bool DialogueAvailable(){return true;}void SetDialogueEnabled(bool){}
 bool HandHudConfigured(){return true;}bool HandHudActive(){return true;}void SetHandHudConfigured(bool){}
 unsigned ThrowAimSetting(){return 0;}void SetThrowAim(unsigned){}unsigned ThrowMarkerSetting(){return 0;}void SetThrowMarker(bool){}
-unsigned CrosshairSetting(){return 0;}void SetCrosshair(unsigned){}unsigned CoverFollowSetting(){return 0;}void SetCoverFollow(bool){}unsigned ImmersiveScopeSetting(){return 0;}void SetImmersiveScope(bool){}
+unsigned CrosshairSetting(){return 0;}void SetCrosshair(unsigned){}unsigned HandPointerSetting(){return 0;}void SetHandPointers(unsigned){}unsigned CoverFollowSetting(){return 0;}void SetCoverFollow(bool){}unsigned ImmersiveScopeSetting(){return 0;}void SetImmersiveScope(bool){}
 float ConfiguredWorldScale(){return 300;}float ActiveWorldScale(){return 300;}void SetConfiguredWorldScale(float){}float ScopeMagnification(){return 4;}bool SetScopeMagnification(float){return true;}
 unsigned InteractionAim(){return 0;}void SetInteractionAim(unsigned){}
 unsigned MovementResponse(){return 0;}void SetMovementResponse(unsigned){}

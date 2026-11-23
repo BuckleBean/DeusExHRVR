@@ -5,7 +5,7 @@
 #include <cstddef>
 #include "ButtonBindings.h"
 namespace Transport {
-inline constexpr uint32_t Magic=0x52485844, Version=28;
+inline constexpr uint32_t Magic=0x52485844, Version=29;
 struct alignas(8) MenuState {
     uint64_t gameTick,hostTick;
     uint32_t eligible,blocked,snapEnabled,request;
@@ -39,8 +39,10 @@ struct alignas(8) MenuState {
     uint32_t quickBar,requestedQuickBar;
     // Transport 28: image. ImageAdjust wire values; 0 = unavailable or keep.
     uint32_t brightness,contrast,requestedBrightness,requestedContrast;
+    // Transport 29: HandPointer mode. 0 unavailable or keep.
+    uint32_t handPointers,requestedHandPointers;
 };
-static_assert(sizeof(MenuState)==448 && offsetof(MenuState,throwAim)==388);
+static_assert(sizeof(MenuState)==456 && offsetof(MenuState,throwAim)==388);
 struct Quaternion {float x,y,z,w;};
 struct Vector {float x,y,z;};
 struct Pose {Quaternion orientation;Vector position;};
@@ -70,8 +72,10 @@ struct alignas(8) Tracking {
 // marker*: the grenade landing marker for this frame (transport 21), in the
 // same OpenXR space as tracking. markerState bit 0 = show it; bit 1 =
 // markerNormal holds the facing of the surface it lies on (unit, OpenXR).
-struct RenderInfo {Tracking tracking;uint32_t mode,eyeMask;float markerPosition[3];uint32_t markerState;float markerNormal[3];uint32_t markerReserved/*fade darkness, 0 none to 255 black*/;float coverPosition[3];uint32_t coverState;};
-static_assert(sizeof(Tracking)==288 && sizeof(RenderInfo)==344);
+struct RenderInfo {Tracking tracking;uint32_t mode,eyeMask;float markerPosition[3];uint32_t markerState;float markerNormal[3];uint32_t markerReserved/*fade darkness, 0 none to 255 black*/;float coverPosition[3];uint32_t coverState;
+    // Transport 29: where each hand's interaction line lands, [0] right, [1] left, in tracking space. State bit 0 right, bit 1 left.
+    float handPointer[2][3];uint32_t handPointerState,handPointerReserved;};
+static_assert(sizeof(Tracking)==288 && sizeof(RenderInfo)==376);
 static_assert(offsetof(Tracking,rightController)==136 && offsetof(Tracking,gamepad)==168);
 static_assert(offsetof(Tracking,leftController)==192 && offsetof(Tracking,leftGrip)==224 && offsetof(Tracking,rightGrip)==256);
 // Identical ABI in the x86 game and x64 companion. GPU keyed mutex protects
@@ -92,7 +96,7 @@ struct alignas(8) Header {
     uint32_t menuPadding;
     MenuState menu;
 };
-static_assert(sizeof(Header)==1160);
+static_assert(sizeof(Header)==1200);
 static_assert(offsetof(Header,tracking)==72 && offsetof(Header,rendered)==360);
 inline bool Compatible(const Header* h,DWORD pid) {
     return h && h->magic==Magic && h->version==Version && h->pid==pid;

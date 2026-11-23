@@ -113,7 +113,7 @@ Set `MotionControls=0` under `[VR]` to disable all motion-controller features, i
 
 `LeftStickClickDelayMs` under `[VR]` sets how long the left stick click must be held before it registers, so that a stray tap does nothing. The installed configuration sets it to `0`, which sends the click immediately; `150` is the original behaviour and is what you want if the left click is mapped to crouch, since it lets a two-click chord arrive together.
 
-Install the matching game DLL and host together: this build uses **transport version 28**, which carries the left controller's aim pose, grip amounts, the settings-menu channel and the current menu settings. A mismatched pair refuses to connect rather than misreading each other, so you get no VR at all instead of a corrupted one — the installer always replaces both files together, so a normal install or upgrade cannot produce a mismatch.
+Install the matching game DLL and host together: this build uses **transport version 29**, which carries the left controller's aim pose, grip amounts, the settings-menu channel and the current menu settings. A mismatched pair refuses to connect rather than misreading each other, so you get no VR at all instead of a corrupted one — the installer always replaces both files together, so a normal install or upgrade cannot produce a mismatch.
 
 ### Adjusting a weapon's grip by hand
 
@@ -283,6 +283,8 @@ observedLayout=... observedIndices=...
 These are new in 0.8.0 and on by default unless noted. Each has an off switch in `DeusExHRVR.ini` under `[VR]`; restart after editing the file.
 
 - **Forgiving aim** (`ForgivingAim=1`, needs `InteractionAim=Controller`). The game also considers the usable object closest to where you are pointing, within `ForgivingAimDegrees` (15), and a prompt stays through small hand movements. The game's own range and rules still apply.
+- **Interaction from the visible hand** (`InteractionFromHand=1`, needs `ForgivingAim=1`). An empty hand points from the palm along the fingers, tilted `InteractionHandTiltDegrees` (15) toward the palm. A hand holding a gun points along the barrel. `0` restores the controller's aim direction.
+- **Hand pointers** (`HandPointers=Both`; VR Settings > Controls > Hand pointers). A ring shows where each hand's interaction line lands: cyan for right, amber for left. `Off`, `Right`, `Left` or `Both`.
 - **Hand contact** (`HandContactInteract=1`, needs `InteractionAim=Controller`). A usable item within `HandContactCm` (15) of either hand is selected whichever way the hand points, nearest first, so you can pick items out of a crowded locker. Anything farther away uses forgiving aim.
 - **Either hand interacts** (`LeftHandInteract=1`). If your left hand has the prompt, left grip acts as Interact. Carrying with the left hand moves the throw to the left trigger (`LeftHandCarryThrow=1`).
 - **Fingers follow the grip** (`HandGripClose=1`) on both hands, whenever that hand is empty.

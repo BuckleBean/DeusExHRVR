@@ -1,6 +1,7 @@
 #include "ModelWristHud.h"
 #include "NativeCover.h"
 #include "CoverCrosshair.h"
+#include "HandPointer.h"
 #include "CeilingGuard.h"
 #include "TwoHandAttach.h"
 #include "TwoHandSteer.h"
@@ -369,6 +370,7 @@ bool controllerHandsInteractCurl=false;
 std::atomic<bool> ceilingGuardOn{true},ceilingLookAhead{true},ceilingCrouched{};float ceilingMarginMetres=.20f;
 std::atomic<float> ceilingRoom{CeilingGuard::NoCeiling};
 std::atomic<uint32_t> crosshairMode{CoverCrosshair::Third}; // [VR] Crosshair=Off|FirstPerson|ThirdPerson|Both
+std::atomic<uint32_t> handPointerMode{HandPointer::Both}; // [VR] HandPointers=Off|Right|Left|Both
 bool handGripClose=true; // [VR] HandGripClose=0 returns to the gentle right-hand Interact curl
 uint32_t controllerHandsPoseMask=0x4000;     // XINPUT_GAMEPAD_X    = interact
 uint32_t controllerHandsSprintMask=0x0100;   // XINPUT_GAMEPAD_LB   = sprint
@@ -1557,6 +1559,7 @@ struct Snapshot {
     bool active{};
     bool nativeHeading{};
     bool coverTargetValid{};float coverTarget[3]{};
+    bool handPointerValid[2]{};float handPointer[2][3]{}; // [0] right, [1] left
     CameraMath::Matrix tiltedWorld; // world before LevelFrozenView, still accepted by CreateHook
     bool leveled{};
 };
@@ -2014,6 +2017,9 @@ bool forgivingAimEnabled{};
 bool leftHandInteract{}; // [VR] LeftHandInteract=0 keeps interaction on the right hand only
 // [VR] HandContactInteract=0 turns off choosing the item at your hand; HandContactCm is the distance.
 bool handContact{};float handContactMetres=.15f;
+// [VR] InteractionFromHand=0 goes back to the controller's aim pose;
+// InteractionHandTiltDegrees tilts the empty hand's line toward the palm.
+bool interactionFromHand{};float interactionHandTilt=15.f;
 std::atomic<uint64_t> leftPromptTick{};
 // [VR] LeftHandCarryThrow=0 keeps the throw on the right trigger.
 bool leftCarryThrow{};
@@ -2074,6 +2080,32 @@ uintptr_t forgivingLastSelected{},forgivingLastCleared{};
 uint64_t forgivingClearedAt{},forgivingNextSummary{},forgivingHeldMs{},forgivingLastEnd{};
 unsigned forgivingPrompts{},forgivingSteered{},forgivingPlain{},forgivingClears{},forgivingBlinks{};
 bool forgivingSteering{};
+// The barrel's line while a gun is in the right hand; written once a frame by
+// UpdateHandPointers so the interaction search makes no extra engine calls.
+CameraMath::Matrix barrelLine; // stateMutex
+uint64_t barrelLineTick{};     // stateMutex
+// One hand's interaction line: the barrel, or the visible palm along the fingers.
+// Falls back to the aim pose whenever the hand's pose is unavailable.
+bool InteractionLine(DirectionConfig::Source source,CameraMath::Matrix& result) {
+    if(!DirectionWorld(source,result))return false;
+    // The game only follows this line through the forgiving-aim update.
+    if(!interactionFromHand||!forgivingAimEnabled||!interactionProbesReady||
+       (source!=DirectionConfig::Source::Controller&&source!=DirectionConfig::Source::LeftController))return true;
+    const bool left=source==DirectionConfig::Source::LeftController;
+    std::lock_guard lock(stateMutex);
+    const auto now=GetTickCount64();
+    if(!left&&barrelLineTick&&now>=barrelLineTick&&now-barrelLineTick<100){result=barrelLine;return true;}
+    const auto& grip=left?current.tracking.leftGrip:current.tracking.rightGrip;
+    if(!grip.valid)return true;
+    const auto baseWorld=(current.nativeHeading||coverCamera.held)?current.controllerBase:RenderBase(current.originalWorld);
+    const auto hand=CameraMath::HeadWorld(baseWorld,reference,grip.pose,current.scale);
+    float origin[3],dir[3];
+    if(!HandPointer::Line(hand.m,left,interactionHandTilt,origin,dir))return true;
+    const float target[3]={origin[0]+dir[0],origin[1]+dir[1],origin[2]+dir[2]};
+    CameraMath::Matrix line;
+    if(ForgivingAim::RayMatrix(result,origin,target,line))result=line;
+    return true;
+}
 // The interaction ray: steered onto the chosen object, otherwise the setting's.
 bool InteractionWorld(CameraMath::Matrix& target,uintptr_t manager=0) {
     if(!DirectionWorld(interactionAim,target,nullptr,manager))return false;
@@ -2164,6 +2196,12 @@ void InstallInteractionProbes(){
         wchar_t contactText[32]{};GetPrivateProfileStringW(L"VR",L"HandContactCm",L"15",contactText,32,diagConfig);
         const float cm=float(_wtof(contactText));
         if(std::isfinite(cm)&&cm>=5.f&&cm<=40.f)handContactMetres=cm*.01f;
+    }
+    interactionFromHand=GetPrivateProfileIntW(L"VR",L"InteractionFromHand",1,diagConfig)!=0;
+    {
+        wchar_t tiltText[32]{};GetPrivateProfileStringW(L"VR",L"InteractionHandTiltDegrees",L"15",tiltText,32,diagConfig);
+        const float tilt=float(_wtof(tiltText));
+        if(std::isfinite(tilt)&&tilt>=-30.f&&tilt<=60.f)interactionHandTilt=tilt;
     }
     twoHandedWeapons=GetPrivateProfileIntW(L"VR",L"TwoHandedWeapons",1,diagConfig)!=0;
     twoHandedLog=twoHandedWeapons&&GetPrivateProfileIntW(L"VR",L"TwoHandedWeaponsLog",0,diagConfig)!=0;
@@ -2371,7 +2409,7 @@ void ForgivingBegin(void* self) {
     CameraMath::Matrix aim{};float scale{};
     {
         // A left controller that is not tracking must not disturb the right hand.
-        if(!DirectionWorld(source,aim)){if(!turn.hand||forgivingSelector.Held())forgivingSelector.Reset();return;}
+        if(!InteractionLine(source,aim)){if(!turn.hand||forgivingSelector.Held())forgivingSelector.Reset();return;}
         std::lock_guard lock(stateMutex);
         if(coverCamera.held){forgivingSelector.Reset();return;}
         scale=current.scale;
@@ -2399,7 +2437,7 @@ void ForgivingBegin(void* self) {
         const int other=1-turn.hand;
         const auto otherSource=other?DirectionConfig::Source::LeftController:setting;
         CameraMath::Matrix otherAim{};float otherPalm[3]{};
-        if(DirectionWorld(otherSource,otherAim)&&HandPosition(other!=0,otherPalm)) {
+        if(InteractionLine(otherSource,otherAim)&&HandPosition(other!=0,otherPalm)) {
             ForgivingAim::Frame otherFrame=frame;
             for(int i=0;i<3;i++){otherFrame.dir[i]=otherAim.m[8+i];otherFrame.origin[i]=otherAim.m[12+i];}
             otherFrame.contactReach=handContactMetres*scale;
@@ -2421,7 +2459,7 @@ void ForgivingBegin(void* self) {
     const float* rayOrigin=frame.origin;
     if(point&&havePalm&&forgivingSelector.AimingContact()&&ForgivingAim::BackedOrigin(palm,point,ForgivingAim::ContactBackMetres*scale,contactOrigin))rayOrigin=contactOrigin;
     if(point&&ForgivingAim::RayMatrix(aim,rayOrigin,point,forgivingRay)){forgivingRayActive=true;forgivingSteering=true;}
-    else if(turn.hand){forgivingRay=aim;forgivingRayActive=true;}
+    else if(turn.hand||interactionFromHand){forgivingRay=aim;forgivingRayActive=true;}
 }
 void ForgivingEnd() {
     const auto now=GetTickCount64();
@@ -3167,6 +3205,66 @@ void UpdateCoverTarget() {
     std::lock_guard lock(stateMutex);
     current.coverTargetValid=ok;
     if(ok)memcpy(current.coverTarget,point,sizeof(point));
+}
+// Where a hand's line first meets the world, or the end of the line. Same
+// collision filter as the crosshair; ignores the player and the held gun.
+bool HandPointerRaw(void* owner,const CameraMath::Matrix& line,float range,float* target) {
+    __try {
+        alignas(16) float end[4]{};
+        if(!CoverCrosshair::Endpoint(line.m,range,end))return false;
+        void* ignored[2]={owner,nullptr};
+        using Inventory=unsigned char*(__cdecl*)(void*);
+        auto inventory=reinterpret_cast<Inventory>(VA(0x66af40))(owner);
+        auto weapon=inventory?*reinterpret_cast<unsigned char**>(inventory+0x14):nullptr;
+        if(weapon&&*reinterpret_cast<uintptr_t*>(weapon)==VA(0xab1944)) {
+            auto handle=*reinterpret_cast<uint32_t*>(weapon+0x6c);
+            if(handle!=0x7fffffff) {
+                using Instance=void*(__cdecl*)(uint32_t);
+                ignored[1]=reinterpret_cast<Instance>(VA(0x6082a0))(handle);
+            }
+        }
+        auto world=*reinterpret_cast<void**>(VA(0x1c7bf64));
+        if(!world)return false;
+        using Query=bool(__thiscall*)(void*,uint32_t,const float*,const float*,void*,void**,unsigned);
+        auto query=reinterpret_cast<Query>((*reinterpret_cast<uintptr_t**>(world))[0x54/4]);
+        alignas(16) unsigned char hit[0x200]{};
+        alignas(16) float start[4]{line.m[12],line.m[13],line.m[14],1};
+        bool contact=query(world,0xc72c1ba3,start,end,hit,ignored,2);
+        memcpy(target,contact?reinterpret_cast<float*>(hit+0x10):end,12);
+        return CoverCrosshair::Valid(target);
+    } __except(EXCEPTION_EXECUTE_HANDLER) {return false;}
+}
+// Once a frame, outside the state lock: the barrel line, then each shown pointer.
+void UpdateHandPointers() {
+    const auto mode=handPointerMode.load();
+    const auto now=GetTickCount64();
+    const bool cover=NativeCoverActive();
+    bool eligible{};void* owner{};float scale{};
+    {std::lock_guard lock(stateMutex);eligible=!cover&&FirstPersonAimLocked();owner=current.playerInstance;scale=current.scale;}
+    bool haveBarrel=false;CameraMath::Matrix barrel;
+    if(eligible&&(interactionFromHand||mode!=HandPointer::Off)) {
+        const auto emptyTick=rightHandEmptyTick.load(std::memory_order_relaxed);
+        const bool empty=emptyTick&&now>=emptyTick&&now-emptyTick<250;
+        if(!empty) {
+            auto pose=ReadWeaponPose(true,MuzzleQueryDiagnostic::Aim);
+            if(pose.active&&!pose.nativeCover&&pose.weapon){barrel=CameraMath::FiringFromMuzzle(pose.muzzle);haveBarrel=true;}
+        }
+    }
+    {std::lock_guard lock(stateMutex);barrelLineTick=haveBarrel?now:0;if(haveBarrel)barrelLine=barrel;}
+    bool valid[2]{};float point[2][3]{};
+    if(eligible&&owner&&scale>0&&interactionAim.load()==DirectionConfig::Source::Controller) {
+        for(int hand=0;hand<2;hand++) {
+            if(!HandPointer::Shows(mode,hand==1)||(hand==1&&!leftHandInteract))continue;
+            CameraMath::Matrix line;
+            valid[hand]=InteractionLine(hand?DirectionConfig::Source::LeftController:DirectionConfig::Source::Controller,line)&&
+                HandPointerRaw(owner,line,HandPointer::RangeMetres*scale,point[hand]);
+        }
+    }
+    std::lock_guard lock(stateMutex);
+    for(int hand=0;hand<2;hand++) {
+        current.handPointerValid[hand]=valid[hand];
+        if(valid[hand])memcpy(current.handPointer[hand],point[hand],sizeof(point[hand]));
+    }
 }
 // Ceiling guard: how much room is above the player, measured straight up from the
 // body with the same collision query as the crosshair. Runs outside the state lock;
@@ -5338,6 +5436,7 @@ void __fastcall UpdateHook(void* self,void*) {
         if(!calibrationUpdated)calibration.Cancel();
     }
     UpdateCoverTarget();
+    UpdateHandPointers();
     UpdateCeilingRoom();
     UpdateThrowMarker();
     if(budget.load()<=0)return;
@@ -5474,6 +5573,23 @@ void ExportCoverTarget(Transport::RenderInfo& info,const Snapshot& frame) {
     memcpy(info.coverPosition,point,sizeof(point));info.coverState=1;
 }
 
+void ExportHandPointers(Transport::RenderInfo& info,const Snapshot& frame) {
+    info.handPointerState=0;
+    // Called with stateMutex held, after ExportCoverTarget.
+    if(handPointerMode.load()==HandPointer::Off||NativeCoverActiveLocked()||!FirstPersonAimLocked()||frame.immersiveScoped||
+       frame.playerInstance!=current.playerInstance||!frame.tracking.valid||!(frame.scale>0))return;
+    const auto& h=frame.tracking.head;
+    for(int hand=0;hand<2;hand++) {
+        if(!frame.handPointerValid[hand])continue;
+        if(hand==0&&(info.coverState&1))continue; // the gun's crosshair already marks this spot
+        auto x=ThrowAim::WorldToTracking(frame.handPointer[hand],frame.world.m,{h.position.x,h.position.y,h.position.z},
+            {h.orientation.x,h.orientation.y,h.orientation.z,h.orientation.w},frame.scale);
+        const float point[3]={x.x,x.y,x.z};
+        if(!CoverCrosshair::Valid(point))continue;
+        memcpy(info.handPointer[hand],point,sizeof(point));info.handPointerState|=1u<<hand;
+    }
+}
+
 void ExportThrowMarker(Transport::RenderInfo& info,const Snapshot& frame) {
     info.markerState=0;
     if(frame.immersiveScoped || !frame.tracking.valid || !(frame.scale>0))return;
@@ -5511,7 +5627,7 @@ void __fastcall DrawHook(void* self,void*,uint32_t pass,void* other) {
     if(drawing.active && drawnEyes) {
         lastWorld=drawing;
         std::lock_guard lock(stateMutex);
-        if(pairInfo.mode==0){pairInfo.mode=1;pairInfo.tracking=drawing.immersiveScoped?drawing.presentationTracking:drawing.tracking;ExportThrowMarker(pairInfo,drawing);ExportCoverTarget(pairInfo,drawing);}
+        if(pairInfo.mode==0){pairInfo.mode=1;pairInfo.tracking=drawing.immersiveScoped?drawing.presentationTracking:drawing.tracking;ExportThrowMarker(pairInfo,drawing);ExportCoverTarget(pairInfo,drawing);ExportHandPointers(pairInfo,drawing);}
         if(pairInfo.tracking.id!=drawing.tracking.id)pairInfo.mode=2;
         pairInfo.eyeMask|=drawnEyes;
     }
@@ -6023,6 +6139,7 @@ void Install() {
     controllerHandsInteractCurl=GetPrivateProfileIntW(L"VR",L"ControllerHandsInteractCurl",1,config)!=0;
     handGripClose=GetPrivateProfileIntW(L"VR",L"HandGripClose",1,config)!=0;
     {wchar_t crosshairText[32]{};GetPrivateProfileStringW(L"VR",L"Crosshair",L"ThirdPerson",crosshairText,32,config);crosshairMode=CoverCrosshair::Parse(crosshairText);}
+    {wchar_t pointerText[32]{};GetPrivateProfileStringW(L"VR",L"HandPointers",L"Both",pointerText,32,config);handPointerMode=HandPointer::Parse(pointerText);}
     ceilingGuardOn=GetPrivateProfileIntW(L"VR",L"CeilingGuard",1,config)!=0;
     ceilingLookAhead=GetPrivateProfileIntW(L"VR",L"CeilingGuardLookAhead",1,config)!=0;
     {
@@ -6373,6 +6490,8 @@ unsigned ThrowMarkerSetting(){return throwMarkerReady.load()?(throwMarkerWanted.
 void SetThrowMarker(bool value){if(throwMarkerReady.load())throwMarkerWanted.store(value);}
 unsigned CrosshairSetting(){return crosshairMode.load();}
 void SetCrosshair(unsigned value){if(value>=CoverCrosshair::Off&&value<=CoverCrosshair::Both)crosshairMode.store(value);}
+unsigned HandPointerSetting(){return handPointerMode.load();}
+void SetHandPointers(unsigned value){if(value>=HandPointer::Off&&value<=HandPointer::Both)handPointerMode.store(value);}
 unsigned CoverFollowSetting(){return coverFollowReady.load()?(coverFollowWanted.load()?2:1):0;}
 void SetCoverFollow(bool value){if(coverFollowReady.load()){coverFollowWanted.store(value);coverCameraFollow.store(value);}}
 unsigned ImmersiveScopeSetting(){return immersiveScopeReady.load()?(immersiveScope.load()?2:1):0;}
