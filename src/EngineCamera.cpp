@@ -5171,7 +5171,10 @@ void __fastcall UpdateHook(void* self,void*) {
                             const bool poses=ModelHandAlignment::GripTarget(t,now,renderBase,reference,worldScale,steerRight)&&
                                 ModelHandAlignment::GripTarget(t,now,renderBase,reference,worldScale,steerLeft,true);
                             const auto steerTick=leftSteerTick.load(std::memory_order_relaxed);
-                            const bool show=poses&&nativeRequested&&steerTick&&now>=steerTick&&now-steerTick<250;
+                            const bool steering=steerTick&&now>=steerTick&&now-steerTick<250;
+                            static TwoHandSteer::ScopeHold scopeHold;
+                            const bool throughScope=scopeHold.Update(immersiveScopeActive,steering,leftOnWeapon.load(),now);
+                            const bool show=poses&&((nativeRequested&&steering)||throughScope);
                             bool turned=false;
                             if(!poses)steer.Reset();
                             else if(steer.Update(double(now),show,steerRight,steerLeft,worldScale)) {

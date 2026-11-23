@@ -34,6 +34,15 @@ int main() {
     {Steer s;double t=1000;Settle(s,t,true,right,left,1400);Settle(s,t,true,right,swung,1800);
      Check(!s.Update(9000,true,right,swung,300)&&s.amount==0,"after a pause or load it starts fresh with no jump");}
     {Steer s;Matrix bad=left;bad.m[12]=NAN;Check(!s.Update(1000,true,right,bad,300)&&!s.have,"a bad reading is ignored");}
+    {ScopeHold h;Check(!h.Update(false,false,true,1000),"no hold before the scope");
+     Check(!h.Update(true,false,true,1010),"scoping without the left hand on the gun stays with the right hand");}
+    {ScopeHold h;Check(h.Update(true,true,true,1000),"a hold that was steering carries into the scope");
+     Check(h.Update(true,false,true,5000),"and lasts while scoped");
+     Check(h.Update(false,false,true,5010),"leaving the scope keeps it for a moment");
+     Check(h.Update(false,false,true,5200),"long enough for the hands to return");
+     Check(!h.Update(false,false,true,5300),"then the normal hold takes over");}
+    {ScopeHold h;h.Update(true,true,true,1000);Check(!h.Update(true,false,false,1010),"letting go in the scope gives aim back to the right hand");
+     Check(!h.Update(true,false,true,1020),"and pressing again in the scope does not grab");}
     {   // The wrist HUD must land exactly where the hand model is drawn, through the real
         // placement function, for several grip poses.
         const Matrix game{{0,-1,0,0, 0,0,-1,0, 1,0,0,0, 10,20,30,1}};

@@ -1,6 +1,7 @@
 #pragma once
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include "CameraMath.h"
 // Two-handed aim. When the left hand takes the weapon, the line from the right hand to
 // the left is remembered relative to the right hand. If the left hand then moves off
@@ -49,6 +50,18 @@ inline Transport::Pose ApplyShift(const Transport::Pose& grip,const HudShift& sh
     out.orientation=CameraMath::Multiply(grip.orientation,shift.turn);
     return out;
 }
+// The hands step aside while scoped, so the draw code stops confirming the hold. A hold that
+// was steering when the scope opened carries through it while the grip stays held, and for a
+// moment after, so aim does not jump to the right hand on the way in or out.
+struct ScopeHold {
+    bool held{};uint64_t graceUntil{};
+    bool Update(bool scoped,bool steering,bool gripHeld,uint64_t now) {
+        if(!gripHeld){held=false;graceUntil=0;return false;}
+        if(scoped){if(steering)held=true;graceUntil=0;return held;}
+        if(held){held=false;graceUntil=now+250;}
+        return graceUntil&&now<graceUntil;
+    }
+};
 struct Steer {
     bool have{},timed{};float local[3]{},axis[3]{0,0,1},angle{},amount{};double last{};
     void Reset(){have=false;timed=false;angle=0;amount=0;last=0;}
