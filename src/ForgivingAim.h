@@ -52,6 +52,24 @@ inline float ContactDistance(float shell,float position) {
     const float surface=shell+position*ContactPositionWeight;
     return surface<position?surface:position;
 }
+// The hand is on an item and the game's line stopped at another usable item (an open
+// locker door, a neighbour): ask again ignoring it. Only a real hit on the item under
+// the hand counts. A wall, or anything else unusable, still ends the line.
+inline constexpr unsigned MaxThrough=4;
+// cast(list,count,next): false on failure; next = the usable item met, 0 for anything else.
+template<class Cast> bool ReachThrough(uintptr_t target,uintptr_t firstHit,uintptr_t* ignored,unsigned count,unsigned capacity,Cast cast,unsigned* passed=nullptr) {
+    uintptr_t hit=firstHit;
+    for(unsigned i=0;i<MaxThrough;i++) {
+        if(!hit||count>=capacity)return false;
+        for(unsigned k=0;k<count;k++)if(ignored[k]==hit)return false; // ignoring it did not work
+        ignored[count++]=hit;
+        uintptr_t next{};
+        if(!cast(ignored,count,next))return false;
+        if(next==target){if(passed)*passed=i+1;return true;}
+        hit=next;
+    }
+    return false;
+}
 inline constexpr float ContactBackMetres=.15f; // the game's check starts behind the hand, never inside the object
 
 struct Candidate {uintptr_t owner{};float point[3]{};float score{};float handDistance=NoContact;float contactPoint[3]{};};

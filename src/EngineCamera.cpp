@@ -2021,6 +2021,9 @@ bool handContact{};float handContactMetres=.15f;
 // [VR] HandContactExact=0: no separate search at the hand.
 bool handContactExact{};
 thread_local unsigned contactTouchingCount{};
+// [VR] HandContactThroughItems=0: another usable item in the line keeps the prompt.
+bool handThroughItems{};
+thread_local unsigned contactThrough{};
 // [VR] InteractionFromHand=0 goes back to the controller's aim pose;
 // InteractionHandTiltDegrees tilts the empty hand's line toward the palm.
 bool interactionFromHand{};float interactionHandTilt=15.f;
@@ -2125,12 +2128,86 @@ using InteractionResolve=void*(__cdecl*)(void*,void**);
 using InteractionEvent=void*(__thiscall*)(void*,void*,void*,void*,void*,void*);
 InteractionResolve originalInteractionResolve{};
 InteractionEvent originalInteractionEvent{};
+uintptr_t VA(uintptr_t preferred);
+struct ThroughHit {void* object{};float point[4]{};};
+// The owner of a physics object, if it is a usable item.
+uintptr_t UsableOwnerRaw(void* object) {
+    __try {
+        void* descriptor{};
+        const auto owner=reinterpret_cast<uintptr_t>(originalInteractionResolve(object,&descriptor));
+        if(!owner||!descriptor)return 0;
+        const auto* d=static_cast<const unsigned char*>(descriptor);
+        return *reinterpret_cast<const uint32_t*>(d)&&d[0x10]?owner:0;
+    } __except(EXCEPTION_EXECUTE_HANDLER) {return 0;}
+}
+// The same line, mask and filter as the game's, with extra items ignored.
+bool ThroughCastRaw(uint32_t mask,const unsigned char* startRaw,const unsigned char* endRaw,void** ignored,unsigned count,bool gameFilter,ThroughHit& out) {
+    using Query=bool(__thiscall*)(void*,uint32_t,const float*,const float*,void*,void**,unsigned);
+    using SetFilter=void(__thiscall*)(void*,void*);
+    void* world{};bool filterSet=false,ok=false;uintptr_t savedFilter{};
+    auto* chain=reinterpret_cast<uintptr_t*>(VA(0x1c7cc30));
+    alignas(16) unsigned char hit[0x200];
+    alignas(16) float start[4],end[4];
+    __try {
+        memcpy(start,startRaw,sizeof(start));memcpy(end,endRaw,sizeof(end));
+        memset(hit,0,sizeof(hit));
+        world=*reinterpret_cast<void**>(VA(0x1c7bf64));
+        if(!world)return false;
+        if(gameFilter) {
+            savedFilter=*reinterpret_cast<uintptr_t*>(static_cast<unsigned char*>(world)+0x2328);
+            *chain=savedFilter;
+            reinterpret_cast<SetFilter>(VA(0x4c7660))(world,reinterpret_cast<void*>(VA(0x689050)));
+            filterSet=true;
+        }
+        const auto query=reinterpret_cast<Query>((*reinterpret_cast<uintptr_t**>(world))[0x54/4]);
+        const bool contact=query(world,mask,start,end,hit,ignored,count);
+        if(contact&&*reinterpret_cast<const uint32_t*>(hit)==2&&*reinterpret_cast<void**>(hit+0x0c)) {
+            out.object=*reinterpret_cast<void**>(hit+0x0c);
+            memcpy(out.point,hit+0x10,sizeof(out.point));
+            ok=true;
+        }
+    } __except(EXCEPTION_EXECUTE_HANDLER) {ok=false;}
+    __try {
+        if(filterSet){reinterpret_cast<SetFilter>(VA(0x4c7660))(world,reinterpret_cast<void*>(savedFilter));*chain=0;}
+    } __except(EXCEPTION_EXECUTE_HANDLER) {ok=false;}
+    return ok;
+}
+bool ThroughCommitRaw(unsigned char* frame,const ThroughHit& hit) {
+    __try {
+        memcpy(frame+0xcc,&hit.object,sizeof(hit.object));
+        memcpy(frame+0xd0,hit.point,sizeof(hit.point));
+        return true;
+    } __except(EXCEPTION_EXECUTE_HANDLER) {return false;}
+}
+// On success the game's own hit record holds the real hit on the item under the hand.
+bool ReachTouchedItem(unsigned char* frame,uint32_t mask,bool gameFilter,uintptr_t target,void*& object) {
+    const auto first=UsableOwnerRaw(object);
+    if(!first||first==target)return false;
+    uintptr_t ids[ForgivingAim::MaxThrough+1]{forgivingPlayer.load()};
+    if(!ids[0])return false;
+    ThroughHit last{};unsigned passed=0;
+    const bool reached=ForgivingAim::ReachThrough(target,first,ids,1,ForgivingAim::MaxThrough+1,[&](uintptr_t* list,unsigned count,uintptr_t& next) {
+        if(!ThroughCastRaw(mask,frame+0x60,frame+0x30,reinterpret_cast<void**>(list),count,gameFilter,last))return false;
+        next=UsableOwnerRaw(last.object);
+        return true;
+    },&passed);
+    if(!reached||!ThroughCommitRaw(frame,last))return false;
+    object=last.object;
+    if(passed>contactThrough)contactThrough=passed;
+    return true;
+}
 void* __cdecl InteractionResolveHook(void* object,void** descriptor){
     auto caller=reinterpret_cast<uintptr_t>(_ReturnAddress());
     auto frame=static_cast<const unsigned char*>(_AddressOfReturnAddress())+3*sizeof(void*);
     // Observe the real hit only. Substituting a different physics object here
     // leaves the caller's hit point and obstruction checks referring to the old one.
     const bool lineSite=caller==base+0x68a100-0x400000||caller==base+0x68a2b5-0x400000||caller==base+0x68a3b5-0x400000;
+    if(lineSite&&handThroughItems&&senseQueries&&forgivingRayActive&&object) {
+        const auto& plan=forgivingSelector.LastPlan();
+        if(plan.aimed&&plan.touch)
+            ReachTouchedItem(const_cast<unsigned char*>(frame),caller==base+0x68a3b5-0x400000?0x84249983u:0x84a49983u,
+                caller==base+0x68a2b5-0x400000,plan.owner,object);
+    }
     auto result=originalInteractionResolve(object,descriptor);
     if(lineSite&&senseQueries){pathHitSeen=true;pathHitOwner=reinterpret_cast<uintptr_t>(result);}
     if(interactionSample.active&&interactionSample.count<4&&
@@ -2240,6 +2317,7 @@ void InstallInteractionProbes(){
     };
     match=match&&checkCall(0x68a0fb)&&checkCall(0x68a2b0);
     handContactExact=handContactExact&&checkCall(0x68a3b0);
+    handThroughItems=handContactExact&&GetPrivateProfileIntW(L"VR",L"HandContactThroughItems",1,diagConfig)!=0;
     bool madeResolve=false,madeEvent=false;
     if(match){
         madeResolve=MH_CreateHook(resolve,(void*)&InteractionResolveHook,(void**)&originalInteractionResolve)==MH_OK;
@@ -2415,7 +2493,7 @@ void PathResult(const ForgivingAim::Plan& plan,uintptr_t selected,uint64_t now) 
     const char* hand=plan.hand?"left":"right";
     const char* via=!plan.aimed?"line":plan.touch?"touch":"point";
     if(selected!=pathLastSelected) {
-        if(selected)PathLog("selected item=%p hand=%s via=%s from=%s",reinterpret_cast<void*>(selected),hand,via,plan.aimed?(plan.fromEye?"eye":"hand"):"hand");
+        if(selected)PathLog("selected item=%p hand=%s via=%s from=%s throughItems=%u",reinterpret_cast<void*>(selected),hand,via,plan.aimed?(plan.fromEye?"eye":"hand"):"hand",contactThrough);
         else PathLog("cleared item=%p",reinterpret_cast<void*>(pathLastSelected));
         pathLastSelected=selected;
     }
@@ -2445,7 +2523,7 @@ bool ForgivingSearch(void* self,const ForgivingAim::Frame& f,const float* hand,F
 // One decision per update. See ForgivingAim.h.
 void ForgivingBegin(void* self) {
     forgivingRayActive=false;forgivingSelected=0;
-    contactTouchingCount=0;pathHitSeen=false;pathHitOwner=0;
+    contactTouchingCount=0;contactThrough=0;pathHitSeen=false;pathHitOwner=0;
     forgivingSelector.ClearPlan();
     const auto setting=interactionAim.load();
     const bool twoHands=leftHandInteract&&setting==DirectionConfig::Source::Controller;

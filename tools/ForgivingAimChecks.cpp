@@ -162,6 +162,21 @@ static void TouchAndSearchChecks() {
          auto p=r.Go(t);third+=p.aimed&&p.owner==3;plain+=!p.aimed;r.s.Note(0,nullptr,t);
      }
      Check(third>0&&plain>0,"items touched in turn cannot keep the others or the plain line from their turn");}
+    {uintptr_t ids[MaxThrough+1]{99};unsigned casts=0,passed=0;
+     bool ok=ReachThrough(5,7,ids,1,MaxThrough+1,[&](uintptr_t*,unsigned,uintptr_t& next){++casts;next=5;return true;},&passed);
+     Check(ok&&casts==1&&passed==1&&ids[1]==7,"a neighbour in the line is ignored and the touched item is reached");}
+    {uintptr_t ids[MaxThrough+1]{99};unsigned casts=0;
+     bool ok=ReachThrough(5,7,ids,1,MaxThrough+1,[&](uintptr_t*,unsigned,uintptr_t& next){++casts;next=0;return true;});
+     Check(!ok&&casts==1,"a wall behind the neighbour still stops the line");}
+    {uintptr_t ids[MaxThrough+1]{99};unsigned casts=0;
+     bool ok=ReachThrough(5,7,ids,1,MaxThrough+1,[&](uintptr_t*,unsigned,uintptr_t& next){++casts;next=7;return true;});
+     Check(!ok&&casts==1,"if the game cannot ignore the neighbour the normal result stands");}
+    {uintptr_t ids[MaxThrough+1]{99};uintptr_t n=20;unsigned casts=0;
+     bool ok=ReachThrough(5,7,ids,1,MaxThrough+1,[&](uintptr_t*,unsigned,uintptr_t& next){++casts;next=n++;return true;});
+     Check(!ok&&casts==MaxThrough,"a line through many items gives up after a fixed number of tries");}
+    {uintptr_t ids[MaxThrough+1]{99};
+     bool ok=ReachThrough(5,7,ids,1,MaxThrough+1,[&](uintptr_t*,unsigned,uintptr_t&){return false;});
+     Check(!ok,"a failed check leaves the normal result");}
     {unsigned calls=0;bool ok=SearchShells([&](float,bool& more){++calls;more=false;return true;});
      Check(ok&&calls==1,"nothing usable in the largest sphere: the smaller searches are skipped");}
     {unsigned calls=0;float first=0;bool ok=SearchShells([&](float s,bool& more){if(!calls)first=s;++calls;more=true;return true;});
