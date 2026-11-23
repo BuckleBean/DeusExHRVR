@@ -2299,9 +2299,10 @@ uintptr_t VA(uintptr_t preferred);
 // capsule shape, flags and hit layout, with a wider capsule along the aim line.
 // Game thread, inside the interaction update. No C++ objects with destructors
 // here, so a fault inside a game call is caught and reported.
-// Adds to `out`. contactOnly searches a small space around the hand, because the game
-// returns at most 32 hits and the wide search can fill them in a crowded room.
-bool ForgivingQueryRaw(void* self,const float* origin,const float* dir,float minRadius,const float* hand,float contactReach,ForgivingAim::Candidate* out,unsigned& count,bool contactOnly=false) {
+// Adds to `out`. contactShell > 0 searches a small sphere of that radius at the hand,
+// because the game returns at most 32 hits and the wide search can fill them.
+bool ForgivingQueryRaw(void* self,const float* origin,const float* dir,float minRadius,const float* hand,float contactReach,ForgivingAim::Candidate* out,unsigned& count,float contactShell=0) {
+    const bool contactOnly=contactShell>0;
     using Alloc=void*(__thiscall*)(uintptr_t);
     using Release=void(__thiscall*)(uintptr_t,void*);
     using SetByte=void(__thiscall*)(void*,int);
@@ -2314,9 +2315,9 @@ bool ForgivingQueryRaw(void* self,const float* origin,const float* dir,float min
     using Resolve=void*(__cdecl*)(void*,void**);
     uintptr_t world{};void* shape{};bool filterSet{},ownerSet{};uintptr_t savedFilter{};
     auto* ownerSlot=reinterpret_cast<uintptr_t*>(VA(0x00e9aa34));
-    const float length=contactOnly?contactReach*ForgivingAim::ContactKeep:ForgivingAim::SearchUnits;
+    const float length=contactOnly?1.f:ForgivingAim::SearchUnits;
     const float wide=forgivingTan*length;
-    const float radius=contactOnly?length:(wide>minRadius?wide:minRadius);
+    const float radius=contactOnly?contactShell:(wide>minRadius?wide:minRadius);
     alignas(16) unsigned char hits[0x80*32];
     alignas(16) float position[4]{origin[0]+dir[0]*length*.5f,origin[1]+dir[1]*length*.5f,origin[2]+dir[2]*length*.5f,1.f};
     if(contactOnly){if(!hand)return false;position[0]=hand[0];position[1]=hand[1];position[2]=hand[2];}
@@ -2372,7 +2373,8 @@ bool ForgivingQueryRaw(void* self,const float* origin,const float* dir,float min
             if(hand&&contactReach>0) {
                 const float hx=position2[0]-hand[0],hy=position2[1]-hand[1],hz=position2[2]-hand[2];
                 const float d2=std::sqrt(hx*hx+hy*hy+hz*hz);
-                if(std::isfinite(d2)&&d2<=contactReach*ForgivingAim::ContactKeep&&d2<=reach)handDistance=d2;
+                const float measured=contactOnly?ForgivingAim::ContactDistance(contactShell,d2):d2;
+                if(std::isfinite(measured)&&measured<=contactReach*ForgivingAim::ContactKeep&&measured<=reach)handDistance=measured;
             }
             if(!usable) {
                 if(handDistance>=ForgivingAim::NoContact)continue;
@@ -2381,6 +2383,7 @@ bool ForgivingQueryRaw(void* self,const float* origin,const float* dir,float min
             bool merged=false;
             for(unsigned j=0;j<count;j++)if(out[j].owner==reinterpret_cast<uintptr_t>(owner)) {
                 merged=true;
+                if(handDistance<out[j].handDistance){out[j].handDistance=handDistance;out[j].object=reinterpret_cast<uintptr_t>(object);}
                 if(score<out[j].score){out[j].score=score;out[j].point[0]=point[0];out[j].point[1]=point[1];out[j].point[2]=point[2];}
             }
             if(merged)continue;
@@ -2422,7 +2425,12 @@ void ForgivingSummary(uint64_t now) {
 // The items at the hand first, so a crowded room cannot push them out of the list.
 bool ForgivingSearch(void* self,const ForgivingAim::Frame& f,const float* hand,ForgivingAim::Candidate* out,unsigned& count) {
     count=0;
-    if(handContactExact&&hand&&f.contactReach>0&&!ForgivingQueryRaw(self,f.origin,f.dir,f.minRadius,hand,f.contactReach,out,count,true))return false;
+    if(handContactExact&&hand&&f.contactReach>0) {
+        for(float share:ForgivingAim::ContactShells) {
+            if(!ForgivingQueryRaw(self,f.origin,f.dir,f.minRadius,hand,f.contactReach,out,count,f.contactReach*share))return false;
+            if(!count)break; // nothing within the largest sphere
+        }
+    }
     return ForgivingQueryRaw(self,f.origin,f.dir,f.minRadius,hand,f.contactReach,out,count);
 }
 void ForgivingBegin(void* self) {

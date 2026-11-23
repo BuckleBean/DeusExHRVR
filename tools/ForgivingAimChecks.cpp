@@ -21,6 +21,10 @@ static const float* Go(Selector& s,const Candidate* l,unsigned n,const Frame& f,
     auto t=s.BeginUpdate(now,false);if(!t.search)s.BeginUpdate(now,false);return s.Update(l,n,f,now,press);
 }
 static void ContactChecks() {
+    Check(std::abs(ContactDistance(9,120)-27)<1e-3f,"hand on the far end of a long item counts as touching it");
+    Check(ContactDistance(9,6)==6,"a small item is never farther than its own position");
+    Check(ContactDistance(9,20)<ContactDistance(9,240),"an item in a locker beats the locker when the hand is at both");
+    Check(ContactDistance(22.5f,40)<ContactDistance(9,240),"an item a few inches away still beats a locker wall under the hand");
     Frame f=Aim(0);f.contactReach=45;
     const float x20[3]{20,0,300},x10[3]{10,0,300};
     {Selector s;Candidate l[2]{T(1,40,10),T(2,12,20)};const auto* p=Go(s,l,2,f,1000);

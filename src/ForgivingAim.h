@@ -27,6 +27,17 @@ inline constexpr float SearchUnits=948.15f;  // longest interaction reach seen i
 inline constexpr float NoContact=1e30f;
 inline constexpr float ContactKeep=1.4f;     // a touched object stays until the hand is this much further
 inline constexpr float ContactSwitchMargin=.1f; // another touched object takes over once closer by this share of the reach (1.5 cm at 15 cm)
+// Touching is measured by the game's own collision search: small spheres at the hand,
+// as shares of the contact distance, largest first. An object found in a sphere has its
+// shape within that radius of the hand, wherever on the object the hand is.
+inline constexpr float ContactShells[4]={1.4f,1.f,.5f,.2f};
+// Part of the distance to the object's own position still counts, so an item in a locker
+// beats the large locker around it when the hand is at both.
+inline constexpr float ContactPositionWeight=.15f;
+inline float ContactDistance(float shell,float position) {
+    const float surface=shell+position*ContactPositionWeight;
+    return surface<position?surface:position;
+}
 inline constexpr float ContactBackMetres=.15f; // the game's check starts behind the hand, never inside the object
 
 struct Candidate {uintptr_t owner{};float point[3]{};float score{};float handDistance=NoContact;float contactPoint[3]{};uintptr_t object{};};
