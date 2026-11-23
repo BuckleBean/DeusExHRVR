@@ -24,6 +24,7 @@
 #include "DirectionConfig.h"
 #include "ThrowAim.h"
 #include "CarriedThrowAim.h"
+#include "ParticleRoll.h"
 #include "ProjectileAim.h"
 #include "NativeBounds.h"
 #include "SceneCache.h"
@@ -5632,6 +5633,102 @@ bool Match(const CameraMath::Matrix& viewport,const CameraMath::Matrix& player) 
     }
     return true;
 }
+bool particleRollFix{};
+using ParticleJob=void(__thiscall*)(void*);
+ParticleJob originalParticleJob{};
+// [VR] ParticleRollLog=1: DeusExHRVR-particle-roll.log, replaced each launch, one summary
+// line a second at most, 3600 lines at most. Off by default.
+bool particleRollLog{},particleLogStarted{};
+std::atomic<unsigned> particleJobs{},particleApplied{},particleTilted{},particleTiltedApplied{},
+    particleNoMatch{},particleNotLevel{},particleInactive{},particleMaxRot{},particleMaxPos{},particleLogLines{};
+std::atomic<uint64_t> particleNextLog{};
+void ParticleLogLine(const char* text) {
+    FILE* f{};
+    if(fopen_s(&f,"DeusExHRVR-particle-roll.log",particleLogStarted?"a":"w"))return;
+    particleLogStarted=true;
+    fprintf(f,"%llu %s\n",GetTickCount64(),text);fclose(f);
+}
+void ParticleKeepMax(std::atomic<unsigned>& slot,unsigned value) {
+    auto seen=slot.load(std::memory_order_relaxed);
+    while(value>seen&&!slot.compare_exchange_weak(seen,value,std::memory_order_relaxed)){}
+}
+void ParticleLogFlush() {
+    const auto now=GetTickCount64();
+    auto next=particleNextLog.load(std::memory_order_relaxed);
+    if(now<next||!particleNextLog.compare_exchange_strong(next,now+1000))return;
+    const auto jobs=particleJobs.exchange(0),applied=particleApplied.exchange(0),tilted=particleTilted.exchange(0),
+        tiltedApplied=particleTiltedApplied.exchange(0),noMatch=particleNoMatch.exchange(0),notLevel=particleNotLevel.exchange(0),
+        inactive=particleInactive.exchange(0),maxRot=particleMaxRot.exchange(0),maxPos=particleMaxPos.exchange(0);
+    if(!jobs||particleLogLines.load()>=3600)return;
+    ++particleLogLines;
+    char line[220]{};
+    sprintf_s(line,"jobs=%u applied=%u tilted=%u tiltedApplied=%u noMatch=%u notLevel=%u inactive=%u maxRotGap=%.3f maxPosGap=%.1f",
+        jobs,applied,tilted,tiltedApplied,noMatch,notLevel,inactive,maxRot*.001,maxPos*.1);
+    ParticleLogLine(line);
+}
+void __fastcall ParticleJobHook(void* self,void*) {
+    // Each worker owns its job descriptor. Never modify the shared params:
+    // the scheduler stores their pointer, rather than copying their contents.
+    auto& params=*reinterpret_cast<unsigned char**>(static_cast<unsigned char*>(self)+0x1b0);
+    auto saved=params;
+    alignas(16) unsigned char local[0x150];
+    bool apply=false;
+    if(particleRollFix&&saved) {
+        auto basis=CameraMath::Load(saved+0x90);
+        bool active=false,matched=false;float rotGap=0,posGap=0;
+        {
+            std::lock_guard lock(stateMutex);
+            active=requested&&current.active&&!screenReasons;
+            matched=active&&Match(basis,current.world);
+            if(particleRollLog&&active)ParticleRoll::MatchGap(basis.m,current.world.m,rotGap,posGap);
+        }
+        apply=matched;
+        if(apply) {
+            memcpy(local,saved,sizeof(local));
+            apply=ParticleRoll::Level(reinterpret_cast<float*>(local+0x90));
+            if(apply)params=local;
+        }
+        if(particleRollLog) {
+            const bool tilted=ParticleRoll::Tilted(basis.m);
+            ++particleJobs;
+            if(tilted)++particleTilted;
+            if(apply){++particleApplied;if(tilted)++particleTiltedApplied;}
+            else if(!active)++particleInactive;
+            else if(!matched)++particleNoMatch;
+            else ++particleNotLevel;
+            if(active) {
+                ParticleKeepMax(particleMaxRot,unsigned(std::min(rotGap,1000.f)*1000.f));
+                ParticleKeepMax(particleMaxPos,unsigned(std::min(posGap,10000.f)*10.f));
+            }
+            ParticleLogFlush();
+        }
+    }
+    originalParticleJob(self);
+    if(apply)params=saved;
+}
+void InstallParticleRollFix() {
+    wchar_t path[MAX_PATH]{};GetFullPathNameW(L"DeusExHRVR.ini",MAX_PATH,path,nullptr);
+    if(!GetPrivateProfileIntW(L"VR",L"ParticleRollFix",1,path))return;
+    const bool wantLog=GetPrivateProfileIntW(L"VR",L"ParticleRollLog",0,path)!=0;
+    auto target=reinterpret_cast<void*>(VA(0x5a1b30));
+    const unsigned char bytes[]={0x55,0x8b,0xec,0x83,0xe4,0xf0,0x81,0xec,0x34,0x05,0,0};
+    if(memcmp(target,bytes,sizeof(bytes))) {
+        if(wantLog)ParticleLogLine("not installed: game code did not match");
+        return;
+    }
+    if(MH_CreateHook(target,(void*)&ParticleJobHook,(void**)&originalParticleJob)!=MH_OK) {
+        if(wantLog)ParticleLogLine("not installed: hook could not be created");
+        return;
+    }
+    particleRollLog=wantLog;
+    particleRollFix=true;
+    if(MH_EnableHook(target)!=MH_OK) {
+        particleRollFix=false;particleRollLog=false;MH_RemoveHook(target);
+        if(wantLog)ParticleLogLine("not installed: hook could not be enabled");
+        return;
+    }
+    if(wantLog)ParticleLogLine("installed");
+}
 void* __fastcall CreateHook(void* self,void*,void* viewport,void* target,void* depth,void* source,void* sourceDepth,uint32_t flags) {
     Snapshot snapshot;
     {std::lock_guard lock(stateMutex);snapshot=current;}
@@ -6150,6 +6247,7 @@ void Install() {
     if(!enabled)for(auto& h:hooks){MH_DisableHook((void*)VA(h.address));MH_RemoveHook((void*)VA(h.address));}
 #if defined(_M_IX86)
     if(enabled)InstallInteractionProbes();
+    if(enabled)InstallParticleRollFix();
     if(enabled)InstallQuickBarHooks();
     if(enabled)InstallTakedownHooks();
     if(enabled)InstallScreenHooks(); // after, and independent of, the camera hooks

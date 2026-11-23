@@ -1,4 +1,11 @@
 [VR]
+; Keep camera-facing particle axes level with world up when tilting your head.
+; Experimental: haze/bonfire coverage needs headset testing. Does not change the view.
+; 0 restores native particle orientation. Restart to apply.
+ParticleRollFix=1
+; 1 writes DeusExHRVR-particle-roll.log: one summary line a second at most, replaced
+; each launch. 0 (default) writes nothing. Restart to apply.
+ParticleRollLog=0
 ; Walking input response: 0 = Normal (default), 1 = Gentle, 2 = Gentler.
 ; Gentler spreads moderate input across the middle stick range, rising to full output near the edge.
 ; Gentle reduces partial locomotion input after native deadzone processing,
