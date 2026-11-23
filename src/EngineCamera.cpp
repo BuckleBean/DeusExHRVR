@@ -2017,6 +2017,12 @@ bool forgivingAimEnabled{};
 bool leftHandInteract{}; // [VR] LeftHandInteract=0 keeps interaction on the right hand only
 // [VR] HandContactInteract=0 turns off choosing the item at your hand; HandContactCm is the distance.
 bool handContact{};float handContactMetres=.15f;
+// [VR] HandContactExact=0: no separate search at the hand, and the game's check may
+// settle on a neighbouring item instead of the one the hand is on.
+bool handContactExact{};
+thread_local uintptr_t contactHitObject{};
+thread_local uintptr_t contactTouching[32]{};
+thread_local unsigned contactTouchingCount{};
 // [VR] InteractionFromHand=0 goes back to the controller's aim pose;
 // InteractionHandTiltDegrees tilts the empty hand's line toward the palm.
 bool interactionFromHand{};float interactionHandTilt=15.f;
@@ -2119,6 +2125,16 @@ InteractionEvent originalInteractionEvent{};
 void* __cdecl InteractionResolveHook(void* object,void** descriptor){
     auto caller=reinterpret_cast<uintptr_t>(_ReturnAddress());
     auto frame=static_cast<const unsigned char*>(_AddressOfReturnAddress())+3*sizeof(void*);
+    // The hand is on an item and the game's line met a neighbour that is also at the
+    // hand: count it as the item the hand is on. Walls, and anything else not at the
+    // hand, still stop the line as usual.
+    if(contactHitObject&&object&&reinterpret_cast<uintptr_t>(object)!=contactHitObject&&
+       (caller==base+0x68a100-0x400000||caller==base+0x68a2b5-0x400000||caller==base+0x68a3b5-0x400000)) {
+        void* hitDescriptor{};
+        const auto hitOwner=reinterpret_cast<uintptr_t>(originalInteractionResolve(object,&hitDescriptor));
+        for(unsigned i=0;hitOwner&&i<contactTouchingCount;i++)
+            if(contactTouching[i]==hitOwner){object=reinterpret_cast<void*>(contactHitObject);break;}
+    }
     auto result=originalInteractionResolve(object,descriptor);
     if(interactionSample.active&&interactionSample.count<4&&
        (caller==base+0x68a100-0x400000||caller==base+0x68a2b5-0x400000)){
@@ -2192,6 +2208,7 @@ void InstallInteractionProbes(){
     leftHandInteract=GetPrivateProfileIntW(L"VR",L"LeftHandInteract",1,diagConfig)!=0;
     leftCarryThrow=leftHandInteract&&GetPrivateProfileIntW(L"VR",L"LeftHandCarryThrow",1,diagConfig)!=0;
     handContact=GetPrivateProfileIntW(L"VR",L"HandContactInteract",1,diagConfig)!=0;
+    handContactExact=handContact&&GetPrivateProfileIntW(L"VR",L"HandContactExact",1,diagConfig)!=0;
     {
         wchar_t contactText[32]{};GetPrivateProfileStringW(L"VR",L"HandContactCm",L"15",contactText,32,diagConfig);
         const float cm=float(_wtof(contactText));
@@ -2224,6 +2241,7 @@ void InstallInteractionProbes(){
         return at[0]==0xe8&&reinterpret_cast<uintptr_t>(at+5)+relative==reinterpret_cast<uintptr_t>(resolve);
     };
     match=match&&checkCall(0x68a0fb)&&checkCall(0x68a2b0);
+    handContactExact=handContactExact&&checkCall(0x68a3b0);
     bool madeResolve=false,madeEvent=false;
     if(match){
         madeResolve=MH_CreateHook(resolve,(void*)&InteractionResolveHook,(void**)&originalInteractionResolve)==MH_OK;
@@ -2281,8 +2299,9 @@ uintptr_t VA(uintptr_t preferred);
 // capsule shape, flags and hit layout, with a wider capsule along the aim line.
 // Game thread, inside the interaction update. No C++ objects with destructors
 // here, so a fault inside a game call is caught and reported.
-bool ForgivingQueryRaw(void* self,const float* origin,const float* dir,float minRadius,const float* hand,float contactReach,ForgivingAim::Candidate* out,unsigned& count) {
-    count=0;
+// Adds to `out`. contactOnly searches a small space around the hand, because the game
+// returns at most 32 hits and the wide search can fill them in a crowded room.
+bool ForgivingQueryRaw(void* self,const float* origin,const float* dir,float minRadius,const float* hand,float contactReach,ForgivingAim::Candidate* out,unsigned& count,bool contactOnly=false) {
     using Alloc=void*(__thiscall*)(uintptr_t);
     using Release=void(__thiscall*)(uintptr_t,void*);
     using SetByte=void(__thiscall*)(void*,int);
@@ -2295,11 +2314,12 @@ bool ForgivingQueryRaw(void* self,const float* origin,const float* dir,float min
     using Resolve=void*(__cdecl*)(void*,void**);
     uintptr_t world{};void* shape{};bool filterSet{},ownerSet{};uintptr_t savedFilter{};
     auto* ownerSlot=reinterpret_cast<uintptr_t*>(VA(0x00e9aa34));
-    const float length=ForgivingAim::SearchUnits;
+    const float length=contactOnly?contactReach*ForgivingAim::ContactKeep:ForgivingAim::SearchUnits;
     const float wide=forgivingTan*length;
-    const float radius=wide>minRadius?wide:minRadius;
+    const float radius=contactOnly?length:(wide>minRadius?wide:minRadius);
     alignas(16) unsigned char hits[0x80*32];
     alignas(16) float position[4]{origin[0]+dir[0]*length*.5f,origin[1]+dir[1]*length*.5f,origin[2]+dir[2]*length*.5f,1.f};
+    if(contactOnly){if(!hand)return false;position[0]=hand[0];position[1]=hand[1];position[2]=hand[2];}
     alignas(16) const float identity[4]{0,0,0,1.f};
     alignas(16) const float axis[4]{0,0,1.f,0};
     alignas(16) const float toward[4]{dir[0],dir[1],dir[2],0};
@@ -2365,7 +2385,7 @@ bool ForgivingQueryRaw(void* self,const float* origin,const float* dir,float min
             }
             if(merged)continue;
             auto& c=out[count++];
-            c.owner=reinterpret_cast<uintptr_t>(owner);c.score=score;
+            c.owner=reinterpret_cast<uintptr_t>(owner);c.object=reinterpret_cast<uintptr_t>(object);c.score=score;
             c.point[0]=point[0];c.point[1]=point[1];c.point[2]=point[2];
             c.handDistance=handDistance;
             c.contactPoint[0]=position2[0];c.contactPoint[1]=position2[1];c.contactPoint[2]=position2[2];
@@ -2399,8 +2419,15 @@ void ForgivingSummary(uint64_t now) {
         fclose(f);
     }
 }
+// The items at the hand first, so a crowded room cannot push them out of the list.
+bool ForgivingSearch(void* self,const ForgivingAim::Frame& f,const float* hand,ForgivingAim::Candidate* out,unsigned& count) {
+    count=0;
+    if(handContactExact&&hand&&f.contactReach>0&&!ForgivingQueryRaw(self,f.origin,f.dir,f.minRadius,hand,f.contactReach,out,count,true))return false;
+    return ForgivingQueryRaw(self,f.origin,f.dir,f.minRadius,hand,f.contactReach,out,count);
+}
 void ForgivingBegin(void* self) {
     forgivingRayActive=false;forgivingSelected=0;forgivingSteering=false;
+    contactHitObject=0;contactTouchingCount=0;
     const auto setting=interactionAim.load();
     const bool twoHands=leftHandInteract&&setting==DirectionConfig::Source::Controller;
     const auto now=GetTickCount64();
@@ -2423,7 +2450,7 @@ void ForgivingBegin(void* self) {
     float palm[3]{};bool havePalm=contactOn&&HandPosition(turn.hand!=0,palm);
     frame.contactReach=havePalm?handContactMetres*scale:0.f;
     ForgivingAim::Candidate list[32]{};unsigned count{};
-    if(turn.search&&!ForgivingQueryRaw(self,frame.origin,frame.dir,frame.minRadius,havePalm?palm:nullptr,frame.contactReach,list,count)) {
+    if(turn.search&&!ForgivingSearch(self,frame,havePalm?palm:nullptr,list,count)) {
         forgivingSelector.Reset();
         if(++forgivingFaults>=3) {
             forgivingAimEnabled=false;
@@ -2443,7 +2470,7 @@ void ForgivingBegin(void* self) {
             otherFrame.contactReach=handContactMetres*scale;
             ForgivingAim::Candidate otherList[32]{};unsigned otherCount{};
             if(ForgivingAim::Normalize(otherFrame.dir)&&
-               ForgivingQueryRaw(self,otherFrame.origin,otherFrame.dir,otherFrame.minRadius,otherPalm,otherFrame.contactReach,otherList,otherCount)&&
+               ForgivingSearch(self,otherFrame,otherPalm,otherList,otherCount)&&
                forgivingSelector.HasContact(otherList,otherCount,otherFrame.contactReach,now)) {
                 forgivingSelector.UseHand(other);
                 aim=otherAim;frame=otherFrame;count=otherCount;havePalm=true;
@@ -2455,6 +2482,13 @@ void ForgivingBegin(void* self) {
     const float* point=forgivingSelector.Update(list,count,frame,now,GamepadBridge::InteractionHeld(now));
     const auto& stats=forgivingSelector.GetStats();
     if(stats.refused!=forgivingLoggedRefused){forgivingLoggedRefused=stats.refused;ForgivingRefusedLog(stats.lastRefused);}
+    if(handContactExact&&point&&forgivingSelector.AimingContact()) {
+        const auto target=forgivingSelector.ContactOwner();
+        for(unsigned i=0;i<count;i++) {
+            if(list[i].owner==target)contactHitObject=list[i].object;
+            if(list[i].handDistance<ForgivingAim::NoContact)contactTouching[contactTouchingCount++]=list[i].owner;
+        }
+    }
     float contactOrigin[3]{};
     const float* rayOrigin=frame.origin;
     if(point&&havePalm&&forgivingSelector.AimingContact()&&ForgivingAim::BackedOrigin(palm,point,ForgivingAim::ContactBackMetres*scale,contactOrigin))rayOrigin=contactOrigin;
@@ -2479,6 +2513,7 @@ void ForgivingEnd() {
     forgivingLastEnd=now;
     ForgivingSummary(now);
     forgivingRayActive=false;
+    contactHitObject=0;contactTouchingCount=0;
 }
 void __fastcall SenseUpdateHook(void* self,void*,float dt) {
     auto previous=senseQueries;

@@ -26,10 +26,10 @@ inline constexpr float SearchUnits=948.15f;  // longest interaction reach seen i
 // Measured to the object's own position, so a small item in a locker beats the large locker.
 inline constexpr float NoContact=1e30f;
 inline constexpr float ContactKeep=1.4f;     // a touched object stays until the hand is this much further
-inline constexpr float ContactSwitch=.7f;    // another touched object must be this much closer to take over
+inline constexpr float ContactSwitchMargin=.1f; // another touched object takes over once closer by this share of the reach (1.5 cm at 15 cm)
 inline constexpr float ContactBackMetres=.15f; // the game's check starts behind the hand, never inside the object
 
-struct Candidate {uintptr_t owner{};float point[3]{};float score{};float handDistance=NoContact;float contactPoint[3]{};};
+struct Candidate {uintptr_t owner{};float point[3]{};float score{};float handDistance=NoContact;float contactPoint[3]{};uintptr_t object{};};
 struct Frame {float origin[3]{};float dir[3]{};float tanCone{};float minRadius{};float contactReach{};};
 struct Turn {int hand{};bool search{};};
 struct Stats {unsigned wobblesHeld{},released{},lost{},refused{},switches{};uintptr_t lastRefused{};};
@@ -110,12 +110,17 @@ class Selector {
     bool ShouldTake(const Candidate* closest,const Candidate* mine,float reach) const {
         if(!closest||closest->owner==held)return false;
         const bool touching=mine&&mine->handDistance<=reach*ContactKeep;
-        return !touching||closest->handDistance<mine->handDistance*ContactSwitch;
+        return !touching||closest->handDistance<mine->handDistance-reach*ContactSwitchMargin;
     }
     void DropHeld(){held=0;heldHand=0;outsideSince=0;switchOwner=0;switchSince=0;heldContact=false;}
 public:
     void Reset(){DropHeld();attempt[0]={};attempt[1]={};attemptSince[0]=attemptSince[1]=0;attemptContact[0]=attemptContact[1]=false;contactAim=false;lastSelected=0;}
     bool AimingContact() const {return contactAim;}
+    // The object this update's check is meant for when the hand is on it, or 0.
+    uintptr_t ContactOwner() const {
+        if(!contactAim)return 0;
+        return attemptContact[turn.hand]?attempt[turn.hand].owner:heldContact?held:0;
+    }
     // The other hand is at an object that should take over from the one being held.
     bool HasContact(const Candidate* list,unsigned count,float reach,uint64_t now) const {
         return ShouldTake(NearestToHand(list,count,reach,now),Find(list,count,held),reach);

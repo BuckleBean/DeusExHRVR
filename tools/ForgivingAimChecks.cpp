@@ -31,6 +31,10 @@ static void ContactChecks() {
     {Selector s;Candidate first=T(1,30,10);const auto* p=Go(s,&first,1,f,1000);s.NoteSelection(1,p,1000);Candidate a[2]{T(1,30,10),T(2,28,20)};
      p=Go(s,a,2,f,1020);Check(At(p,x10)&&s.Held()==1,"two items about equally close: the selection does not flicker");s.NoteSelection(1,p,1020);
      Candidate b[2]{T(1,30,10),T(2,15,20)};p=Go(s,b,2,f,1040);Check(At(p,x20),"clearly closer to another item: it takes over");}
+    {Selector s;Candidate first=T(1,27,10);const auto* p=Go(s,&first,1,f,1000);Check(s.ContactOwner()==1,"the touched item is named for the game's check");s.NoteSelection(1,p,1000);
+     Candidate a[2]{T(1,27,10),T(2,22,20)};p=Go(s,a,2,f,1020);Check(At(p,x20)&&s.ContactOwner()==2,"moving onto a neighbour 5 units closer takes over at once");}
+    {Selector s;Candidate first=T(1,27,10);const auto* p=Go(s,&first,1,f,1000);s.NoteSelection(1,p,1000);
+     Candidate a[2]{T(1,27,10),T(2,23,20)};p=Go(s,a,2,f,1020);Check(At(p,x10)&&s.Held()==1,"less than 1.5 cm closer: no flicker");}
     {Selector s;Candidate locker=C(9,.1f);Go(s,&locker,1,f,1000);s.NoteSelection(9,P,1000);Candidate l[2]{locker,T(2,10,20)};
      const auto* p=Go(s,l,2,f,1020);Check(At(p,x20),"an item at the hand takes over from the locker at once");}
     {Selector s;Candidate a=T(1,20,10);const auto* p=Go(s,&a,1,f,1000);s.NoteSelection(1,p,1000);Candidate l[2]{a,T(2,5,20)};

@@ -22,7 +22,9 @@ inline const wchar_t* Label(uint32_t m){return m==Off?L"OFF":m==Right?L"RIGHT HA
 inline constexpr float RangeMetres=10.f;
 // One texture, two cells: right hand cyan, left hand amber.
 inline constexpr uint32_t Cell=64,AtlasWidth=Cell*2;
-inline float Width(float distance){return distance*.02f;}
+// Small up close, and never wider than 5 cm however far away the line lands.
+inline constexpr float MaxWidthMetres=.05f;
+inline float Width(float distance){const float w=distance*.015f;return w<MaxWidthMetres?w:MaxWidthMetres;}
 inline std::vector<uint32_t> Pixels() {
     std::vector<uint32_t> pixels(AtlasWidth*Cell);
     const uint32_t colours[2]={0xffffdc28u,0xff00aaffu};

@@ -21,6 +21,8 @@ int main() {
     auto p=Pixels();Check(p.size()==AtlasWidth*Cell,"texture size");
     Check(p[0]==0&&p[Cell]==0,"transparent corners");
     Check(p[31*AtlasWidth+31]!=p[31*AtlasWidth+Cell+31]&&(p[31*AtlasWidth+31]>>24)==255,"each hand has its colour");
+    Check(std::abs(Width(1)-.015f)<1e-5f&&Width(3)<MaxWidthMetres,"small up close");
+    Check(Width(10)==MaxWidthMetres&&Width(100)==MaxWidthMetres,"never grows past the limit");
     // The line, against the same grip axes that place the visible hand.
     CameraMath::Matrix game{};game.m[0]=1;game.m[6]=-1;game.m[9]=1;game.m[15]=1;game.m[12]=10;game.m[13]=20;game.m[14]=30;
     Transport::Pose reference{{0,0,0,1},{0,0,0}};
