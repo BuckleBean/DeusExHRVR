@@ -2,6 +2,7 @@
 #include "NativeCover.h"
 #include "CoverCrosshair.h"
 #include "HandPointer.h"
+#include <cstdarg>
 #include "CeilingGuard.h"
 #include "TwoHandAttach.h"
 #include "TwoHandSteer.h"
@@ -2081,11 +2082,12 @@ thread_local bool forgivingRayActive{};
 thread_local uintptr_t forgivingSelected{};
 thread_local float forgivingSelectedPoint[3]{};
 thread_local CameraMath::Matrix forgivingRay;
-unsigned forgivingFaults{},forgivingLogged{},forgivingLoggedRefused{};
-uintptr_t forgivingLastSelected{},forgivingLastCleared{};
-uint64_t forgivingClearedAt{},forgivingNextSummary{},forgivingHeldMs{},forgivingLastEnd{};
-unsigned forgivingPrompts{},forgivingSteered{},forgivingPlain{},forgivingClears{},forgivingBlinks{};
-bool forgivingSteering{};
+unsigned forgivingFaults{};
+// [VR] InteractionFromEye=0 asks the game only from the hand.
+bool interactionFromEye{};
+// What the game's line met in this update, for the interaction log.
+thread_local bool pathHitSeen{};
+thread_local uintptr_t pathHitOwner{};
 // The barrel's line while a gun is in the right hand; written once a frame by
 // UpdateHandPointers so the interaction search makes no extra engine calls.
 CameraMath::Matrix barrelLine; // stateMutex
@@ -2128,14 +2130,16 @@ void* __cdecl InteractionResolveHook(void* object,void** descriptor){
     // The hand is on an item and the game's line met a neighbour that is also at the
     // hand: count it as the item the hand is on. Walls, and anything else not at the
     // hand, still stop the line as usual.
-    if(contactHitObject&&object&&reinterpret_cast<uintptr_t>(object)!=contactHitObject&&
-       (caller==base+0x68a100-0x400000||caller==base+0x68a2b5-0x400000||caller==base+0x68a3b5-0x400000)) {
+    const bool lineSite=caller==base+0x68a100-0x400000||caller==base+0x68a2b5-0x400000||caller==base+0x68a3b5-0x400000;
+    uintptr_t lineOwner{};bool swapped=false;
+    if(contactHitObject&&object&&reinterpret_cast<uintptr_t>(object)!=contactHitObject&&lineSite) {
         void* hitDescriptor{};
-        const auto hitOwner=reinterpret_cast<uintptr_t>(originalInteractionResolve(object,&hitDescriptor));
-        for(unsigned i=0;hitOwner&&i<contactTouchingCount;i++)
-            if(contactTouching[i]==hitOwner){object=reinterpret_cast<void*>(contactHitObject);break;}
+        lineOwner=reinterpret_cast<uintptr_t>(originalInteractionResolve(object,&hitDescriptor));
+        for(unsigned i=0;lineOwner&&i<contactTouchingCount;i++)
+            if(contactTouching[i]==lineOwner){object=reinterpret_cast<void*>(contactHitObject);swapped=true;break;}
     }
     auto result=originalInteractionResolve(object,descriptor);
+    if(lineSite&&senseQueries){pathHitSeen=true;pathHitOwner=swapped?lineOwner:reinterpret_cast<uintptr_t>(result);}
     if(interactionSample.active&&interactionSample.count<4&&
        (caller==base+0x68a100-0x400000||caller==base+0x68a2b5-0x400000)){
         auto& hit=interactionSample.hits[interactionSample.count++];
@@ -2205,6 +2209,7 @@ void InstallInteractionProbes(){
     interactionDiagLog=GetPrivateProfileIntW(L"VR",L"InteractionDiagnosticLog",0,diagConfig)!=0;
     forgivingAimEnabled=GetPrivateProfileIntW(L"VR",L"ForgivingAim",1,diagConfig)!=0;
     forgivingAimLog=GetPrivateProfileIntW(L"VR",L"ForgivingAimLog",0,diagConfig)!=0;
+    interactionFromEye=GetPrivateProfileIntW(L"VR",L"InteractionFromEye",1,diagConfig)!=0;
     leftHandInteract=GetPrivateProfileIntW(L"VR",L"LeftHandInteract",1,diagConfig)!=0;
     leftCarryThrow=leftHandInteract&&GetPrivateProfileIntW(L"VR",L"LeftHandCarryThrow",1,diagConfig)!=0;
     handContact=GetPrivateProfileIntW(L"VR",L"HandContactInteract",1,diagConfig)!=0;
@@ -2402,25 +2407,40 @@ bool ForgivingQueryRaw(void* self,const float* origin,const float* dir,float min
     } __except(EXCEPTION_EXECUTE_HANDLER) {ok=false;}
     return ok;
 }
-void ForgivingRefusedLog(uintptr_t owner) {
-    if(!forgivingAimLog||forgivingLogged>=100)return;
-    ++forgivingLogged;
-    FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")){
-        fprintf(f,"forgiving aim refused tick=%llu target=%p\n",GetTickCount64(),reinterpret_cast<void*>(owner));fclose(f);
-    }
+// [VR] ForgivingAimLog=1: DeusExHRVR-interaction-path.log, replaced each launch, at
+// most 4000 lines. One line when the selection changes, and one for each kind of miss.
+unsigned pathLogLines{};bool pathLogStarted{};
+uintptr_t pathLastSelected{},pathLastMissOwner{},pathLastMissHit{};
+int pathLastMissKind{-1};bool pathLastMissEye{};uint64_t pathLastMissAt{};
+float pathEye[3]{},pathScale{1};
+void PathLog(const char* format,...) {
+    if(!forgivingAimLog||pathLogLines>=4000)return;
+    FILE* f{};
+    if(fopen_s(&f,"DeusExHRVR-interaction-path.log",pathLogStarted?"a":"w"))return;
+    pathLogStarted=true;++pathLogLines;
+    fprintf(f,"%llu ",GetTickCount64());
+    va_list args;va_start(args,format);vfprintf(f,format,args);va_end(args);
+    fputc('\n',f);fclose(f);
 }
-// One short line every 10 seconds at most, only when there was activity. A blink
-// is a prompt that cleared and came back on the same object within a second.
-void ForgivingSummary(uint64_t now) {
-    if(!forgivingAimLog||now<forgivingNextSummary)return;
-    forgivingNextSummary=now+10000;
-    if(!forgivingPrompts&&!forgivingClears)return;
-    const auto& s=forgivingSelector.GetStats();
-    FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")){
-        fprintf(f,"forgiving aim summary tick=%llu prompts=%u plain=%u nearMiss=%u cleared=%u blinks=%u heldMs=%llu wobblesHeld=%u released=%u lost=%u refused=%u switches=%u\n",
-            now,forgivingPrompts,forgivingPlain,forgivingSteered,forgivingClears,forgivingBlinks,forgivingHeldMs,s.wobblesHeld,s.released,s.lost,s.refused,s.switches);
-        fclose(f);
+void PathResult(const ForgivingAim::Plan& plan,uintptr_t selected,uint64_t now) {
+    const char* hand=plan.hand?"left":"right";
+    const char* via=!plan.aimed?"line":plan.touch?"touch":"point";
+    if(selected!=pathLastSelected) {
+        if(selected)PathLog("selected item=%p hand=%s via=%s from=%s",reinterpret_cast<void*>(selected),hand,via,plan.aimed?(plan.fromEye?"eye":"hand"):"hand");
+        else PathLog("cleared item=%p",reinterpret_cast<void*>(pathLastSelected));
+        pathLastSelected=selected;
     }
+    if(!plan.aimed||selected==plan.owner)return;
+    // 0 the line met nothing usable, 1 it met the target and the game's rules declined, 2 it met another item
+    const int kind=!pathHitSeen||!pathHitOwner?0:pathHitOwner==plan.owner?1:2;
+    if(kind==pathLastMissKind&&plan.owner==pathLastMissOwner&&plan.fromEye==pathLastMissEye&&pathHitOwner==pathLastMissHit&&now-pathLastMissAt<500)return;
+    pathLastMissKind=kind;pathLastMissOwner=plan.owner;pathLastMissEye=plan.fromEye;pathLastMissHit=pathHitOwner;pathLastMissAt=now;
+    const float dx=plan.point[0]-pathEye[0],dy=plan.point[1]-pathEye[1],dz=plan.point[2]-pathEye[2];
+    const float eyeCm=std::sqrt(dx*dx+dy*dy+dz*dz)/pathScale*100.f;
+    static const char* const why[3]={"line met nothing usable","game rules declined it","line met another item"};
+    PathLog("miss item=%p hand=%s via=%s from=%s eyeCm=%.0f touching=%u result=%s other=%p selectedInstead=%p",
+        reinterpret_cast<void*>(plan.owner),hand,via,plan.fromEye?"eye":"hand",eyeCm,contactTouchingCount,why[kind],
+        reinterpret_cast<void*>(kind==2?pathHitOwner:0),reinterpret_cast<void*>(selected));
 }
 // The items at the hand first, so a crowded room cannot push them out of the list.
 bool ForgivingSearch(void* self,const ForgivingAim::Frame& f,const float* hand,ForgivingAim::Candidate* out,unsigned& count) {
@@ -2433,93 +2453,81 @@ bool ForgivingSearch(void* self,const ForgivingAim::Frame& f,const float* hand,F
     }
     return ForgivingQueryRaw(self,f.origin,f.dir,f.minRadius,hand,f.contactReach,out,count);
 }
+// One decision per update. See ForgivingAim.h.
 void ForgivingBegin(void* self) {
-    forgivingRayActive=false;forgivingSelected=0;forgivingSteering=false;
-    contactHitObject=0;contactTouchingCount=0;
+    forgivingRayActive=false;forgivingSelected=0;
+    contactHitObject=0;contactTouchingCount=0;pathHitSeen=false;pathHitOwner=0;
+    forgivingSelector.ClearPlan();
     const auto setting=interactionAim.load();
     const bool twoHands=leftHandInteract&&setting==DirectionConfig::Source::Controller;
     const auto now=GetTickCount64();
-    const auto turn=forgivingSelector.BeginUpdate(now,twoHands);
-    const auto source=turn.hand?DirectionConfig::Source::LeftController:setting;
-    CameraMath::Matrix aim{};float scale{};
+    float scale{};
     {
-        // A left controller that is not tracking must not disturb the right hand.
-        if(!InteractionLine(source,aim)){if(!turn.hand||forgivingSelector.Held())forgivingSelector.Reset();return;}
         std::lock_guard lock(stateMutex);
         if(coverCamera.held){forgivingSelector.Reset();return;}
         scale=current.scale;
     }
-    ForgivingAim::Frame frame{};
-    for(int i=0;i<3;i++){frame.dir[i]=aim.m[8+i];frame.origin[i]=aim.m[12+i];}
-    if(!ForgivingAim::Normalize(frame.dir)||!std::isfinite(frame.origin[0])||!std::isfinite(frame.origin[1])||!std::isfinite(frame.origin[2])||!std::isfinite(scale)||scale<=0){forgivingSelector.Reset();return;}
-    frame.tanCone=forgivingTan;frame.minRadius=ForgivingAim::MinRadiusMetres*scale;
-    // Hand contact needs the hands to be what is doing the aiming.
+    if(!std::isfinite(scale)||scale<=0){forgivingSelector.Reset();return;}
     const bool contactOn=handContact&&setting==DirectionConfig::Source::Controller;
-    float palm[3]{};bool havePalm=contactOn&&HandPosition(turn.hand!=0,palm);
-    frame.contactReach=havePalm?handContactMetres*scale:0.f;
-    ForgivingAim::Candidate list[32]{};unsigned count{};
-    if(turn.search&&!ForgivingSearch(self,frame,havePalm?palm:nullptr,list,count)) {
-        forgivingSelector.Reset();
-        if(++forgivingFaults>=3) {
-            forgivingAimEnabled=false;
-            FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")){fprintf(f,"forgiving aim turned off after %u failed searches\n",forgivingFaults);fclose(f);}
-        }
-        return;
-    }
-    // While one hand holds a selection, look at the other hand every second update.
-    static unsigned contactPeek{};
-    if(contactOn&&twoHands&&turn.search&&forgivingSelector.Held()&&!GamepadBridge::InteractionHeld(now)&&(++contactPeek&1)) {
-        const int other=1-turn.hand;
-        const auto otherSource=other?DirectionConfig::Source::LeftController:setting;
-        CameraMath::Matrix otherAim{};float otherPalm[3]{};
-        if(InteractionLine(otherSource,otherAim)&&HandPosition(other!=0,otherPalm)) {
-            ForgivingAim::Frame otherFrame=frame;
-            for(int i=0;i<3;i++){otherFrame.dir[i]=otherAim.m[8+i];otherFrame.origin[i]=otherAim.m[12+i];}
-            otherFrame.contactReach=handContactMetres*scale;
-            ForgivingAim::Candidate otherList[32]{};unsigned otherCount{};
-            if(ForgivingAim::Normalize(otherFrame.dir)&&
-               ForgivingSearch(self,otherFrame,otherPalm,otherList,otherCount)&&
-               forgivingSelector.HasContact(otherList,otherCount,otherFrame.contactReach,now)) {
-                forgivingSelector.UseHand(other);
-                aim=otherAim;frame=otherFrame;count=otherCount;havePalm=true;
-                for(int i=0;i<3;i++)palm[i]=otherPalm[i];
-                for(unsigned i=0;i<otherCount;i++)list[i]=otherList[i];
+    CameraMath::Matrix lines[2]{};
+    ForgivingAim::Candidate lists[2][32]{};
+    ForgivingAim::HandInput hands[2]{};
+    float palms[2][3]{};bool havePalm[2]{};
+    for(int i=0;i<(twoHands?2:1);i++) {
+        // A hand that is not tracking simply takes no part.
+        if(!InteractionLine(i?DirectionConfig::Source::LeftController:setting,lines[i]))continue;
+        auto& frame=hands[i].frame;
+        for(int j=0;j<3;j++){frame.dir[j]=lines[i].m[8+j];frame.origin[j]=lines[i].m[12+j];}
+        if(!ForgivingAim::Normalize(frame.dir)||!std::isfinite(frame.origin[0])||!std::isfinite(frame.origin[1])||!std::isfinite(frame.origin[2]))continue;
+        frame.tanCone=forgivingTan;frame.minRadius=ForgivingAim::MinRadiusMetres*scale;
+        havePalm[i]=contactOn&&HandPosition(i!=0,palms[i]);
+        frame.contactReach=havePalm[i]?handContactMetres*scale:0.f;
+        unsigned count{};
+        if(!ForgivingSearch(self,frame,havePalm[i]?palms[i]:nullptr,lists[i],count)) {
+            forgivingSelector.Reset();
+            if(++forgivingFaults>=3) {
+                forgivingAimEnabled=false;
+                FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")){fprintf(f,"forgiving aim turned off after %u failed searches\n",forgivingFaults);fclose(f);}
             }
+            return;
+        }
+        hands[i].list=lists[i];hands[i].count=count;hands[i].valid=true;
+    }
+    if(!hands[0].valid&&!hands[1].valid){forgivingSelector.Reset();return;}
+    ForgivingAim::ViewInput view{};
+    {
+        CameraMath::Matrix head{};
+        if(DirectionWorld(DirectionConfig::Source::Headset,head)) {
+            for(int j=0;j<3;j++){view.eye[j]=head.m[12+j];view.forward[j]=head.m[8+j];}
+            view.valid=ForgivingAim::Normalize(view.forward)&&std::isfinite(view.eye[0])&&std::isfinite(view.eye[1])&&std::isfinite(view.eye[2]);
+            view.eyeAllowed=interactionFromEye;
         }
     }
-    const float* point=forgivingSelector.Update(list,count,frame,now,GamepadBridge::InteractionHeld(now));
-    const auto& stats=forgivingSelector.GetStats();
-    if(stats.refused!=forgivingLoggedRefused){forgivingLoggedRefused=stats.refused;ForgivingRefusedLog(stats.lastRefused);}
-    if(handContactExact&&point&&forgivingSelector.AimingContact()) {
-        const auto target=forgivingSelector.ContactOwner();
-        for(unsigned i=0;i<count;i++) {
-            if(list[i].owner==target)contactHitObject=list[i].object;
-            if(list[i].handDistance<ForgivingAim::NoContact)contactTouching[contactTouchingCount++]=list[i].owner;
+    const auto& plan=forgivingSelector.Update(hands,view,now,GamepadBridge::InteractionHeld(now));
+    pathScale=scale;for(int j=0;j<3;j++)pathEye[j]=view.eye[j];
+    const auto& line=lines[plan.hand];
+    forgivingRay=line;forgivingRayActive=true;
+    if(!plan.aimed)return;
+    if(handContactExact&&plan.touch) {
+        for(int h=0;h<2;h++)for(unsigned i=0;hands[h].valid&&i<hands[h].count;i++) {
+            const auto& c=lists[h][i];
+            if(h==plan.hand&&c.owner==plan.owner)contactHitObject=c.object;
+            if(c.handDistance<ForgivingAim::NoContact&&contactTouchingCount<32)contactTouching[contactTouchingCount++]=c.owner;
         }
     }
-    float contactOrigin[3]{};
-    const float* rayOrigin=frame.origin;
-    if(point&&havePalm&&forgivingSelector.AimingContact()&&ForgivingAim::BackedOrigin(palm,point,ForgivingAim::ContactBackMetres*scale,contactOrigin))rayOrigin=contactOrigin;
-    if(point&&ForgivingAim::RayMatrix(aim,rayOrigin,point,forgivingRay)){forgivingRayActive=true;forgivingSteering=true;}
-    else if(turn.hand||interactionFromHand){forgivingRay=aim;forgivingRayActive=true;}
+    float backed[3]{};
+    const float* origin=hands[plan.hand].frame.origin;
+    if(plan.fromEye)origin=view.eye;
+    else if(plan.touch&&havePalm[plan.hand]&&ForgivingAim::BackedOrigin(palms[plan.hand],plan.point,ForgivingAim::ContactBackMetres*scale,backed))origin=backed;
+    CameraMath::Matrix aimed;
+    if(ForgivingAim::RayMatrix(line,origin,plan.point,aimed))forgivingRay=aimed;
 }
 void ForgivingEnd() {
     const auto now=GetTickCount64();
     const auto selected=forgivingSelected;
-    forgivingSelector.NoteSelection(selected,forgivingSelectedPoint,now);
+    if(forgivingAimLog)PathResult(forgivingSelector.LastPlan(),selected,now);
+    forgivingSelector.Note(selected,forgivingSelectedPoint,now);
     leftPromptTick.store(selected&&forgivingSelector.HeldHand()==1?now:0,std::memory_order_relaxed);
-    if(selected&&forgivingLastSelected&&forgivingLastEnd&&now>forgivingLastEnd&&now-forgivingLastEnd<1000)forgivingHeldMs+=now-forgivingLastEnd;
-    if(selected!=forgivingLastSelected) {
-        if(selected) {
-            ++forgivingPrompts;
-            if(forgivingSteering)++forgivingSteered;else ++forgivingPlain;
-            if(selected==forgivingLastCleared&&now-forgivingClearedAt<1000)++forgivingBlinks;
-        }
-        if(forgivingLastSelected&&!selected){++forgivingClears;forgivingLastCleared=forgivingLastSelected;forgivingClearedAt=now;}
-        forgivingLastSelected=selected;
-    }
-    forgivingLastEnd=now;
-    ForgivingSummary(now);
     forgivingRayActive=false;
     contactHitObject=0;contactTouchingCount=0;
 }

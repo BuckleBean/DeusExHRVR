@@ -139,10 +139,14 @@ HandGripClose=1
 ; your aim, and a prompt stays through small hand movements. The game's own range and
 ; rules still apply. Needs InteractionAim=Controller. 0 turns it off. ForgivingAimDegrees
 ; is the width of the cone around the aim line. ForgivingAimLog=1 writes troubleshooting
-; lines to the log. Restart after editing.
+; lines to DeusExHRVR-interaction-path.log, replaced at each launch. Restart after editing.
 ForgivingAim=1
 ForgivingAimDegrees=15
 ForgivingAimLog=0
+; The game is asked about the chosen item from your headset, then from your hand, so its
+; visibility check matches what you can see. 0 asks only from the hand. Your hand still
+; chooses the item. Restart after editing.
+InteractionFromEye=1
 ; Interaction line from the visible hand: an empty hand points from the palm along the
 ; fingers, tilted InteractionHandTiltDegrees toward the palm (-30 to 60, default 15). A
 ; hand holding a gun points along the barrel. Needs ForgivingAim=1. InteractionFromHand=0
