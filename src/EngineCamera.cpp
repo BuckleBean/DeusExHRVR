@@ -1973,6 +1973,17 @@ bool DirectionWorld(DirectionConfig::Source source,CameraMath::Matrix& result,Ca
     result=CameraMath::HeadWorld(baseWorld,reference,aim->aim,current.scale);
     return true;
 }
+// The visible palm in world space (the grip pose the hand model is aligned to).
+bool HandPosition(bool left,float* out) {
+    std::lock_guard lock(stateMutex);
+    const auto now=GetTickCount64();
+    const auto& grip=left?current.tracking.leftGrip:current.tracking.rightGrip;
+    if(!motionControls||!requested||!current.active||screenReasons||!grip.valid||now<current.tracking.tick||now-current.tracking.tick>=250)return false;
+    const auto baseWorld=(current.nativeHeading||coverCamera.held)?current.controllerBase:RenderBase(current.originalWorld);
+    const auto world=CameraMath::HeadWorld(baseWorld,reference,grip.pose,current.scale);
+    for(int i=0;i<3;i++){out[i]=world.m[12+i];if(!std::isfinite(out[i]))return false;}
+    return true;
+}
 // Cover aiming (November 16): the gun stays in Jensen's hands, the right
 // controller aims. One frame, the controller's own pointing ray in the game's
 // camera axes (row 2 forward, row 3 position), is given to the gun's shot
@@ -2001,6 +2012,8 @@ bool interactionProbesReady{};
 // off; ForgivingAimDegrees sets the cone around the aim line (default 15).
 bool forgivingAimEnabled{};
 bool leftHandInteract{}; // [VR] LeftHandInteract=0 keeps interaction on the right hand only
+// [VR] HandContactInteract=0 turns off choosing the item at your hand; HandContactCm is the distance.
+bool handContact{};float handContactMetres=.15f;
 std::atomic<uint64_t> leftPromptTick{};
 // [VR] LeftHandCarryThrow=0 keeps the throw on the right trigger.
 bool leftCarryThrow{};
@@ -2146,6 +2159,12 @@ void InstallInteractionProbes(){
     forgivingAimLog=GetPrivateProfileIntW(L"VR",L"ForgivingAimLog",0,diagConfig)!=0;
     leftHandInteract=GetPrivateProfileIntW(L"VR",L"LeftHandInteract",1,diagConfig)!=0;
     leftCarryThrow=leftHandInteract&&GetPrivateProfileIntW(L"VR",L"LeftHandCarryThrow",1,diagConfig)!=0;
+    handContact=GetPrivateProfileIntW(L"VR",L"HandContactInteract",1,diagConfig)!=0;
+    {
+        wchar_t contactText[32]{};GetPrivateProfileStringW(L"VR",L"HandContactCm",L"15",contactText,32,diagConfig);
+        const float cm=float(_wtof(contactText));
+        if(std::isfinite(cm)&&cm>=5.f&&cm<=40.f)handContactMetres=cm*.01f;
+    }
     twoHandedWeapons=GetPrivateProfileIntW(L"VR",L"TwoHandedWeapons",1,diagConfig)!=0;
     twoHandedLog=twoHandedWeapons&&GetPrivateProfileIntW(L"VR",L"TwoHandedWeaponsLog",0,diagConfig)!=0;
     twoHandedAim=twoHandedWeapons&&GetPrivateProfileIntW(L"VR",L"TwoHandedAim",1,diagConfig)!=0;
@@ -2224,7 +2243,7 @@ uintptr_t VA(uintptr_t preferred);
 // capsule shape, flags and hit layout, with a wider capsule along the aim line.
 // Game thread, inside the interaction update. No C++ objects with destructors
 // here, so a fault inside a game call is caught and reported.
-bool ForgivingQueryRaw(void* self,const float* origin,const float* dir,float minRadius,ForgivingAim::Candidate* out,unsigned& count) {
+bool ForgivingQueryRaw(void* self,const float* origin,const float* dir,float minRadius,const float* hand,float contactReach,ForgivingAim::Candidate* out,unsigned& count) {
     count=0;
     using Alloc=void*(__thiscall*)(uintptr_t);
     using Release=void(__thiscall*)(uintptr_t,void*);
@@ -2290,7 +2309,17 @@ bool ForgivingQueryRaw(void* self,const float* origin,const float* dir,float min
             if(ForgivingAim::Score(origin,dir,position2,reach,forgivingTan,minRadius,score2)&&(!usable||score2<score)) {
                 point=position2;score=score2;usable=true;
             }
-            if(!usable)continue;
+            // Hand contact is measured to the object's own position.
+            float handDistance=ForgivingAim::NoContact;
+            if(hand&&contactReach>0) {
+                const float hx=position2[0]-hand[0],hy=position2[1]-hand[1],hz=position2[2]-hand[2];
+                const float d2=std::sqrt(hx*hx+hy*hy+hz*hz);
+                if(std::isfinite(d2)&&d2<=contactReach*ForgivingAim::ContactKeep&&d2<=reach)handDistance=d2;
+            }
+            if(!usable) {
+                if(handDistance>=ForgivingAim::NoContact)continue;
+                point=position2;score=1e6f;
+            }
             bool merged=false;
             for(unsigned j=0;j<count;j++)if(out[j].owner==reinterpret_cast<uintptr_t>(owner)) {
                 merged=true;
@@ -2300,6 +2329,8 @@ bool ForgivingQueryRaw(void* self,const float* origin,const float* dir,float min
             auto& c=out[count++];
             c.owner=reinterpret_cast<uintptr_t>(owner);c.score=score;
             c.point[0]=point[0];c.point[1]=point[1];c.point[2]=point[2];
+            c.handDistance=handDistance;
+            c.contactPoint[0]=position2[0];c.contactPoint[1]=position2[1];c.contactPoint[2]=position2[2];
         }
         ok=true;
     } __except(EXCEPTION_EXECUTE_HANDLER) {ok=false;}
@@ -2349,8 +2380,12 @@ void ForgivingBegin(void* self) {
     for(int i=0;i<3;i++){frame.dir[i]=aim.m[8+i];frame.origin[i]=aim.m[12+i];}
     if(!ForgivingAim::Normalize(frame.dir)||!std::isfinite(frame.origin[0])||!std::isfinite(frame.origin[1])||!std::isfinite(frame.origin[2])||!std::isfinite(scale)||scale<=0){forgivingSelector.Reset();return;}
     frame.tanCone=forgivingTan;frame.minRadius=ForgivingAim::MinRadiusMetres*scale;
+    // Hand contact needs the hands to be what is doing the aiming.
+    const bool contactOn=handContact&&setting==DirectionConfig::Source::Controller;
+    float palm[3]{};bool havePalm=contactOn&&HandPosition(turn.hand!=0,palm);
+    frame.contactReach=havePalm?handContactMetres*scale:0.f;
     ForgivingAim::Candidate list[32]{};unsigned count{};
-    if(turn.search&&!ForgivingQueryRaw(self,frame.origin,frame.dir,frame.minRadius,list,count)) {
+    if(turn.search&&!ForgivingQueryRaw(self,frame.origin,frame.dir,frame.minRadius,havePalm?palm:nullptr,frame.contactReach,list,count)) {
         forgivingSelector.Reset();
         if(++forgivingFaults>=3) {
             forgivingAimEnabled=false;
@@ -2358,10 +2393,34 @@ void ForgivingBegin(void* self) {
         }
         return;
     }
+    // While one hand holds a selection, look at the other hand every second update.
+    static unsigned contactPeek{};
+    if(contactOn&&twoHands&&turn.search&&forgivingSelector.Held()&&!GamepadBridge::InteractionHeld(now)&&(++contactPeek&1)) {
+        const int other=1-turn.hand;
+        const auto otherSource=other?DirectionConfig::Source::LeftController:setting;
+        CameraMath::Matrix otherAim{};float otherPalm[3]{};
+        if(DirectionWorld(otherSource,otherAim)&&HandPosition(other!=0,otherPalm)) {
+            ForgivingAim::Frame otherFrame=frame;
+            for(int i=0;i<3;i++){otherFrame.dir[i]=otherAim.m[8+i];otherFrame.origin[i]=otherAim.m[12+i];}
+            otherFrame.contactReach=handContactMetres*scale;
+            ForgivingAim::Candidate otherList[32]{};unsigned otherCount{};
+            if(ForgivingAim::Normalize(otherFrame.dir)&&
+               ForgivingQueryRaw(self,otherFrame.origin,otherFrame.dir,otherFrame.minRadius,otherPalm,otherFrame.contactReach,otherList,otherCount)&&
+               forgivingSelector.HasContact(otherList,otherCount,otherFrame.contactReach,now)) {
+                forgivingSelector.UseHand(other);
+                aim=otherAim;frame=otherFrame;count=otherCount;havePalm=true;
+                for(int i=0;i<3;i++)palm[i]=otherPalm[i];
+                for(unsigned i=0;i<otherCount;i++)list[i]=otherList[i];
+            }
+        }
+    }
     const float* point=forgivingSelector.Update(list,count,frame,now,GamepadBridge::InteractionHeld(now));
     const auto& stats=forgivingSelector.GetStats();
     if(stats.refused!=forgivingLoggedRefused){forgivingLoggedRefused=stats.refused;ForgivingRefusedLog(stats.lastRefused);}
-    if(point&&ForgivingAim::RayMatrix(aim,frame.origin,point,forgivingRay)){forgivingRayActive=true;forgivingSteering=true;}
+    float contactOrigin[3]{};
+    const float* rayOrigin=frame.origin;
+    if(point&&havePalm&&forgivingSelector.AimingContact()&&ForgivingAim::BackedOrigin(palm,point,ForgivingAim::ContactBackMetres*scale,contactOrigin))rayOrigin=contactOrigin;
+    if(point&&ForgivingAim::RayMatrix(aim,rayOrigin,point,forgivingRay)){forgivingRayActive=true;forgivingSteering=true;}
     else if(turn.hand){forgivingRay=aim;forgivingRayActive=true;}
 }
 void ForgivingEnd() {

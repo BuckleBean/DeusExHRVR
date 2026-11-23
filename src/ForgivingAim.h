@@ -22,9 +22,15 @@ inline constexpr uint64_t BlockMs=1500;      // how long a refused object is lef
 inline constexpr uint64_t GapMs=200;         // no updates this long (a screen): start fresh
 inline constexpr float MinRadiusMetres=.15f; // the cone never gets narrower than this up close
 inline constexpr float SearchUnits=948.15f;  // longest interaction reach seen in this game
+// Hand contact (November 22): a usable object at the hand wins, whichever way the hand points.
+// Measured to the object's own position, so a small item in a locker beats the large locker.
+inline constexpr float NoContact=1e30f;
+inline constexpr float ContactKeep=1.4f;     // a touched object stays until the hand is this much further
+inline constexpr float ContactSwitch=.7f;    // another touched object must be this much closer to take over
+inline constexpr float ContactBackMetres=.15f; // the game's check starts behind the hand, never inside the object
 
-struct Candidate {uintptr_t owner{};float point[3]{};float score{};};
-struct Frame {float origin[3]{};float dir[3]{};float tanCone{};float minRadius{};};
+struct Candidate {uintptr_t owner{};float point[3]{};float score{};float handDistance=NoContact;float contactPoint[3]{};};
+struct Frame {float origin[3]{};float dir[3]{};float tanCone{};float minRadius{};float contactReach{};};
 struct Turn {int hand{};bool search{};};
 struct Stats {unsigned wobblesHeld{},released{},lost{},refused{},switches{};uintptr_t lastRefused{};};
 
@@ -62,6 +68,7 @@ class Selector {
     uintptr_t held{};int heldHand{};float heldPoint[3]{};uint64_t lastSelected{},outsideSince{};
     uintptr_t switchOwner{};uint64_t switchSince{};
     Candidate attempt[2]{};uint64_t attemptSince[2]{};
+    bool attemptContact[2]{},heldContact{},contactAim{};
     uint64_t lastUpdate{};unsigned phase{3};Turn turn{};
     Stats stats{};
     bool Blocked(uintptr_t owner,uint64_t now) const {
@@ -84,9 +91,36 @@ class Selector {
         }
         return best;
     }
-    void DropHeld(){held=0;heldHand=0;outsideSince=0;switchOwner=0;switchSince=0;}
+    const Candidate* NearestToHand(const Candidate* list,unsigned count,float reach,uint64_t now) const {
+        if(!(reach>0))return nullptr;
+        const Candidate* best=nullptr;
+        for(unsigned i=0;i<count;i++) {
+            const auto& c=list[i];
+            if(!c.owner||!std::isfinite(c.handDistance)||c.handDistance>reach||Blocked(c.owner,now))continue;
+            if(!best||c.handDistance<best->handDistance)best=&c;
+        }
+        return best;
+    }
+    const float* StartContact(const Candidate& c,int hand,uint64_t now) {
+        auto& a=attempt[hand];a=c;
+        a.point[0]=c.contactPoint[0];a.point[1]=c.contactPoint[1];a.point[2]=c.contactPoint[2];
+        attemptContact[hand]=true;attemptSince[hand]=now;contactAim=true;
+        return a.point;
+    }
+    bool ShouldTake(const Candidate* closest,const Candidate* mine,float reach) const {
+        if(!closest||closest->owner==held)return false;
+        const bool touching=mine&&mine->handDistance<=reach*ContactKeep;
+        return !touching||closest->handDistance<mine->handDistance*ContactSwitch;
+    }
+    void DropHeld(){held=0;heldHand=0;outsideSince=0;switchOwner=0;switchSince=0;heldContact=false;}
 public:
-    void Reset(){DropHeld();attempt[0]={};attempt[1]={};attemptSince[0]=attemptSince[1]=0;lastSelected=0;}
+    void Reset(){DropHeld();attempt[0]={};attempt[1]={};attemptSince[0]=attemptSince[1]=0;attemptContact[0]=attemptContact[1]=false;contactAim=false;lastSelected=0;}
+    bool AimingContact() const {return contactAim;}
+    // The other hand is at an object that should take over from the one being held.
+    bool HasContact(const Candidate* list,unsigned count,float reach,uint64_t now) const {
+        return ShouldTake(NearestToHand(list,count,reach,now),Find(list,count,held),reach);
+    }
+    void UseHand(int hand){turn.hand=hand;}
     uintptr_t Held() const {return held;}
     int HeldHand() const {return heldHand;}
     const Stats& GetStats() const {return stats;}
@@ -104,9 +138,24 @@ public:
     const float* Update(const Candidate* list,unsigned count,const Frame& f,uint64_t now,bool interactHeld) {
         if(!list){Reset();return nullptr;}
         const int hand=turn.hand;
+        contactAim=false;
+        const auto* closest=turn.search?NearestToHand(list,count,f.contactReach,now):nullptr;
         if(held) {
-            if(interactHeld){outsideSince=0;switchOwner=0;return heldPoint;}
+            if(interactHeld){outsideSince=0;switchOwner=0;contactAim=heldContact;return heldPoint;}
             if(now-lastSelected>LostMs){AddBlock(held,now);++stats.lost;DropHeld();return nullptr;}
+            if(f.contactReach>0) {
+                const auto* mine=Find(list,count,held);
+                if(ShouldTake(closest,mine,f.contactReach)) {
+                    const Candidate target=*closest;
+                    DropHeld();
+                    return StartContact(target,hand,now);
+                }
+                if(mine&&mine->handDistance<=f.contactReach*ContactKeep) {
+                    outsideSince=0;switchOwner=0;heldContact=true;contactAim=true;
+                    return heldPoint;
+                }
+                heldContact=false;
+            }
             const float off=OffAxis(f.origin,f.dir,heldPoint,f.tanCone,f.minRadius);
             if(off>ReleaseScore) {
                 if(!outsideSince)outsideSince=now;
@@ -125,6 +174,11 @@ public:
         }
         if(!turn.search)return nullptr;
         auto& a=attempt[hand];
+        if(closest) {
+            if(!attemptContact[hand]||a.owner!=closest->owner)return StartContact(*closest,hand,now);
+            if(now-attemptSince[hand]<=RejectMs){contactAim=true;return a.point;}
+            AddBlock(a.owner,now);++stats.refused;stats.lastRefused=a.owner;a={};attemptContact[hand]=false;
+        } else if(attemptContact[hand]){a={};attemptContact[hand]=false;}
         if(a.owner) {
             const auto* same=Find(list,count,a.owner);
             if(!same)a={};
@@ -142,13 +196,26 @@ public:
     // What the game selected in the update that just ran (owner 0 = nothing).
     void NoteSelection(uintptr_t owner,const float* point,uint64_t now) {
         if(!owner||!point)return;
-        if(owner!=held){const int hand=turn.hand;DropHeld();held=owner;heldHand=hand;}
+        const int turnHand=turn.hand;
+        const bool aimedContact=contactAim&&attemptContact[turnHand]&&attempt[turnHand].owner;
+        // The game chose something else on the way to the touched object: try that one later.
+        if(aimedContact&&attempt[turnHand].owner!=owner){AddBlock(attempt[turnHand].owner,now);++stats.refused;stats.lastRefused=attempt[turnHand].owner;}
+        const bool byContact=aimedContact&&attempt[turnHand].owner==owner;
+        if(owner!=held){DropHeld();held=owner;heldHand=turnHand;heldContact=byContact;}
+        else if(byContact)heldContact=true;
         heldPoint[0]=point[0];heldPoint[1]=point[1];heldPoint[2]=point[2];
         lastSelected=now;
-        attempt[0]={};attempt[1]={};attemptSince[0]=attemptSince[1]=0;
+        attempt[0]={};attempt[1]={};attemptSince[0]=attemptSince[1]=0;attemptContact[0]=attemptContact[1]=false;
     }
 };
 
+// Where the game's check starts for a touched object: just behind the hand, on the line to it.
+inline bool BackedOrigin(const float* hand,const float* target,float back,float* out) {
+    float v[3]{target[0]-hand[0],target[1]-hand[1],target[2]-hand[2]};
+    if(!Normalize(v)||!std::isfinite(back))return false;
+    for(int i=0;i<3;i++)out[i]=hand[i]-v[i]*back;
+    return true;
+}
 // A rigid camera matrix with the same axis layout and handedness as `hint`:
 // row 2 forward (origin to target), row 3 position.
 inline bool RayMatrix(const CameraMath::Matrix& hint,const float* origin,const float* target,CameraMath::Matrix& out) {

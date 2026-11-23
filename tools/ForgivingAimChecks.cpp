@@ -16,7 +16,41 @@ static bool At(const float* p,const float* q){return p&&std::abs(p[0]-q[0])<1e-4
 static const float* Step(Selector& s,const Candidate* l,unsigned n,const Frame& f,uint64_t now,bool held) {
     s.BeginUpdate(now,false);return s.Update(l,n,f,now,held);
 }
+static Candidate T(uintptr_t owner,float hand,float x){Candidate c{};c.owner=owner;c.score=1e6f;c.handDistance=hand;c.point[0]=c.contactPoint[0]=x;c.point[2]=c.contactPoint[2]=300;return c;}
+static const float* Go(Selector& s,const Candidate* l,unsigned n,const Frame& f,uint64_t now,bool press=false) {
+    auto t=s.BeginUpdate(now,false);if(!t.search)s.BeginUpdate(now,false);return s.Update(l,n,f,now,press);
+}
+static void ContactChecks() {
+    Frame f=Aim(0);f.contactReach=45;
+    const float x20[3]{20,0,300},x10[3]{10,0,300};
+    {Selector s;Candidate l[2]{T(1,40,10),T(2,12,20)};const auto* p=Go(s,l,2,f,1000);
+     Check(At(p,x20)&&s.AimingContact(),"hand on a cluster picks the nearest item, whichever way it points");
+     s.NoteSelection(2,p,1000);Frame away=Aim(5);away.contactReach=45;bool kept=true;
+     for(uint64_t t=1020;t<2000;t+=20){const auto* q=Go(s,l,2,away,t);kept=kept&&s.Held()==2&&At(q,x20);s.NoteSelection(2,q,t);}
+     Check(kept,"a touched item stays selected while the hand stays on it");}
+    {Selector s;Candidate first=T(1,30,10);const auto* p=Go(s,&first,1,f,1000);s.NoteSelection(1,p,1000);Candidate a[2]{T(1,30,10),T(2,28,20)};
+     p=Go(s,a,2,f,1020);Check(At(p,x10)&&s.Held()==1,"two items about equally close: the selection does not flicker");s.NoteSelection(1,p,1020);
+     Candidate b[2]{T(1,30,10),T(2,15,20)};p=Go(s,b,2,f,1040);Check(At(p,x20),"clearly closer to another item: it takes over");}
+    {Selector s;Candidate locker=C(9,.1f);Go(s,&locker,1,f,1000);s.NoteSelection(9,P,1000);Candidate l[2]{locker,T(2,10,20)};
+     const auto* p=Go(s,l,2,f,1020);Check(At(p,x20),"an item at the hand takes over from the locker at once");}
+    {Selector s;Candidate a=T(1,20,10);const auto* p=Go(s,&a,1,f,1000);s.NoteSelection(1,p,1000);Candidate l[2]{a,T(2,5,20)};
+     p=Go(s,l,2,f,1020,true);Check(At(p,x10)&&s.Held()==1,"while Interact is held the selection never changes");}
+    {Selector s;Candidate a=T(3,10,5);Check(Go(s,&a,1,f,1000)!=nullptr,"touched item is tried");
+     Check(!Go(s,&a,1,f,1200),"if the game never accepts it, it is left out");Check(!Go(s,&a,1,f,1300),"and stays out for a moment");
+     Check(Go(s,&a,1,f,2800)!=nullptr,"then it can be tried again");}
+    {Selector s;Candidate a=T(3,10,5);const auto* p=Go(s,&a,1,f,1000);(void)p;s.NoteSelection(4,P,1000);
+     Check(s.Held()==4,"the game's own choice is respected");const auto* q=Go(s,&a,1,f,1020);Check(At(q,P)&&s.Held()==4,"and the refused item does not keep fighting it");}
+    {Frame off=Aim(0);Selector s;Candidate a=T(1,5,10);Check(!Go(s,&a,1,off,1000),"switched off, hand contact does nothing");}
+    {Selector s;Candidate a=T(1,50,10);Check(!Go(s,&a,1,f,1000),"an item beyond the contact distance is not touched");}
+    {Selector s;Candidate a=T(1,20,10);const auto* p=Go(s,&a,1,f,1000);s.NoteSelection(1,p,1000);Candidate b=T(1,60,10);p=Go(s,&b,1,f,1020);
+     Check(At(p,x10)&&s.AimingContact(),"small hand movements off a touched item keep it");}
+    {Selector s;Candidate a=T(1,20,10);const auto* p=Go(s,&a,1,f,1000);s.NoteSelection(1,p,1000);Candidate closest=T(2,8,20);
+     Check(s.HasContact(&closest,1,45,1010),"the other hand on an item can take over");Check(!s.HasContact(&a,1,45,1010),"not when it is at the same item");}
+    {const float hand[3]{0,0,0},target[3]{0,0,100};float o[3]{};Check(BackedOrigin(hand,target,45,o)&&std::abs(o[2]+45)<1e-4f,"the game's check starts behind the hand");
+     Check(!BackedOrigin(hand,hand,45,o),"a hand exactly at the point falls back to the normal aim");}
+}
 int main() {
+    ContactChecks();
     Candidate none[1]{};
     {
         float s{};const Frame f=Aim(0);
