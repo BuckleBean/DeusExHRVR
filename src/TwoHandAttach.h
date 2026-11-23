@@ -23,6 +23,18 @@ inline bool WeaponReady(bool known,uint32_t state,uint32_t pending,bool throwing
 inline bool Eligible(bool valid,bool sprinting,bool ready,bool attached,float spread) {
     return valid&&!sprinting&&ready&&(attached||Supported(spread));
 }
+// Weapon IDs are the value the game stores at weapon+0x58, read from each weapon's own
+// record in its *_equip game file (+0x124). The game's pose for these leaves the left hand
+// away from the gun.
+enum class Grip {Full,None};
+inline constexpr Grip GripFor(uint32_t key) {
+    switch(key) {
+    case 0x6AB8: // PEPS
+    case 0x50BE: // stun gun
+        return Grip::None;
+    default: return Grip::Full;
+    }
+}
 inline float SegmentDistance(const float* p,const float* a,const float* b) {
     float ab[3],ap[3],len=0,dot=0;
     for(int i=0;i<3;i++){ab[i]=b[i]-a[i];ap[i]=p[i]-a[i];len+=ab[i]*ab[i];dot+=ab[i]*ap[i];}

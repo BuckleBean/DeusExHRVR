@@ -3421,14 +3421,15 @@ float TwoHandStep(CameraMath::Matrix* palette,const std::array<bool,223>& select
         HandMeshDiagnostic::Read(heldWeapon,&weaponVtable,4)&&weaponVtable==base+0xab1944-0x400000&&
         HandMeshDiagnostic::Read(heldWeapon+0x50,&weaponState,4)&&
         HandMeshDiagnostic::Read(uintptr_t(holder)+0x1c,&pendingWeapon,4);
-    const bool ready=TwoHandAttach::WeaponReady(known,weaponState,pendingWeapon,throwAiming.load(),grabActive.load());
+    const auto weaponGrip=TwoHandAttach::GripFor(key);
+    const bool ready=weaponGrip!=TwoHandAttach::Grip::None&&TwoHandAttach::WeaponReady(known,weaponState,pendingWeapon,throwAiming.load(),grabActive.load());
     const bool eligible=TwoHandAttach::Eligible(valid,sprinting,ready,state.attached,spread);
     const bool inReach=valid&&!sprinting&&ready&&TwoHandAttach::Supported(spread)&&reach<=TwoHandAttach::GrabMetres*scale;
     if(inReach)leftNearWeaponTick.store(GetTickCount64(),std::memory_order_relaxed);
     {
         static thread_local bool gripWas{};
         const bool grip=leftGrip>.5f;
-        if(grip&&!gripWas&&weapon)TwoHandNote(!valid?"press: no weapon pose":!ready?"press: weapon not out":sprinting?"press: sprinting":
+        if(grip&&!gripWas&&weapon)TwoHandNote(!valid?"press: no weapon pose":weaponGrip==TwoHandAttach::Grip::None?"press: one-handed weapon":!ready?"press: weapon not out":sprinting?"press: sprinting":
             !TwoHandAttach::Supported(spread)?"press: weapon not supported":inReach?"press: on the gun":"press: too far from the gun",key,spread,reach,gap,weaponState,pendingWeapon);
         gripWas=grip;
     }

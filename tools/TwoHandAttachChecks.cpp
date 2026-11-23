@@ -6,6 +6,8 @@ using namespace TwoHandAttach;
 static int failures=0;
 static void Check(bool ok,const char* name){printf("%s %s\n",ok?"PASS":"FAIL",name);if(!ok)++failures;}
 int main() {
+    Check(GripFor(0x6AB8)==Grip::None&&GripFor(0x50BE)==Grip::None,"the PEPS and stun gun stay one-handed");
+    Check(GripFor(0x2D3B)==Grip::Full&&GripFor(0x72A2)==Grip::Full,"the shotgun and sniper rifle can be held two-handed");
     Check(Supported(120)&&!Supported(400)&&!Supported(2)&&!Supported(NAN),"a weapon qualifies only with the game's hands close together");
     {State s;Check(s.Update(1000,false,true,120,300)==0,"no grip: the hand stays free");
      const float a=s.Update(1010,true,true,120,300);Check(a>0&&a<1&&s.attached,"grip: it moves onto the weapon, not a jump");
