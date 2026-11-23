@@ -27,9 +27,10 @@ inline constexpr float NoContact=1e30f;
 inline constexpr float ContactKeep=1.4f;     // a touched object stays until the hand is this much further
 inline constexpr float ContactSwitchMargin=.1f; // another touched object takes over once closer by this share of the reach (1.5 cm at 15 cm)
 // Touching is measured by the game's own collision search: small spheres at the hand,
-// as shares of the contact distance, largest first. An object found in a sphere has its
+// as shares of the contact distance, smallest first. An object found in a sphere has its
 // shape within that radius of the hand, wherever on the object the hand is.
-inline constexpr float ContactShells[4]={1.4f,1.f,.5f,.2f};
+// Closest first; a large shell's filtered result cannot rule out a smaller shell.
+inline constexpr float ContactShells[4]={.2f,.5f,1.f,1.4f};
 // Part of the distance to the object's own position still counts, so an item in a locker
 // beats the large locker around it when the hand is at both.
 inline constexpr float ContactPositionWeight=.15f;
@@ -39,7 +40,30 @@ inline float ContactDistance(float shell,float position) {
 }
 inline constexpr float ContactBackMetres=.15f; // the game's check starts behind the hand, never inside the object
 
-struct Candidate {uintptr_t owner{};float point[3]{};float score{};float handDistance=NoContact;float contactPoint[3]{};uintptr_t object{};};
+struct Candidate {uintptr_t owner{};float point[3]{};float score{};float handDistance=NoContact;float contactPoint[3]{};};
+inline constexpr unsigned MaxCandidates=32;
+// Keep the best contacts before pointed candidates. Capacity limits insertion,
+// never refinement of an owner already found by a different shell or cone.
+inline bool BetterCandidate(const Candidate& a,const Candidate& b,float contactReach) {
+    const bool at=contactReach>0&&a.handDistance<=contactReach*ContactKeep;
+    const bool bt=contactReach>0&&b.handDistance<=contactReach*ContactKeep;
+    if(at!=bt)return at;
+    return at?a.handDistance<b.handDistance:a.score<b.score;
+}
+inline void MergeCandidate(Candidate* out,unsigned& count,const Candidate& c,float contactReach) {
+    for(unsigned i=0;i<count;i++)if(out[i].owner==c.owner) {
+        if(c.handDistance<out[i].handDistance) {
+            out[i].handDistance=c.handDistance;
+            for(int j=0;j<3;j++)out[i].contactPoint[j]=c.contactPoint[j];
+        }
+        if(c.score<out[i].score){out[i].score=c.score;for(int j=0;j<3;j++)out[i].point[j]=c.point[j];}
+        return;
+    }
+    if(count<MaxCandidates){out[count++]=c;return;}
+    unsigned worst=0;
+    for(unsigned i=1;i<count;i++)if(BetterCandidate(out[worst],out[i],contactReach))worst=i;
+    if(BetterCandidate(c,out[worst],contactReach))out[worst]=c;
+}
 struct Frame {float origin[3]{};float dir[3]{};float tanCone{};float minRadius{};float contactReach{};};
 struct Stats {unsigned wobblesHeld{},released{},lost{},switches{};};
 
@@ -87,7 +111,7 @@ class Selector {
     uintptr_t held{};int heldHand{};float heldPoint[3]{};uint64_t lastSelected{},outsideSince{};
     bool heldTouch{},heldFromEye{true},heldMissed{};
     uintptr_t switchOwner{};uint64_t switchSince{};
-    uintptr_t focusOwner{},firstOwner{};unsigned focusTries{},cursor{},plainTurns{};int plainHand{1};
+    uintptr_t focusOwner{},cycleOwners[MaxQueue]{};unsigned focusTries{},cycleCount{},cursor{},plainTurns{};int plainHand{1};
     Settle settled[4]{};unsigned nextSettle{};
     float planWhere[3]{},planEye[3]{};
     uint64_t lastUpdate{};Plan plan{};Stats stats{};
@@ -196,24 +220,27 @@ class Selector {
         return plan;
     }
     const Plan& Seek(const Entry* q,unsigned n,const HandInput* hands,const ViewInput& view) {
-        if(!n){cursor=0;plainTurns=0;focusOwner=0;focusTries=0;firstOwner=0;return Plain(hands,view);}
-        if(q[0].owner!=firstOwner){firstOwner=q[0].owner;cursor=0;plainTurns=0;focusOwner=0;focusTries=0;}
-        while(cursor<n) {
-            const auto& e=q[cursor];
-            if(e.owner==focusOwner&&focusTries>=MaxTries){++cursor;focusOwner=0;focusTries=0;continue;}
-            return Attempt(e,hands,view);
+        if(!n){cycleCount=cursor=plainTurns=focusTries=0;focusOwner=0;return Plain(hands,view);}
+        // Snapshot identities, not poses/ranks. Reordering cannot restart the cycle;
+        // every attempt still uses the current eligible candidate and tracked hand.
+        if(!cycleCount){cycleCount=n;for(unsigned i=0;i<n;i++)cycleOwners[i]=q[i].owner;}
+        while(cursor<cycleCount) {
+            const Entry* e=nullptr;
+            for(unsigned i=0;i<n;i++)if(q[i].owner==cycleOwners[cursor]){e=&q[i];break;}
+            if(!e||(e->owner==focusOwner&&focusTries>=MaxTries)){++cursor;focusOwner=0;focusTries=0;continue;}
+            return Attempt(*e,hands,view);
         }
         // Everything in line had its tries: give the plain lines a turn, then start over.
         const unsigned lines=(hands[0].valid?1u:0u)+(hands[1].valid?1u:0u);
         if(plainTurns<lines){++plainTurns;return Plain(hands,view);}
-        plainTurns=0;cursor=0;focusOwner=0;focusTries=0;
-        return Attempt(q[0],hands,view);
+        cycleCount=plainTurns=cursor=focusTries=0;focusOwner=0;
+        return Seek(q,n,hands,view);
     }
     void DropHeld(){held=0;heldHand=0;outsideSince=0;switchOwner=0;switchSince=0;heldTouch=false;heldMissed=false;heldFromEye=true;}
 public:
     void Reset() {
         DropHeld();plan={};lastSelected=0;
-        focusOwner=firstOwner=0;focusTries=cursor=plainTurns=0;
+        focusOwner=0;focusTries=cycleCount=cursor=plainTurns=0;
         for(auto& s:settled)s.owner=0;
     }
     void ClearPlan(){plan={};}
@@ -275,7 +302,7 @@ public:
         heldMissed=false;
         heldPoint[0]=point[0];heldPoint[1]=point[1];heldPoint[2]=point[2];
         lastSelected=now;
-        if(planned){focusOwner=0;focusTries=0;cursor=0;plainTurns=0;}
+        if(planned){focusOwner=0;focusTries=cycleCount=cursor=plainTurns=0;}
         else if(declined)AddSettle(plan.owner);
     }
 };

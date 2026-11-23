@@ -159,9 +159,10 @@ HandPointers=Both
 ; Hand contact: a usable item within HandContactCm of either hand (5 to 40, default 15) is
 ; selected whichever way the hand points, nearest first, so you can pick items out of a
 ; crowded locker. Everything farther away uses forgiving aim. Needs InteractionAim=Controller.
-; 0 turns it off. HandContactExact=1 measures to the item's surface, so any part of a long
-; item counts, and makes the item your hand is on win over a neighbour in the way; 0 turns
-; off only that part. Restart after editing.
+; 0 turns it off. HandContactExact=1 adds surface searches for long items, with a small
+; weight for distance to the item's centre. Native hits, reach and visibility still decide
+; selection: an obstructing neighbour is not replaced. 0 uses centre distance only.
+; Restart after editing.
 HandContactInteract=1
 HandContactExact=1
 HandContactCm=15

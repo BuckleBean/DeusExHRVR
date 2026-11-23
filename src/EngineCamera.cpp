@@ -2021,8 +2021,6 @@ bool handContact{};float handContactMetres=.15f;
 // [VR] HandContactExact=0: no separate search at the hand, and the game's check may
 // settle on a neighbouring item instead of the one the hand is on.
 bool handContactExact{};
-thread_local uintptr_t contactHitObject{};
-thread_local uintptr_t contactTouching[32]{};
 thread_local unsigned contactTouchingCount{};
 // [VR] InteractionFromHand=0 goes back to the controller's aim pose;
 // InteractionHandTiltDegrees tilts the empty hand's line toward the palm.
@@ -2116,7 +2114,11 @@ bool InteractionLine(DirectionConfig::Source source,CameraMath::Matrix& result) 
 }
 // The interaction ray: steered onto the chosen object, otherwise the setting's.
 bool InteractionWorld(CameraMath::Matrix& target,uintptr_t manager=0) {
-    if(!DirectionWorld(interactionAim,target,nullptr,manager))return false;
+    const auto source=forgivingRayActive&&forgivingSelector.LastPlan().hand==1?
+        DirectionConfig::Source::LeftController:interactionAim.load();
+    // Validate the selected hand, preserving DirectionWorld's shared game,
+    // freshness and manager guards even when using a prepared interaction ray.
+    if(!DirectionWorld(source,target,nullptr,manager))return false;
     if(forgivingRayActive)target=forgivingRay;
     return true;
 }
@@ -2127,19 +2129,11 @@ InteractionEvent originalInteractionEvent{};
 void* __cdecl InteractionResolveHook(void* object,void** descriptor){
     auto caller=reinterpret_cast<uintptr_t>(_ReturnAddress());
     auto frame=static_cast<const unsigned char*>(_AddressOfReturnAddress())+3*sizeof(void*);
-    // The hand is on an item and the game's line met a neighbour that is also at the
-    // hand: count it as the item the hand is on. Walls, and anything else not at the
-    // hand, still stop the line as usual.
+    // Observe the real hit only. Substituting a different physics object here
+    // leaves the caller's hit point and obstruction checks referring to the old one.
     const bool lineSite=caller==base+0x68a100-0x400000||caller==base+0x68a2b5-0x400000||caller==base+0x68a3b5-0x400000;
-    uintptr_t lineOwner{};bool swapped=false;
-    if(contactHitObject&&object&&reinterpret_cast<uintptr_t>(object)!=contactHitObject&&lineSite) {
-        void* hitDescriptor{};
-        lineOwner=reinterpret_cast<uintptr_t>(originalInteractionResolve(object,&hitDescriptor));
-        for(unsigned i=0;lineOwner&&i<contactTouchingCount;i++)
-            if(contactTouching[i]==lineOwner){object=reinterpret_cast<void*>(contactHitObject);swapped=true;break;}
-    }
     auto result=originalInteractionResolve(object,descriptor);
-    if(lineSite&&senseQueries){pathHitSeen=true;pathHitOwner=swapped?lineOwner:reinterpret_cast<uintptr_t>(result);}
+    if(lineSite&&senseQueries){pathHitSeen=true;pathHitOwner=reinterpret_cast<uintptr_t>(result);}
     if(interactionSample.active&&interactionSample.count<4&&
        (caller==base+0x68a100-0x400000||caller==base+0x68a2b5-0x400000)){
         auto& hit=interactionSample.hits[interactionSample.count++];
@@ -2354,7 +2348,7 @@ bool ForgivingQueryRaw(void* self,const float* origin,const float* dir,float min
         *ownerSlot=ownerValue;ownerSet=true;
         const int found=reinterpret_cast<Overlap>(VA(0x50f1c0))(world+0x10,hits,0x20,shape,1);
         *ownerSlot=0;ownerSet=false;
-        for(int i=0;i<found&&i<32&&count<32;i++) {
+        for(int i=0;i<found&&i<32;i++) {
             auto* hit=hits+0x80*i;
             void* object=*reinterpret_cast<void**>(hit+0x58);
             if(!object)continue;
@@ -2385,18 +2379,12 @@ bool ForgivingQueryRaw(void* self,const float* origin,const float* dir,float min
                 if(handDistance>=ForgivingAim::NoContact)continue;
                 point=position2;score=1e6f;
             }
-            bool merged=false;
-            for(unsigned j=0;j<count;j++)if(out[j].owner==reinterpret_cast<uintptr_t>(owner)) {
-                merged=true;
-                if(handDistance<out[j].handDistance){out[j].handDistance=handDistance;out[j].object=reinterpret_cast<uintptr_t>(object);}
-                if(score<out[j].score){out[j].score=score;out[j].point[0]=point[0];out[j].point[1]=point[1];out[j].point[2]=point[2];}
-            }
-            if(merged)continue;
-            auto& c=out[count++];
-            c.owner=reinterpret_cast<uintptr_t>(owner);c.object=reinterpret_cast<uintptr_t>(object);c.score=score;
+            ForgivingAim::Candidate c{};
+            c.owner=reinterpret_cast<uintptr_t>(owner);c.score=score;
             c.point[0]=point[0];c.point[1]=point[1];c.point[2]=point[2];
             c.handDistance=handDistance;
             c.contactPoint[0]=position2[0];c.contactPoint[1]=position2[1];c.contactPoint[2]=position2[2];
+            ForgivingAim::MergeCandidate(out,count,c,contactReach);
         }
         ok=true;
     } __except(EXCEPTION_EXECUTE_HANDLER) {ok=false;}
@@ -2448,7 +2436,6 @@ bool ForgivingSearch(void* self,const ForgivingAim::Frame& f,const float* hand,F
     if(handContactExact&&hand&&f.contactReach>0) {
         for(float share:ForgivingAim::ContactShells) {
             if(!ForgivingQueryRaw(self,f.origin,f.dir,f.minRadius,hand,f.contactReach,out,count,f.contactReach*share))return false;
-            if(!count)break; // nothing within the largest sphere
         }
     }
     return ForgivingQueryRaw(self,f.origin,f.dir,f.minRadius,hand,f.contactReach,out,count);
@@ -2456,7 +2443,7 @@ bool ForgivingSearch(void* self,const ForgivingAim::Frame& f,const float* hand,F
 // One decision per update. See ForgivingAim.h.
 void ForgivingBegin(void* self) {
     forgivingRayActive=false;forgivingSelected=0;
-    contactHitObject=0;contactTouchingCount=0;pathHitSeen=false;pathHitOwner=0;
+    contactTouchingCount=0;pathHitSeen=false;pathHitOwner=0;
     forgivingSelector.ClearPlan();
     const auto setting=interactionAim.load();
     const bool twoHands=leftHandInteract&&setting==DirectionConfig::Source::Controller;
@@ -2511,8 +2498,7 @@ void ForgivingBegin(void* self) {
     if(handContactExact&&plan.touch) {
         for(int h=0;h<2;h++)for(unsigned i=0;hands[h].valid&&i<hands[h].count;i++) {
             const auto& c=lists[h][i];
-            if(h==plan.hand&&c.owner==plan.owner)contactHitObject=c.object;
-            if(c.handDistance<ForgivingAim::NoContact&&contactTouchingCount<32)contactTouching[contactTouchingCount++]=c.owner;
+            if(c.handDistance<ForgivingAim::NoContact)++contactTouchingCount;
         }
     }
     float backed[3]{};
@@ -2529,7 +2515,7 @@ void ForgivingEnd() {
     forgivingSelector.Note(selected,forgivingSelectedPoint,now);
     leftPromptTick.store(selected&&forgivingSelector.HeldHand()==1?now:0,std::memory_order_relaxed);
     forgivingRayActive=false;
-    contactHitObject=0;contactTouchingCount=0;
+    contactTouchingCount=0;
 }
 void __fastcall SenseUpdateHook(void* self,void*,float dt) {
     auto previous=senseQueries;
@@ -3216,12 +3202,12 @@ bool CoverTargetRaw(void* owner,const CameraMath::Matrix& aim,float* target) {
 }
 // First-person gameplay with the gun at the controller: not cover, a scope, a
 // menu, the wheel, or a camera mode the hands step aside for.
-bool FirstPersonAimLocked() { // stateMutex held
+bool FirstPersonAimLocked(bool requireRight=true) { // stateMutex held
     auto now=GetTickCount64();
     if(!requested || !current.active || screenReasons || gameMenuOpen || wheelOpen ||
        immersiveScopeActive || scopeScreen || !experimentalMotionControls ||
        handsSuspendedByMode.load() || handsAsideForScope.load() || !activeCameraIsPlayer.load() ||
-       !current.tracking.rightController.valid || now<current.tracking.tick || now-current.tracking.tick>=250)return false;
+       (requireRight&&!current.tracking.rightController.valid) || now<current.tracking.tick || now-current.tracking.tick>=250)return false;
     return NativeCombatCamera(current.playerInstance,current.managerAddress);
 }
 // The ray shots use: the controller's in cover, the barrel's in first person.
@@ -3290,10 +3276,10 @@ void UpdateHandPointers() {
     const auto mode=handPointerMode.load();
     const auto now=GetTickCount64();
     const bool cover=NativeCoverActive();
-    bool eligible{};void* owner{};float scale{};
-    {std::lock_guard lock(stateMutex);eligible=!cover&&FirstPersonAimLocked();owner=current.playerInstance;scale=current.scale;}
+    bool eligible{},rightTracked{};void* owner{};float scale{};
+    {std::lock_guard lock(stateMutex);eligible=!cover&&FirstPersonAimLocked(false);rightTracked=current.tracking.rightController.valid;owner=current.playerInstance;scale=current.scale;}
     bool haveBarrel=false;CameraMath::Matrix barrel;
-    if(eligible&&(interactionFromHand||mode!=HandPointer::Off)) {
+    if(eligible&&rightTracked&&(interactionFromHand||mode!=HandPointer::Off)) {
         const auto emptyTick=rightHandEmptyTick.load(std::memory_order_relaxed);
         const bool empty=emptyTick&&now>=emptyTick&&now-emptyTick<250;
         if(!empty) {
@@ -3305,7 +3291,7 @@ void UpdateHandPointers() {
     bool valid[2]{};float point[2][3]{};
     if(eligible&&owner&&scale>0&&interactionAim.load()==DirectionConfig::Source::Controller) {
         for(int hand=0;hand<2;hand++) {
-            if(!HandPointer::Shows(mode,hand==1)||(hand==1&&!leftHandInteract))continue;
+            if(!HandPointer::Shows(mode,hand==1)||(hand==1&&(!leftHandInteract||!forgivingAimEnabled||!interactionProbesReady)))continue;
             CameraMath::Matrix line;
             valid[hand]=InteractionLine(hand?DirectionConfig::Source::LeftController:DirectionConfig::Source::Controller,line)&&
                 HandPointerRaw(owner,line,HandPointer::RangeMetres*scale,point[hand]);
@@ -5627,7 +5613,7 @@ void ExportCoverTarget(Transport::RenderInfo& info,const Snapshot& frame) {
 void ExportHandPointers(Transport::RenderInfo& info,const Snapshot& frame) {
     info.handPointerState=0;
     // Called with stateMutex held, after ExportCoverTarget.
-    if(handPointerMode.load()==HandPointer::Off||NativeCoverActiveLocked()||!FirstPersonAimLocked()||frame.immersiveScoped||
+    if(handPointerMode.load()==HandPointer::Off||NativeCoverActiveLocked()||!FirstPersonAimLocked(false)||frame.immersiveScoped||
        frame.playerInstance!=current.playerInstance||!frame.tracking.valid||!(frame.scale>0))return;
     const auto& h=frame.tracking.head;
     for(int hand=0;hand<2;hand++) {

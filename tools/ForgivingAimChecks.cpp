@@ -106,7 +106,44 @@ static void Holding() {
      r.Left(Aim(200));uint64_t now=1030;for(;now<=1340;now+=10){r.Go(now);if(r.s.Held())r.s.Note(1,P,now);}
      Check(!r.s.Held()&&r.s.GetStats().released==1,"aiming the left hand clearly away releases it, as on the right");}
 }
+static void RegressionChecks() {
+    {Rig r;Candidate c[3]{C(1,.1f),C(2,.11f),C(3,.3f)};r.Right(Aim(0),c,3);
+     unsigned third=0,hand=0,plain=0;
+     for(unsigned i=0;i<100;i++) {
+         c[0].score=(i&1)?.11f:.1f;c[1].score=(i&1)?.1f:.11f;
+         const auto p=r.Go(1000+i*10);third+=p.owner==3;hand+=p.aimed&&!p.fromEye;plain+=!p.aimed;
+         r.s.Note(0,nullptr,1000+i*10);
+     }
+     Check(third>0&&hand>0&&plain>0,"changing candidate ranks cannot starve other items, hand checks or plain rays");}
+    {Rig r;Candidate c[2]{C(1,.1f),C(2,.2f)};r.Right(Aim(0),c,2);r.Go(1000);r.s.Note(0,nullptr,1000);
+     r.Right(Aim(0),c+1,1);auto p=r.Go(1010);
+     Check(p.owner==2,"a removed candidate is skipped within the current cycle");
+     r.s.Note(0,nullptr,1010);r.hands[0].valid=false;r.Left(Aim(0),c+1,1);p=r.Go(1020);
+     Check(p.owner==2&&p.hand==1,"cycle identities use the currently tracked hand, not a stale plan");}
+    {Rig r;Candidate c[2]{C(1,.1f),C(2,.2f)};r.Right(Aim(0),c,1);r.Go(1000);r.s.Note(0,nullptr,1000);
+     r.Right(Aim(0),c,2);bool added=false;
+     for(unsigned i=1;i<20;i++){auto p=r.Go(1000+i*10);added|=p.owner==2;r.s.Note(0,nullptr,1000+i*10);}
+     Check(added,"a new candidate joins the next bounded cycle");}
+    {Candidate out[MaxCandidates]{};unsigned n=0;
+     for(unsigned i=0;i<MaxCandidates;i++)MergeCandidate(out,n,C(i+1,.8f),45);
+     auto better=T(1,10,25);better.score=.05f;MergeCandidate(out,n,better,45);
+     Check(n==MaxCandidates&&out[0].handDistance==10&&out[0].score==.05f&&out[0].point[0]==25,
+           "a full buffer still refines an existing owner's contact and pointing score");
+     MergeCandidate(out,n,T(100,5,15),45);bool inserted=false,kept=false;
+     for(unsigned i=0;i<n;i++){inserted|=out[i].owner==100;kept|=out[i].owner==1;}
+     Check(inserted&&kept&&n==MaxCandidates,"a new close contact displaces a worse candidate without dropping the better contact");
+     MergeCandidate(out,n,C(200,.99f),45);bool poor=false;
+     for(unsigned i=0;i<n;i++)poor|=out[i].owner==200;
+     Check(!poor,"a worse candidate cannot displace better entries in a full buffer");}
+    {Candidate out[MaxCandidates]{};unsigned n=0;
+     // One long object overlaps every shell, but its centre is off the aim line.
+     // Only sufficiently small shells survive the production contact-distance filter.
+     for(float share:ContactShells){const float d=ContactDistance(45*share,120);
+         if(d<=45*ContactKeep)MergeCandidate(out,n,T(1,d,0),45);}
+     Check(n==1&&std::abs(out[0].handDistance-27)<.001f,"nested contact searches retain the closest surface measurement");}
+}
 int main() {
+    RegressionChecks();
     Check(std::abs(ContactDistance(9,120)-27)<1e-3f,"hand on the far end of a long item counts as touching it");
     Check(ContactDistance(9,6)==6,"a small item is never farther than its own position");
     Check(ContactDistance(9,20)<ContactDistance(9,240),"an item in a locker beats the locker when the hand is at both");
