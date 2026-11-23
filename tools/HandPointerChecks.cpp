@@ -10,7 +10,7 @@ static float Dot(const float* a,const float* b){return a[0]*b[0]+a[1]*b[1]+a[2]*
 int main() {
     using namespace HandPointer;
     // Settings
-    Check(Parse(L"")==Both&&Parse(L"nonsense")==Both,"absent setting shows both");
+    Check(Parse(L"")==Off&&Parse(L"nonsense")==Off,"absent setting leaves pointers off");
     for(uint32_t m:{Off,Right,Left,Both})Check(Parse(Value(m))==m,"setting round trip");
     Check(Parse(L"0")==Off,"0 is off");
     Check(Next(Next(Next(Next(Off))))==Off,"menu cycle returns");

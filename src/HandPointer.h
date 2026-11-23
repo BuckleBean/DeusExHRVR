@@ -15,7 +15,8 @@ inline uint32_t Parse(const wchar_t* v) {
     if(!_wcsicmp(v,L"Off")||!_wcsicmp(v,L"0"))return Off;
     if(!_wcsicmp(v,L"Right"))return Right;
     if(!_wcsicmp(v,L"Left"))return Left;
-    return Both; // absent or unknown
+    if(!_wcsicmp(v,L"Both"))return Both;
+    return Off; // absent or unknown
 }
 inline const wchar_t* Value(uint32_t m){return m==Off?L"Off":m==Right?L"Right":m==Left?L"Left":L"Both";}
 inline const wchar_t* Label(uint32_t m){return m==Off?L"OFF":m==Right?L"RIGHT HAND":m==Left?L"LEFT HAND":L"BOTH HANDS";}

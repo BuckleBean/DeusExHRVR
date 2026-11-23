@@ -373,7 +373,7 @@ bool controllerHandsInteractCurl=false;
 std::atomic<bool> ceilingGuardOn{true},ceilingLookAhead{true},ceilingCrouched{};float ceilingMarginMetres=.20f;
 std::atomic<float> ceilingRoom{CeilingGuard::NoCeiling};
 std::atomic<uint32_t> crosshairMode{CoverCrosshair::Third}; // [VR] Crosshair=Off|FirstPerson|ThirdPerson|Both
-std::atomic<uint32_t> handPointerMode{HandPointer::Both}; // [VR] HandPointers=Off|Right|Left|Both
+std::atomic<uint32_t> handPointerMode{HandPointer::Off}; // [VR] HandPointers=Off|Right|Left|Both
 bool handGripClose=true; // [VR] HandGripClose=0 returns to the gentle right-hand Interact curl
 uint32_t controllerHandsPoseMask=0x4000;     // XINPUT_GAMEPAD_X    = interact
 uint32_t controllerHandsSprintMask=0x0100;   // XINPUT_GAMEPAD_LB   = sprint
@@ -6339,7 +6339,7 @@ void Install() {
     controllerHandsInteractCurl=GetPrivateProfileIntW(L"VR",L"ControllerHandsInteractCurl",1,config)!=0;
     handGripClose=GetPrivateProfileIntW(L"VR",L"HandGripClose",1,config)!=0;
     {wchar_t crosshairText[32]{};GetPrivateProfileStringW(L"VR",L"Crosshair",L"ThirdPerson",crosshairText,32,config);crosshairMode=CoverCrosshair::Parse(crosshairText);}
-    {wchar_t pointerText[32]{};GetPrivateProfileStringW(L"VR",L"HandPointers",L"Both",pointerText,32,config);handPointerMode=HandPointer::Parse(pointerText);}
+    {wchar_t pointerText[32]{};GetPrivateProfileStringW(L"VR",L"HandPointers",L"Off",pointerText,32,config);handPointerMode=HandPointer::Parse(pointerText);}
     ceilingGuardOn=GetPrivateProfileIntW(L"VR",L"CeilingGuard",1,config)!=0;
     ceilingLookAhead=GetPrivateProfileIntW(L"VR",L"CeilingGuardLookAhead",1,config)!=0;
     {
