@@ -184,6 +184,11 @@ LeftHandCarryThrow=1
 ; ForgivingAim=1 for grab ownership. Tracking loss falls back to the native camera direction.
 ; 0 restores native carried-object direction. Grenade ThrowAim is separate. Restart to apply.
 CarriedThrowAim=1
+; Carried boxes and other objects sit at the hand that grabbed them instead of in front
+; of the camera. Bodies are unchanged. CarriedItemHandCm (0 to 40, default 12) is how far
+; past the palm the object sits. 0 turns CarriedItemAtHand off. Restart after editing.
+CarriedItemAtHand=1
+CarriedItemHandCm=12
 ; Which camera modes the hands step aside for, as a bit mask over the game's
 ; modes. 342 = cover, ladders, the animation-bone camera, lying down, orbit.
 ControllerHandsSuspendModes=342

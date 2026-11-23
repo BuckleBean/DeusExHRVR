@@ -24,6 +24,7 @@
 #include "DirectionConfig.h"
 #include "ThrowAim.h"
 #include "CarriedThrowAim.h"
+#include "CarriedHand.h"
 #include "InteractionTiming.h"
 #include "ProjectileAim.h"
 #include "NativeBounds.h"
@@ -2034,6 +2035,9 @@ std::atomic<uint64_t> leftPromptTick{};
 bool leftCarryThrow{};
 std::atomic<bool> grabActive{},grabLeft{};
 bool carriedThrowAim{}; // [VR] CarriedThrowAim=0 keeps native camera-based throws
+// [VR] CarriedItemAtHand=0 keeps carried boxes in front of the camera.
+// CarriedItemHandCm (0 to 40, default 12) is how far past the palm the box sits.
+bool carriedItemAtHand{};float carriedItemHandMetres=.12f;
 // Two-handed weapons, stage one. [VR] TwoHandedWeapons=0 turns it off;
 // TwoHandedWeaponsLog=1 writes DeusExHRVR-twohand.log.
 bool twoHandedWeapons{},twoHandedLog{};
@@ -2084,6 +2088,7 @@ bool forgivingAimLog{}; // [VR] ForgivingAimLog=1 writes its diagnostic lines
 bool interactionTimingLog{},timingStarted{};
 InteractionTiming::Second timingSecond;
 uint64_t timingLast{},timingNextWrite{};unsigned timingLines{};double timingMicros{};
+std::atomic<unsigned> timingHandItemMoved{},timingHandItemSkipped{};
 std::atomic<unsigned> timingThrowCalls{},timingThrowApplied{};std::atomic<uint64_t> timingThrowLast{};
 uint64_t TimingNow(){LARGE_INTEGER v{};QueryPerformanceCounter(&v);return uint64_t(v.QuadPart);}
 void TimingLine(const char* text) {
@@ -2315,6 +2320,40 @@ float* __cdecl CarriedDirectionHook(float* out,float pitchScale,float pitchBias)
     }
     return result;
 }
+using CarriedSetPosition=void*(__thiscall*)(void*,const float*);
+CarriedSetPosition originalCarriedSetPosition{};
+bool CarriedBodyRaw(uintptr_t manager,unsigned offset,int& state,uintptr_t& body) {
+    __try {
+        state=*reinterpret_cast<int*>(manager+0x128);
+        body=*reinterpret_cast<uintptr_t*>(manager+offset);
+        return true;
+    } __except(EXCEPTION_EXECUTE_HANDLER) {return false;}
+}
+bool CarriedHandTarget(bool left,const float* native,float* out) {
+    float palm[3]{};CameraMath::Matrix line;
+    if(!HandPosition(left,palm)||!InteractionLine(left?DirectionConfig::Source::LeftController:DirectionConfig::Source::Controller,line))return false;
+    float scale{};
+    {std::lock_guard lock(stateMutex);scale=current.scale;}
+    if(!std::isfinite(scale)||scale<=0)return false;
+    return CarriedHand::Target(palm,line.m+8,carriedItemHandMetres*scale,native,CarriedHand::MaxJumpMetres*scale,out);
+}
+void* __fastcall CarriedPositionHook(void* self,void*,const float* position) {
+    const auto caller=reinterpret_cast<uintptr_t>(_ReturnAddress())-base+0x400000;
+    if(carriedItemAtHand&&position&&CarriedHand::Site(caller)&&grabActive.load()) {
+        const auto manager=grabManager.load();
+        int state=-1;uintptr_t body{};
+        if(manager&&CarriedBodyRaw(manager,CarriedHand::BodyOffset(caller),state,body)&&
+           CarriedHand::BoxState(state)&&body==reinterpret_cast<uintptr_t>(self)) {
+            alignas(16) float moved[4]{position[0],position[1],position[2],position[3]};
+            if(CarriedHandTarget(grabLeft.load(),position,moved)) {
+                if(interactionTimingLog)++timingHandItemMoved;
+                return originalCarriedSetPosition(self,moved);
+            }
+            if(interactionTimingLog)++timingHandItemSkipped;
+        }
+    }
+    return originalCarriedSetPosition(self,position);
+}
 void InstallInteractionProbes(){
     wchar_t diagConfig[MAX_PATH]{};GetFullPathNameW(L"DeusExHRVR.ini",MAX_PATH,diagConfig,nullptr);
     interactionDiagLog=GetPrivateProfileIntW(L"VR",L"InteractionDiagnosticLog",0,diagConfig)!=0;
@@ -2330,6 +2369,12 @@ void InstallInteractionProbes(){
     leftHandInteract=GetPrivateProfileIntW(L"VR",L"LeftHandInteract",1,diagConfig)!=0;
     leftCarryThrow=leftHandInteract&&GetPrivateProfileIntW(L"VR",L"LeftHandCarryThrow",1,diagConfig)!=0;
     carriedThrowAim=GetPrivateProfileIntW(L"VR",L"CarriedThrowAim",1,diagConfig)!=0;
+    carriedItemAtHand=GetPrivateProfileIntW(L"VR",L"CarriedItemAtHand",1,diagConfig)!=0;
+    {
+        wchar_t carryText[32]{};GetPrivateProfileStringW(L"VR",L"CarriedItemHandCm",L"12",carryText,32,diagConfig);
+        const float cm=float(_wtof(carryText));
+        if(std::isfinite(cm)&&cm>=0.f&&cm<=40.f)carriedItemHandMetres=cm*.01f;
+    }
     handContact=GetPrivateProfileIntW(L"VR",L"HandContactInteract",1,diagConfig)!=0;
     handContactExact=handContact&&GetPrivateProfileIntW(L"VR",L"HandContactExact",1,diagConfig)!=0;
     {
@@ -2377,7 +2422,7 @@ void InstallInteractionProbes(){
         if(madeEvent){MH_DisableHook(event);MH_RemoveHook(event);}
     }
     if(forgivingAimEnabled&&!interactionProbesReady)forgivingAimEnabled=false;
-    if(leftCarryThrow||carriedThrowAim) {
+    if(leftCarryThrow||carriedThrowAim||carriedItemAtHand) {
         // Hooked on their own: a mismatch only turns this option off.
         auto dispatch=reinterpret_cast<void*>(VA(0x8206d0)),target=reinterpret_cast<void*>(VA(0x661680));
         bool carryHooks=forgivingAimEnabled&&!memcmp(dispatch,"\x83\xec\x0c\x8b\x4c\x24\x18",7)&&!memcmp(target,"\x55\x8b\xec\x83\xe4\xf0\x83\xec\x08\x56\x8b\xf1",12);
@@ -2390,6 +2435,7 @@ void InstallInteractionProbes(){
             if(madeTarget){MH_DisableHook(target);MH_RemoveHook(target);}
             leftCarryThrow=false;
             carriedThrowAim=false;
+            carriedItemAtHand=false;
         }
         if(carryHooks&&carriedThrowAim) {
             auto direction=reinterpret_cast<void*>(VA(CarriedThrowAim::Address));
@@ -2402,6 +2448,19 @@ void InstallInteractionProbes(){
             const bool made=matchDirection&&MH_CreateHook(direction,(void*)&CarriedDirectionHook,(void**)&originalCarriedDirection)==MH_OK;
             carriedThrowAim=made&&MH_EnableHook(direction)==MH_OK;
             if(made&&!carriedThrowAim){MH_DisableHook(direction);MH_RemoveHook(direction);}
+        }
+        if(carryHooks&&carriedItemAtHand) {
+            auto setPosition=reinterpret_cast<void*>(VA(CarriedHand::Address));
+            auto callMatches=[&](uintptr_t site) {
+                const auto* p=reinterpret_cast<const unsigned char*>(VA(site));int32_t rel{};memcpy(&rel,p+1,4);
+                return p[0]==0xe8&&uintptr_t(p+5)+rel==uintptr_t(setPosition);
+            };
+            const bool matchPosition=!memcmp(setPosition,CarriedHand::Bytes,sizeof(CarriedHand::Bytes))&&
+                callMatches(CarriedHand::PullCall)&&callMatches(CarriedHand::HoldCall);
+            const bool made=matchPosition&&MH_CreateHook(setPosition,(void*)&CarriedPositionHook,(void**)&originalCarriedSetPosition)==MH_OK;
+            carriedItemAtHand=made&&MH_EnableHook(setPosition)==MH_OK;
+            if(made&&!carriedItemAtHand){MH_DisableHook(setPosition);MH_RemoveHook(setPosition);}
+            if(interactionTimingLog)TimingLine(carriedItemAtHand?"carried item at hand ready":"carried item at hand unavailable");
         }
     }
     if(forgivingAimLog){FILE* aimLog{};if(!fopen_s(&aimLog,"DeusExHRVR-camera.log","a")){
@@ -2667,10 +2726,10 @@ void TimingFinish(uint64_t begin,uint64_t afterBegin,uint64_t afterGame) {
     const auto tick=GetTickCount64();
     if(tick<timingNextWrite)return;
     timingNextWrite=tick+1000;
-    char line[260]{};
+    char line[340]{};
     const int used=InteractionTiming::Format(timingSecond,timingMicros,line,sizeof(line));
     if(used>0&&size_t(used)<sizeof(line))
-        sprintf_s(line+used,sizeof(line)-used," throwCalls=%u throwApplied=%u",timingThrowCalls.exchange(0),timingThrowApplied.exchange(0));
+        sprintf_s(line+used,sizeof(line)-used," throwCalls=%u throwApplied=%u handItemMoved=%u handItemSkipped=%u",timingThrowCalls.exchange(0),timingThrowApplied.exchange(0),timingHandItemMoved.exchange(0),timingHandItemSkipped.exchange(0));
     timingSecond={};
     TimingLine(line);
     timingLast=0; // the file write is not part of the next gap

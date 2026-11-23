@@ -4,6 +4,7 @@
 #include "ForgivingAim.h"
 #include "InteractionTiming.h"
 #include "CarriedThrowAim.h"
+#include "CarriedHand.h"
 #include <cstring>
 using namespace ForgivingAim;
 static int failures=0;
@@ -145,7 +146,18 @@ static void RegressionChecks() {
          if(d<=45*ContactKeep)MergeCandidate(out,n,T(1,d,0),45);}
      Check(n==1&&std::abs(out[0].handDistance-27)<.001f,"nested contact searches retain the closest surface measurement");}
 }
+static void CarriedHandChecks() {
+    using namespace CarriedHand;
+    Check(BoxState(2)&&BoxState(3)&&BoxState(4)&&BoxState(5)&&!BoxState(0)&&!BoxState(1)&&!BoxState(6)&&!BoxState(7),"only box carry states move to the hand; bodies do not");
+    Check(Site(PullReturn)&&Site(HoldReturn)&&!Site(0x660564),"only the two grab positioning calls are changed");
+    Check(BodyOffset(PullReturn)==0x84&&BodyOffset(HoldReturn)==0xa0,"each call is matched to its own held object");
+    const float palm[3]{10,20,30},dir[3]{0,0,2},closeBy[3]{10,20,60},farAway[3]{900,20,30};float out[3]{1,2,3};
+    Check(Target(palm,dir,36,closeBy,450,out)&&out[0]==10&&out[1]==20&&std::abs(out[2]-66)<1e-4f,"box sits past the palm along the hand");
+    out[0]=1;Check(!Target(palm,dir,36,farAway,450,out)&&out[0]==1,"a hand far from the game's spot keeps the game's position");
+    const float none[3]{0,0,0};Check(!Target(palm,none,36,closeBy,450,out),"a missing hand direction keeps the game's position");
+}
 static void TimingChecks() {
+    CarriedHandChecks();
     Check(CarriedThrowAim::NewBurst(1000,0)&&CarriedThrowAim::NewBurst(1251,1000),"throw log marks the first call and calls after a pause");
     Check(!CarriedThrowAim::NewBurst(1100,1000)&&!CarriedThrowAim::NewBurst(1250,1000),"throw log does not repeat within a burst");
     InteractionTiming::Second s;
