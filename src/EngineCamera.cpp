@@ -23,6 +23,7 @@
 #include "CameraPosition.h"
 #include "DirectionConfig.h"
 #include "ThrowAim.h"
+#include "CarriedThrowAim.h"
 #include "ProjectileAim.h"
 #include "NativeBounds.h"
 #include "SceneCache.h"
@@ -2031,6 +2032,7 @@ std::atomic<uint64_t> leftPromptTick{};
 // [VR] LeftHandCarryThrow=0 keeps the throw on the right trigger.
 bool leftCarryThrow{};
 std::atomic<bool> grabActive{},grabLeft{};
+bool carriedThrowAim{}; // [VR] CarriedThrowAim=0 keeps native camera-based throws
 // Two-handed weapons, stage one. [VR] TwoHandedWeapons=0 turns it off;
 // TwoHandedWeaponsLog=1 writes DeusExHRVR-twohand.log.
 bool twoHandedWeapons{},twoHandedLog{};
@@ -2274,6 +2276,20 @@ void GrabTick(uint64_t now) {
     const int state=GrabStateRaw(manager);
     if(state==0||state==1)grabActive=false;
 }
+using CarriedDirection=float*(__cdecl*)(float*,float,float);
+CarriedDirection originalCarriedDirection{};
+float* __cdecl CarriedDirectionHook(float* out,float pitchScale,float pitchBias) {
+    const auto caller=reinterpret_cast<uintptr_t>(_ReturnAddress())-base+0x400000;
+    auto result=originalCarriedDirection(out,pitchScale,pitchBias);
+    if(carriedThrowAim&&result&&grabActive.load()&&CarriedThrowAim::Caller(caller)) {
+        CameraMath::Matrix hand;
+        // The hand that began the grab owns the throw until that grab ends.
+        // Aim only: do not move the object, change strength or use swing velocity.
+        if(DirectionWorld(grabLeft.load()?DirectionConfig::Source::LeftController:DirectionConfig::Source::Controller,hand))
+            CarriedThrowAim::Direction(result,hand.m+8);
+    }
+    return result;
+}
 void InstallInteractionProbes(){
     wchar_t diagConfig[MAX_PATH]{};GetFullPathNameW(L"DeusExHRVR.ini",MAX_PATH,diagConfig,nullptr);
     interactionDiagLog=GetPrivateProfileIntW(L"VR",L"InteractionDiagnosticLog",0,diagConfig)!=0;
@@ -2282,6 +2298,7 @@ void InstallInteractionProbes(){
     interactionFromEye=GetPrivateProfileIntW(L"VR",L"InteractionFromEye",1,diagConfig)!=0;
     leftHandInteract=GetPrivateProfileIntW(L"VR",L"LeftHandInteract",1,diagConfig)!=0;
     leftCarryThrow=leftHandInteract&&GetPrivateProfileIntW(L"VR",L"LeftHandCarryThrow",1,diagConfig)!=0;
+    carriedThrowAim=GetPrivateProfileIntW(L"VR",L"CarriedThrowAim",1,diagConfig)!=0;
     handContact=GetPrivateProfileIntW(L"VR",L"HandContactInteract",1,diagConfig)!=0;
     handContactExact=handContact&&GetPrivateProfileIntW(L"VR",L"HandContactExact",1,diagConfig)!=0;
     {
@@ -2329,7 +2346,7 @@ void InstallInteractionProbes(){
         if(madeEvent){MH_DisableHook(event);MH_RemoveHook(event);}
     }
     if(forgivingAimEnabled&&!interactionProbesReady)forgivingAimEnabled=false;
-    if(leftCarryThrow) {
+    if(leftCarryThrow||carriedThrowAim) {
         // Hooked on their own: a mismatch only turns this option off.
         auto dispatch=reinterpret_cast<void*>(VA(0x8206d0)),target=reinterpret_cast<void*>(VA(0x661680));
         bool carryHooks=forgivingAimEnabled&&!memcmp(dispatch,"\x83\xec\x0c\x8b\x4c\x24\x18",7)&&!memcmp(target,"\x55\x8b\xec\x83\xe4\xf0\x83\xec\x08\x56\x8b\xf1",12);
@@ -2341,6 +2358,19 @@ void InstallInteractionProbes(){
             if(madeDispatch){MH_DisableHook(dispatch);MH_RemoveHook(dispatch);}
             if(madeTarget){MH_DisableHook(target);MH_RemoveHook(target);}
             leftCarryThrow=false;
+            carriedThrowAim=false;
+        }
+        if(carryHooks&&carriedThrowAim) {
+            auto direction=reinterpret_cast<void*>(VA(CarriedThrowAim::Address));
+            auto callMatches=[&](uintptr_t site) {
+                const auto* p=reinterpret_cast<const unsigned char*>(VA(site));int32_t rel{};memcpy(&rel,p+1,4);
+                return p[0]==0xe8&&uintptr_t(p+5)+rel==uintptr_t(direction);
+            };
+            const bool matchDirection=!memcmp(direction,CarriedThrowAim::Bytes,sizeof(CarriedThrowAim::Bytes))&&
+                callMatches(0x661e13)&&callMatches(0x66210f);
+            const bool made=matchDirection&&MH_CreateHook(direction,(void*)&CarriedDirectionHook,(void**)&originalCarriedDirection)==MH_OK;
+            carriedThrowAim=made&&MH_EnableHook(direction)==MH_OK;
+            if(made&&!carriedThrowAim){MH_DisableHook(direction);MH_RemoveHook(direction);}
         }
     }
     if(forgivingAimLog){FILE* aimLog{};if(!fopen_s(&aimLog,"DeusExHRVR-camera.log","a")){

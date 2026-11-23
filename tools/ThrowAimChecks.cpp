@@ -2,6 +2,7 @@
 // every link of the statically traced throw path that the hook relies on,
 // then checks the small helpers. Fails loudly if any byte differs.
 #include "ThrowAim.h"
+#include "CarriedThrowAim.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -123,5 +124,12 @@ int main() {
     Check(ThrowAim::ManagerOf(camera)==self-0x6F0,"manager from camera");
     Check(ThrowAim::ManagerOf(reinterpret_cast<void*>(0x10))==0,"low pointer refused");
     std::printf("PASS ThrowAim helpers\n");
+    Check(Bytes(0x65f7c0,{0x55,0x8b,0xec,0x83,0xe4,0xf0,0x83,0xec,0x2c}),"carried throw builder prologue");
+    Check(CallTo(0x661e13,CarriedThrowAim::Address)&&CallTo(0x66210f,CarriedThrowAim::Address),"rigid object and ragdoll throw direction calls");
+    Check(CarriedThrowAim::Caller(0x661e18)&&CarriedThrowAim::Caller(0x662114)&&!CarriedThrowAim::Caller(0x75d560),"only carried throws use the new direction");
+    float direction[4]{1,0,0,7},forward[3]{0,3,4};
+    Check(CarriedThrowAim::Direction(direction,forward)&&std::abs(direction[1]-.6f)<1e-6f&&std::abs(direction[2]-.8f)<1e-6f&&direction[3]==7,"hand aim normalized with native fourth component preserved");
+    float invalid[3]{};Check(!CarriedThrowAim::Direction(direction,invalid)&&direction[1]==.6f,"invalid hand direction leaves native result unchanged");
+    std::printf("PASS carried-object throw native call sites and direction math\n");
     return 0;
 }

@@ -176,6 +176,11 @@ HandContactCm=15
 ; editing.
 LeftHandInteract=1
 LeftHandCarryThrow=1
+; Boxes and carried bodies throw along the controller aim of the hand that grabbed them.
+; Uses the game's normal strength, not controller swing speed. Needs motion controls and
+; ForgivingAim=1 for grab ownership. Tracking loss falls back to the native camera direction.
+; 0 restores native carried-object direction. Grenade ThrowAim is separate. Restart to apply.
+CarriedThrowAim=1
 ; Which camera modes the hands step aside for, as a bit mask over the game's
 ; modes. 342 = cover, ladders, the animation-bone camera, lying down, orbit.
 ControllerHandsSuspendModes=342
