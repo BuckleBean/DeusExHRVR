@@ -3438,7 +3438,7 @@ float TwoHandStep(CameraMath::Matrix* palette,const std::array<bool,223>& select
     if(key!=lastKey){if(lastKey)state.Drop(leftOnWeapon.load());lastKey=key;}
     const float amount=state.Update(double(GetTickCount64()),leftOnWeapon.load(),eligible&&(state.attached||!state.broken),gap,scale);
     if(state.attached!=wasAttached)TwoHandNote(state.attached?"attached":(state.broken?"pulled away":"released"),key,spread,reach,gap);
-    if(twoHandedAim&&state.attached&&eligible)leftSteerTick.store(GetTickCount64(),std::memory_order_relaxed);
+    if(twoHandedAim&&weaponGrip==TwoHandAttach::Grip::Full&&state.attached&&eligible)leftSteerTick.store(GetTickCount64(),std::memory_order_relaxed);
     if(!valid||amount<=0){PublishTwoHandHud(0,nullptr);return 0;}
     {
         // The cuff is carried by the wrist bone.

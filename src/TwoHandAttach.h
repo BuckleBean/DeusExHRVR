@@ -26,12 +26,18 @@ inline bool Eligible(bool valid,bool sprinting,bool ready,bool attached,float sp
 // Weapon IDs are the value the game stores at weapon+0x58, read from each weapon's own
 // record in its *_equip game file (+0x124). The game's pose for these leaves the left hand
 // away from the gun.
-enum class Grip {Full,None};
+// Support: the left hand holds the gun, but the hands are too close together for it to steer.
+enum class Grip {Full,Support,None};
 inline constexpr Grip GripFor(uint32_t key) {
     switch(key) {
     case 0x6AB8: // PEPS
     case 0x50BE: // stun gun
         return Grip::None;
+    case 0x05FB: // pistol
+    case 0x1EF1: // pistol, upgraded
+    case 0x5AB1: // revolver
+    case 0x5AB0: // revolver, upgraded
+        return Grip::Support;
     default: return Grip::Full;
     }
 }
