@@ -142,8 +142,36 @@ static void RegressionChecks() {
          if(d<=45*ContactKeep)MergeCandidate(out,n,T(1,d,0),45);}
      Check(n==1&&std::abs(out[0].handDistance-27)<.001f,"nested contact searches retain the closest surface measurement");}
 }
+static void TouchAndSearchChecks() {
+    {Rig r;Candidate l[6]{C(1,.1f),C(2,.2f),C(3,.3f),C(4,.4f),C(5,.5f),C(6,.6f)};r.Right(Aim(0),l,6);
+     uint64_t t=1000;for(int i=0;i<5;i++,t+=10){r.Go(t);r.s.Note(0,nullptr,t);}
+     Candidate m[6]{T(7,10,5),C(1,.1f),C(2,.2f),C(3,.3f),C(4,.4f),C(5,.5f)};r.Right(Aim(0),m,6);
+     auto p=r.Go(t);Check(p.aimed&&p.touch&&p.owner==7,"a newly touched item is tried on the very next update");
+     Check(p.fromEye,"and starts with the check from the eye");}
+    {Rig r;Candidate l[6]{C(1,.1f),C(2,.2f),C(3,.3f),C(4,.4f),C(5,.5f),C(6,.6f)};r.Right(Aim(0),l,6);
+     uint64_t t=1000;for(int i=0;i<3;i++,t+=10){r.Go(t);r.s.Note(0,nullptr,t);}
+     Candidate m[6]{T(6,10,5),C(1,.1f),C(2,.2f),C(3,.3f),C(4,.4f),C(5,.5f)};r.Right(Aim(0),m,6);
+     auto p=r.Go(t);Check(p.touch&&p.owner==6,"a pointed item the hand comes onto moves to the front");}
+    {Rig r;Candidate l[1]{C(1,.1f)};r.Right(Aim(0),l,1);
+     uint64_t t=1000;for(int i=0;i<2;i++,t+=10){r.Go(t);r.s.Note(0,nullptr,t);}
+     Candidate m[1]{T(1,10,5)};r.Right(Aim(0),m,1);auto p=r.Go(t);
+     Check(p.touch&&p.owner==1&&p.fromEye,"an item already declined by pointing gets fresh tries once touched");}
+    {Rig r;unsigned third=0,plain=0;uint64_t t=1000;
+     for(int i=0;i<200;i++,t+=10) {
+         Candidate a[2]{T(10+unsigned(i%8),10,5),C(3,.3f)};r.Right(Aim(0),a,2);
+         auto p=r.Go(t);third+=p.aimed&&p.owner==3;plain+=!p.aimed;r.s.Note(0,nullptr,t);
+     }
+     Check(third>0&&plain>0,"items touched in turn cannot keep the others or the plain line from their turn");}
+    {unsigned calls=0;bool ok=SearchShells([&](float,bool& more){++calls;more=false;return true;});
+     Check(ok&&calls==1,"nothing usable in the largest sphere: the smaller searches are skipped");}
+    {unsigned calls=0;float first=0;bool ok=SearchShells([&](float s,bool& more){if(!calls)first=s;++calls;more=true;return true;});
+     Check(ok&&calls==4&&first==ContactShells[3],"something usable in the largest sphere: all smaller searches run");}
+    {unsigned calls=0;bool ok=SearchShells([&](float,bool& more){++calls;more=calls==1;return calls<2;});
+     Check(!ok&&calls==2,"a failed search stops and reports the failure");}
+}
 int main() {
     RegressionChecks();
+    TouchAndSearchChecks();
     Check(std::abs(ContactDistance(9,120)-27)<1e-3f,"hand on the far end of a long item counts as touching it");
     Check(ContactDistance(9,6)==6,"a small item is never farther than its own position");
     Check(ContactDistance(9,20)<ContactDistance(9,240),"an item in a locker beats the locker when the hand is at both");

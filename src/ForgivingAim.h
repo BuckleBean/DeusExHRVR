@@ -16,6 +16,7 @@ inline constexpr float SwitchRatio=.5f;      // another object must be twice as 
 inline constexpr uint64_t SwitchMs=120;      // for this long
 inline constexpr unsigned MaxTries=2;        // one check from the eye, one from the hand
 inline constexpr unsigned MaxQueue=6;        // items in line at once
+inline constexpr unsigned MaxCycle=12;       // one round of tries, with room for items touched during it
 inline constexpr float ViewCos=.342f;        // within 70 degrees of where the head faces
 inline constexpr float SettleShare=.2f;      // of MinRadius: 3 cm of hand or head movement
 inline constexpr uint64_t GapMs=200;         // no updates this long (a screen): start fresh
@@ -31,6 +32,19 @@ inline constexpr float ContactSwitchMargin=.1f; // another touched object takes 
 // shape within that radius of the hand, wherever on the object the hand is.
 // Closest first; a large shell's filtered result cannot rule out a smaller shell.
 inline constexpr float ContactShells[4]={.2f,.5f,1.f,1.4f};
+// The largest sphere goes first. The smaller ones sit inside it, so if it holds no usable
+// object (and the game's 32-hit list was not full) they cannot hold one either.
+// query(share,mayHoldMore) returns false on failure.
+template<class Query> bool SearchShells(Query query) {
+    bool mayHoldMore=false;
+    if(!query(ContactShells[3],mayHoldMore))return false;
+    if(!mayHoldMore)return true;
+    for(unsigned i=0;i<3;i++) {
+        bool ignored=false;
+        if(!query(ContactShells[i],ignored))return false;
+    }
+    return true;
+}
 // Part of the distance to the object's own position still counts, so an item in a locker
 // beats the large locker around it when the hand is at both.
 inline constexpr float ContactPositionWeight=.15f;
@@ -111,7 +125,7 @@ class Selector {
     uintptr_t held{};int heldHand{};float heldPoint[3]{};uint64_t lastSelected{},outsideSince{};
     bool heldTouch{},heldFromEye{true},heldMissed{};
     uintptr_t switchOwner{};uint64_t switchSince{};
-    uintptr_t focusOwner{},cycleOwners[MaxQueue]{};unsigned focusTries{},cycleCount{},cursor{},plainTurns{};int plainHand{1};
+    uintptr_t focusOwner{},cycleOwners[MaxCycle]{};bool cycleTouch[MaxCycle]{};unsigned focusTries{},cycleCount{},cursor{},plainTurns{};int plainHand{1};
     Settle settled[4]{};unsigned nextSettle{};
     float planWhere[3]{},planEye[3]{};
     uint64_t lastUpdate{};Plan plan{};Stats stats{};
@@ -219,11 +233,32 @@ class Selector {
         plan={};plan.hand=plainHand;
         return plan;
     }
+    // An item the hand has just come onto goes next, once per round, so it does not wait
+    // behind items already declined and cannot keep the others from their turn.
+    void BringTouchedForward(const Entry* q,unsigned n) {
+        unsigned at=cursor;bool changed=false;
+        for(unsigned i=0;i<n&&q[i].touch;i++) {
+            bool done=false;unsigned found=MaxCycle;
+            for(unsigned k=0;k<cycleCount;k++)if(cycleOwners[k]==q[i].owner) {
+                if(cycleTouch[k])done=true;else found=k;
+            }
+            if(done)continue;
+            unsigned from;
+            if(found<cycleCount&&found>=at)from=found;
+            else if(cycleCount<MaxCycle)from=cycleCount++;
+            else continue;
+            for(unsigned k=from;k>at;k--){cycleOwners[k]=cycleOwners[k-1];cycleTouch[k]=cycleTouch[k-1];}
+            cycleOwners[at]=q[i].owner;cycleTouch[at]=true;++at;changed=true;
+        }
+        if(changed){focusOwner=0;focusTries=0;}
+    }
     const Plan& Seek(const Entry* q,unsigned n,const HandInput* hands,const ViewInput& view) {
         if(!n){cycleCount=cursor=plainTurns=focusTries=0;focusOwner=0;return Plain(hands,view);}
         // Snapshot identities, not poses/ranks. Reordering cannot restart the cycle;
         // every attempt still uses the current eligible candidate and tracked hand.
-        if(!cycleCount){cycleCount=n;for(unsigned i=0;i<n;i++)cycleOwners[i]=q[i].owner;}
+        if(!cycleCount){cycleCount=n;for(unsigned i=0;i<n;i++){cycleOwners[i]=q[i].owner;cycleTouch[i]=q[i].touch;}}
+        if(cursor<cycleCount&&cycleOwners[cursor]==focusOwner&&focusTries>=MaxTries){++cursor;focusOwner=0;focusTries=0;}
+        BringTouchedForward(q,n);
         while(cursor<cycleCount) {
             const Entry* e=nullptr;
             for(unsigned i=0;i<n;i++)if(q[i].owner==cycleOwners[cursor]){e=&q[i];break;}

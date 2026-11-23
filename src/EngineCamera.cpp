@@ -2018,8 +2018,7 @@ bool forgivingAimEnabled{};
 bool leftHandInteract{}; // [VR] LeftHandInteract=0 keeps interaction on the right hand only
 // [VR] HandContactInteract=0 turns off choosing the item at your hand; HandContactCm is the distance.
 bool handContact{};float handContactMetres=.15f;
-// [VR] HandContactExact=0: no separate search at the hand, and the game's check may
-// settle on a neighbouring item instead of the one the hand is on.
+// [VR] HandContactExact=0: no separate search at the hand.
 bool handContactExact{};
 thread_local unsigned contactTouchingCount{};
 // [VR] InteractionFromHand=0 goes back to the controller's aim pose;
@@ -2300,7 +2299,7 @@ uintptr_t VA(uintptr_t preferred);
 // here, so a fault inside a game call is caught and reported.
 // Adds to `out`. contactShell > 0 searches a small sphere of that radius at the hand,
 // because the game returns at most 32 hits and the wide search can fill them.
-bool ForgivingQueryRaw(void* self,const float* origin,const float* dir,float minRadius,const float* hand,float contactReach,ForgivingAim::Candidate* out,unsigned& count,float contactShell=0) {
+bool ForgivingQueryRaw(void* self,const float* origin,const float* dir,float minRadius,const float* hand,float contactReach,ForgivingAim::Candidate* out,unsigned& count,float contactShell=0,bool* mayHoldMore=nullptr) {
     const bool contactOnly=contactShell>0;
     using Alloc=void*(__thiscall*)(uintptr_t);
     using Release=void(__thiscall*)(uintptr_t,void*);
@@ -2348,6 +2347,7 @@ bool ForgivingQueryRaw(void* self,const float* origin,const float* dir,float min
         *ownerSlot=ownerValue;ownerSet=true;
         const int found=reinterpret_cast<Overlap>(VA(0x50f1c0))(world+0x10,hits,0x20,shape,1);
         *ownerSlot=0;ownerSet=false;
+        if(mayHoldMore&&found>=32)*mayHoldMore=true;
         for(int i=0;i<found&&i<32;i++) {
             auto* hit=hits+0x80*i;
             void* object=*reinterpret_cast<void**>(hit+0x58);
@@ -2359,6 +2359,7 @@ bool ForgivingQueryRaw(void* self,const float* origin,const float* dir,float min
             if(!*reinterpret_cast<uint32_t*>(d)||!d[0x10])continue;
             const float reach=*reinterpret_cast<const float*>(d+4)*316.05f;
             if(!std::isfinite(reach)||reach<=0)continue;
+            if(mayHoldMore)*mayHoldMore=true; // usable, before any distance filter
             const auto* point=reinterpret_cast<const float*>(hit);
             float score{};
             bool usable=ForgivingAim::Score(origin,dir,point,reach,forgivingTan,minRadius,score);
@@ -2426,17 +2427,18 @@ void PathResult(const ForgivingAim::Plan& plan,uintptr_t selected,uint64_t now) 
     const float dx=plan.point[0]-pathEye[0],dy=plan.point[1]-pathEye[1],dz=plan.point[2]-pathEye[2];
     const float eyeCm=std::sqrt(dx*dx+dy*dy+dz*dz)/pathScale*100.f;
     static const char* const why[3]={"line met nothing usable","game rules declined it","line met another item"};
-    PathLog("miss item=%p hand=%s via=%s from=%s eyeCm=%.0f touching=%u result=%s other=%p selectedInstead=%p",
+    PathLog("miss item=%p hand=%s via=%s from=%s eyeCm=%.0f touching=%u result=%s other=%p selectedInstead=%p touchedItemBlocked=%s",
         reinterpret_cast<void*>(plan.owner),hand,via,plan.fromEye?"eye":"hand",eyeCm,contactTouchingCount,why[kind],
-        reinterpret_cast<void*>(kind==2?pathHitOwner:0),reinterpret_cast<void*>(selected));
+        reinterpret_cast<void*>(kind==2?pathHitOwner:0),reinterpret_cast<void*>(selected),plan.touch&&kind==2?"yes":"no");
 }
 // The items at the hand first, so a crowded room cannot push them out of the list.
 bool ForgivingSearch(void* self,const ForgivingAim::Frame& f,const float* hand,ForgivingAim::Candidate* out,unsigned& count) {
     count=0;
     if(handContactExact&&hand&&f.contactReach>0) {
-        for(float share:ForgivingAim::ContactShells) {
-            if(!ForgivingQueryRaw(self,f.origin,f.dir,f.minRadius,hand,f.contactReach,out,count,f.contactReach*share))return false;
-        }
+        const bool shells=ForgivingAim::SearchShells([&](float share,bool& mayHoldMore) {
+            return ForgivingQueryRaw(self,f.origin,f.dir,f.minRadius,hand,f.contactReach,out,count,f.contactReach*share,&mayHoldMore);
+        });
+        if(!shells)return false;
     }
     return ForgivingQueryRaw(self,f.origin,f.dir,f.minRadius,hand,f.contactReach,out,count);
 }
