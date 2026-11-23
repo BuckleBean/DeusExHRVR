@@ -2084,6 +2084,7 @@ bool forgivingAimLog{}; // [VR] ForgivingAimLog=1 writes its diagnostic lines
 bool interactionTimingLog{},timingStarted{};
 InteractionTiming::Second timingSecond;
 uint64_t timingLast{},timingNextWrite{};unsigned timingLines{};double timingMicros{};
+std::atomic<unsigned> timingThrowCalls{},timingThrowApplied{};std::atomic<uint64_t> timingThrowLast{};
 uint64_t TimingNow(){LARGE_INTEGER v{};QueryPerformanceCounter(&v);return uint64_t(v.QuadPart);}
 void TimingLine(const char* text) {
     if(timingLines>=3600)return;
@@ -2296,12 +2297,21 @@ CarriedDirection originalCarriedDirection{};
 float* __cdecl CarriedDirectionHook(float* out,float pitchScale,float pitchBias) {
     const auto caller=reinterpret_cast<uintptr_t>(_ReturnAddress())-base+0x400000;
     auto result=originalCarriedDirection(out,pitchScale,pitchBias);
-    if(carriedThrowAim&&result&&grabActive.load()&&CarriedThrowAim::Caller(caller)) {
+    const bool site=CarriedThrowAim::Caller(caller);
+    bool applied=false;
+    if(carriedThrowAim&&result&&grabActive.load()&&site) {
         CameraMath::Matrix hand;
         // The hand that began the grab owns the throw until that grab ends.
         // Aim only: do not move the object, change strength or use swing velocity.
         if(DirectionWorld(grabLeft.load()?DirectionConfig::Source::LeftController:DirectionConfig::Source::Controller,hand))
-            CarriedThrowAim::Direction(result,hand.m+8);
+            applied=CarriedThrowAim::Direction(result,hand.m+8);
+    }
+    if(interactionTimingLog&&site) {
+        ++timingThrowCalls;
+        if(applied)++timingThrowApplied;
+        const auto now=GetTickCount64();
+        const auto last=timingThrowLast.exchange(now);
+        if(CarriedThrowAim::NewBurst(now,last))TimingLine(applied?"throw code applied":"throw code ran, not applied");
     }
     return result;
 }
@@ -2658,7 +2668,9 @@ void TimingFinish(uint64_t begin,uint64_t afterBegin,uint64_t afterGame) {
     if(tick<timingNextWrite)return;
     timingNextWrite=tick+1000;
     char line[260]{};
-    InteractionTiming::Format(timingSecond,timingMicros,line,sizeof(line));
+    const int used=InteractionTiming::Format(timingSecond,timingMicros,line,sizeof(line));
+    if(used>0&&size_t(used)<sizeof(line))
+        sprintf_s(line+used,sizeof(line)-used," throwCalls=%u throwApplied=%u",timingThrowCalls.exchange(0),timingThrowApplied.exchange(0));
     timingSecond={};
     TimingLine(line);
     timingLast=0; // the file write is not part of the next gap

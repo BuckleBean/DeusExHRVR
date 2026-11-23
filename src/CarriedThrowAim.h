@@ -7,6 +7,8 @@ namespace CarriedThrowAim {
 inline constexpr uintptr_t Address=0x65f7c0;
 inline constexpr unsigned char Bytes[]={0x55,0x8b,0xec,0x83,0xe4,0xf0,0x83,0xec,0x2c};
 inline bool Caller(uintptr_t va){return va==0x661e18||va==0x662114;}
+// For InteractionTimingLog: calls more than 250 ms apart start a new logged burst.
+inline bool NewBurst(uint64_t now,uint64_t last){return !last||now<last||now-last>250;}
 inline bool Direction(float* result,const float* forward) {
     const float n=std::sqrt(forward[0]*forward[0]+forward[1]*forward[1]+forward[2]*forward[2]);
     if(!std::isfinite(n)||n<1e-5f)return false;

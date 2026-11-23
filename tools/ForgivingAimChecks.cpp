@@ -3,6 +3,7 @@
 #include <cmath>
 #include "ForgivingAim.h"
 #include "InteractionTiming.h"
+#include "CarriedThrowAim.h"
 #include <cstring>
 using namespace ForgivingAim;
 static int failures=0;
@@ -145,6 +146,8 @@ static void RegressionChecks() {
      Check(n==1&&std::abs(out[0].handDistance-27)<.001f,"nested contact searches retain the closest surface measurement");}
 }
 static void TimingChecks() {
+    Check(CarriedThrowAim::NewBurst(1000,0)&&CarriedThrowAim::NewBurst(1251,1000),"throw log marks the first call and calls after a pause");
+    Check(!CarriedThrowAim::NewBurst(1100,1000)&&!CarriedThrowAim::NewBurst(1250,1000),"throw log does not repeat within a burst");
     InteractionTiming::Second s;
     InteractionTiming::AddUpdate(s,10,100,2,500,false);
     InteractionTiming::AddUpdate(s,30,300,4,700,true);
