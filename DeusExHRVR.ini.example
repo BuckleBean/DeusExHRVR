@@ -170,6 +170,9 @@ HandContactInteract=1
 HandContactExact=1
 HandContactThroughItems=1
 HandContactCm=15
+; 1 writes DeusExHRVR-interaction-timing.log: one summary a second of interaction work,
+; plus carry start and end, replaced each launch. 0 (default) writes nothing. Restart to apply.
+InteractionTimingLog=0
 ; Either hand can interact: while your left hand has the prompt, left grip acts as
 ; Interact. 0 keeps interaction on the right hand. LeftHandCarryThrow=1 moves the throw
 ; to the left trigger when the left hand is carrying a body or object. Restart after

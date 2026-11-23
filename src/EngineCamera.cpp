@@ -24,6 +24,7 @@
 #include "DirectionConfig.h"
 #include "ThrowAim.h"
 #include "CarriedThrowAim.h"
+#include "InteractionTiming.h"
 #include "ProjectileAim.h"
 #include "NativeBounds.h"
 #include "SceneCache.h"
@@ -2078,6 +2079,19 @@ std::atomic<uint64_t> leftNearWeaponTick{};
 std::atomic<uintptr_t> grabManager{},forgivingPlayer{};
 std::atomic<uint64_t> grabStart{};
 bool forgivingAimLog{}; // [VR] ForgivingAimLog=1 writes its diagnostic lines
+// [VR] InteractionTimingLog=1: DeusExHRVR-interaction-timing.log, replaced each launch,
+// one summary a second plus carry start/end, at most 3600 lines. Off by default.
+bool interactionTimingLog{},timingStarted{};
+InteractionTiming::Second timingSecond;
+uint64_t timingLast{},timingNextWrite{};unsigned timingLines{};double timingMicros{};
+uint64_t TimingNow(){LARGE_INTEGER v{};QueryPerformanceCounter(&v);return uint64_t(v.QuadPart);}
+void TimingLine(const char* text) {
+    if(timingLines>=3600)return;
+    FILE* f{};
+    if(fopen_s(&f,"DeusExHRVR-interaction-timing.log",timingStarted?"a":"w"))return;
+    timingStarted=true;++timingLines;
+    fprintf(f,"%llu %s\n",GetTickCount64(),text);fclose(f);
+}
 float forgivingTan=.26795f;
 ForgivingAim::Selector forgivingSelector;
 thread_local bool forgivingRayActive{};
@@ -2242,6 +2256,7 @@ int __cdecl GrabDispatchHook(int id,void* value,void* key) {
        key&&reinterpret_cast<uintptr_t>(key)==forgivingPlayer.load()) {
         if(id==0x53){grabLeft=GamepadBridge::LastInteractWasLeft();grabStart=GetTickCount64();grabActive=true;}
         else grabActive=false;
+        if(interactionTimingLog)TimingLine(id==0x53?"carry start":"carry end");
         if(forgivingAimLog) {
             FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")){fprintf(f,"left carry %s leftHand=%d\n",id==0x53?"start":"end",int(grabLeft.load()));fclose(f);}
         }
@@ -2295,6 +2310,12 @@ void InstallInteractionProbes(){
     interactionDiagLog=GetPrivateProfileIntW(L"VR",L"InteractionDiagnosticLog",0,diagConfig)!=0;
     forgivingAimEnabled=GetPrivateProfileIntW(L"VR",L"ForgivingAim",1,diagConfig)!=0;
     forgivingAimLog=GetPrivateProfileIntW(L"VR",L"ForgivingAimLog",0,diagConfig)!=0;
+    interactionTimingLog=GetPrivateProfileIntW(L"VR",L"InteractionTimingLog",0,diagConfig)!=0;
+    if(interactionTimingLog) {
+        LARGE_INTEGER rate{};QueryPerformanceFrequency(&rate);
+        if(rate.QuadPart>0){timingMicros=1000000./double(rate.QuadPart);TimingLine("started");}
+        else interactionTimingLog=false;
+    }
     interactionFromEye=GetPrivateProfileIntW(L"VR",L"InteractionFromEye",1,diagConfig)!=0;
     leftHandInteract=GetPrivateProfileIntW(L"VR",L"LeftHandInteract",1,diagConfig)!=0;
     leftCarryThrow=leftHandInteract&&GetPrivateProfileIntW(L"VR",L"LeftHandCarryThrow",1,diagConfig)!=0;
@@ -2455,6 +2476,7 @@ bool ForgivingQueryRaw(void* self,const float* origin,const float* dir,float min
         *ownerSlot=ownerValue;ownerSet=true;
         const int found=reinterpret_cast<Overlap>(VA(0x50f1c0))(world+0x10,hits,0x20,shape,1);
         *ownerSlot=0;ownerSet=false;
+        if(interactionTimingLog)InteractionTiming::AddQuery(timingSecond,found);
         if(mayHoldMore&&found>=32)*mayHoldMore=true;
         for(int i=0;i<found&&i<32;i++) {
             auto* hit=hits+0x80*i;
@@ -2627,6 +2649,20 @@ void ForgivingEnd() {
     forgivingRayActive=false;
     contactTouchingCount=0;
 }
+void TimingFinish(uint64_t begin,uint64_t afterBegin,uint64_t afterGame) {
+    const auto done=TimingNow();
+    const auto gap=timingLast?begin-timingLast:0;
+    timingLast=begin;
+    InteractionTiming::AddUpdate(timingSecond,afterBegin-begin,afterGame-afterBegin,done-afterGame,gap,grabActive.load());
+    const auto tick=GetTickCount64();
+    if(tick<timingNextWrite)return;
+    timingNextWrite=tick+1000;
+    char line[260]{};
+    InteractionTiming::Format(timingSecond,timingMicros,line,sizeof(line));
+    timingSecond={};
+    TimingLine(line);
+    timingLast=0; // the file write is not part of the next gap
+}
 void __fastcall SenseUpdateHook(void* self,void*,float dt) {
     auto previous=senseQueries;
     {std::lock_guard lock(stateMutex);
@@ -2636,10 +2672,13 @@ void __fastcall SenseUpdateHook(void* self,void*,float dt) {
     bool sample=false;
     uint64_t now{};
     const bool forgivingDrive=forgivingAimEnabled&&interactionProbesReady&&!previous&&senseQueries&&dt>0;
+    uint64_t timingBegin{},timingAfterBegin{},timingAfterGame{};
     if(forgivingDrive) {
         forgivingPlayer=*reinterpret_cast<uintptr_t*>(static_cast<unsigned char*>(self)+8);
         GrabTick(GetTickCount64());
+        if(interactionTimingLog)timingBegin=TimingNow();
         ForgivingBegin(self);
+        if(interactionTimingLog)timingAfterBegin=TimingNow();
     }
     if(interactionDiagLog&&interactionProbesReady&&!previous&&senseQueries&&dt>0&&interactionSampleCount.load()<300){
         now=GetTickCount64();
@@ -2652,7 +2691,9 @@ void __fastcall SenseUpdateHook(void* self,void*,float dt) {
         interactionSample.scale=current.scale;interactionSample.source=unsigned(interactionAim.load());
     }
     originalSenseUpdate(self,dt);senseQueries=previous;
+    if(forgivingDrive&&interactionTimingLog)timingAfterGame=TimingNow();
     if(forgivingDrive)ForgivingEnd();
+    if(forgivingDrive&&interactionTimingLog)TimingFinish(timingBegin,timingAfterBegin,timingAfterGame);
     if(sample){interactionSample.active=false;++interactionSampleCount;WriteInteractionSample();}
 }
 uintptr_t VA(uintptr_t preferred);

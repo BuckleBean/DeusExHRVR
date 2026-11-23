@@ -2,6 +2,8 @@
 #include <cstdio>
 #include <cmath>
 #include "ForgivingAim.h"
+#include "InteractionTiming.h"
+#include <cstring>
 using namespace ForgivingAim;
 static int failures=0;
 static void Check(bool ok,const char* name){printf("%s %s\n",ok?"PASS":"FAIL",name);if(!ok)++failures;}
@@ -142,7 +144,20 @@ static void RegressionChecks() {
          if(d<=45*ContactKeep)MergeCandidate(out,n,T(1,d,0),45);}
      Check(n==1&&std::abs(out[0].handDistance-27)<.001f,"nested contact searches retain the closest surface measurement");}
 }
+static void TimingChecks() {
+    InteractionTiming::Second s;
+    InteractionTiming::AddUpdate(s,10,100,2,500,false);
+    InteractionTiming::AddUpdate(s,30,300,4,700,true);
+    Check(s.updates==2&&s.carrying==1,"timing counts updates and updates while carrying");
+    Check(s.beginTotal==40&&s.beginMax==30&&s.gameTotal==400&&s.gameMax==300&&s.endMax==4&&s.gapMax==700,"timing keeps separate totals and worst cases");
+    InteractionTiming::AddQuery(s,-1);InteractionTiming::AddQuery(s,5);InteractionTiming::AddQuery(s,32);
+    Check(s.queries==3&&s.hitsTotal==37&&s.hitsMax==32,"timing counts searches and physics hits");
+    char line[260]{};
+    const int n=InteractionTiming::Format(s,1.,line,sizeof(line));
+    Check(n>0&&n<int(sizeof(line))&&std::strstr(line,"beginAvgUs=20")&&std::strstr(line,"gameMaxUs=300")&&std::strstr(line,"gapMaxMs=0.7")&&std::strstr(line,"hitsMax=32"),"timing line reports microseconds and milliseconds");
+}
 static void TouchAndSearchChecks() {
+    TimingChecks();
     {Rig r;Candidate l[6]{C(1,.1f),C(2,.2f),C(3,.3f),C(4,.4f),C(5,.5f),C(6,.6f)};r.Right(Aim(0),l,6);
      uint64_t t=1000;for(int i=0;i<5;i++,t+=10){r.Go(t);r.s.Note(0,nullptr,t);}
      Candidate m[6]{T(7,10,5),C(1,.1f),C(2,.2f),C(3,.3f),C(4,.4f),C(5,.5f)};r.Right(Aim(0),m,6);
