@@ -1,7 +1,5 @@
 # DeusExHRVR
 
-Experimental particle roll correction: `ParticleRollFix=1` (default) levels the camera-facing particle axes while retaining the tracked view, particle positions and native particle rotation. Set `[VR] ParticleRollFix=0` and restart to restore native behavior. `ParticleRollLog=1` writes `DeusExHRVR-particle-roll.log` (default `0`, off). Near-vertical views retain native axes. Haze and bonfire coverage is not yet headset-tested.
-
 Experimental VR mod for **Deus Ex: Human Revolution — Director's Cut**, using the game's native AMD HD3D stereo renderer. **Both eyes are rendered in the same game frame. No AER.**
 
 Gameplay stereo, headset tracking, HUD alignment, motion-controlled weapon aiming, controller buttons, and selectable interaction/walking directions have been tested in-headset. Automatic widescreen menus and several lighting, shadow and sky corrections are included. This remains an experimental prerelease; weapon visibility at extreme viewing angles and untested missions/effects still need broader testing.
