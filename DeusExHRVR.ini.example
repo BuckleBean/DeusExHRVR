@@ -250,6 +250,7 @@ CeilingGuardLookAhead=1
 ; steer the barrel while it holds the weapon; 0 leaves aiming on the right hand.
 ; TwoHandedWeaponsLog=1 writes DeusExHRVR-twohand.log for troubleshooting. Restart
 ; after editing.
+; Sprint cancels the hold and two-handed aim; release and re-press grip after sprint.
 TwoHandedWeapons=1
 TwoHandedAim=1
 TwoHandedWeaponsLog=0

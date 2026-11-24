@@ -2,6 +2,9 @@
 #include <cstdio>
 #include <cmath>
 #include "TwoHandAttach.h"
+#include "NativeSprint.h"
+#include <array>
+#include <cstring>
 using namespace TwoHandAttach;
 static int failures=0;
 static void Check(bool ok,const char* name){printf("%s %s\n",ok?"PASS":"FAIL",name);if(!ok)++failures;}
@@ -20,9 +23,12 @@ int main() {
      s.Update(1210,true,true,211,300);Check(!s.attached&&s.broken,"pulling well away lets go");
      for(double t=1220;t<1500;t+=10)s.Update(t,true,true,120,300);Check(!s.attached&&s.amount==0,"and it does not grab again until the grip is released");
      s.Update(1510,false,true,120,300);s.Update(1520,true,true,120,300);Check(s.attached,"a new press can attach again");}
-    {State s;s.Update(1000,true,true,120,300);for(double t=1010;t<1200;t+=10)s.Update(t,true,true,120,300);
-     for(double t=1210;t<1500;t+=10)s.Update(t,true,false,120,300);Check(s.attached&&s.amount==0,"sprinting moves the hand off and keeps the hold");
-     for(double t=1510;t<1800;t+=10)s.Update(t,true,true,120,300);Check(s.amount==1,"and it returns afterwards");}
+    {State s;s.Update(1000,true,true,120,300);s.Cancel(true);
+     Check(!s.attached&&s.amount==0&&s.broken,"sprint cancels the pose immediately without blending through running animation");
+     for(double t=1010;t<1800;t+=10)s.Update(t,true,true,120,300);
+     Check(!s.attached&&s.amount==0,"ending sprint cannot restore the old grip");
+     s.Update(1810,false,true,120,300);s.Update(1820,true,true,120,300);
+     Check(s.attached,"after sprint a released and freshly pressed grip can attach");}
     {State s;s.Update(1000,true,true,120,300);Check(s.Update(9000,true,false,120,300)==0,"after a pause or load nothing is left half way");}
     {State s;s.Update(1000,true,true,NAN,300);Check(!s.attached,"a bad reading does not attach");}
     Check(WeaponReady(true,1,0,false,false),"a drawn weapon can be held");
@@ -48,5 +54,34 @@ int main() {
      const float bad[3]{0,0,5000},nearSpot[3]{0,-20,125};
      Check(GrabDistance(nearSpot,right,bad,spot)<6,"a bad muzzle position falls back to the hand spot");
      Check(GrabDistance(far,right,bad,spot)>GrabMetres*300,"and cannot make the whole world grabbable");}
+    {
+        std::array<unsigned char,0x1000> memory{};
+        auto read=[&](uintptr_t a,void* out,size_t n){
+            if(a<0x10000||a>0x11000||n>0x11000-a)return false;
+            memcpy(out,memory.data()+a-0x10000,n);return true;
+        };
+        auto word=[&](unsigned offset,uint32_t value){memcpy(memory.data()+offset,&value,4);};
+        Check(!NativeSprint::Read(0x10000,read).known,"missing character cannot authorize a grab");
+        word(0x58,0x10100);word(0x114,0x10200);word(0x240,0x10000);
+        word(0x244,0x10300);word(0x38c,0x10000);word(0x3b0,0x10500);
+        auto status=NativeSprint::Read(0x10000,read);
+        Check(status.known&&!status.active,"valid empty action slots are not sprinting");
+        word(0x508,0x10700);memory[0x705]=0x53;
+        status=NativeSprint::Read(0x10000,read);
+        Check(status.known&&!status.active,"ordinary action does not block walking with two hands");
+        for(unsigned type=0x6b;type<=0x6d;type++) {
+            memory[0x705]=static_cast<unsigned char>(type);status=NativeSprint::Read(0x10000,read);
+            Check(status.known&&status.active,"native sprint, enter and leave each block independent of button state");
+        }
+        memory[0x705]=0x70;word(0x708,2);word(0x70c,0x10800);memory[0x800]=0x53;memory[0x801]=0x6b;
+        status=NativeSprint::Read(0x10000,read);
+        Check(status.known&&status.active,"derived sprint actions are found through ancestors");
+        word(0x708,129);Check(!NativeSprint::Read(0x10000,read).known,"corrupt ancestry is bounded and blocks grabs");
+        word(0x708,0);word(0x38c,0x10001);
+        Check(!NativeSprint::Read(0x10000,read).known,"an action controller belonging to another entity is rejected");
+        word(0x38c,0x10000);word(0x508,0);word(0x5b8,0x10700);memory[0x705]=0x6d;
+        status=NativeSprint::Read(0x10000,read);
+        Check(status.known&&status.active,"sprint exit is found in the last action slot");
+    }
     return failures?1:0;
 }

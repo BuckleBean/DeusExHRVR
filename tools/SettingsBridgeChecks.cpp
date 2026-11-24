@@ -45,6 +45,7 @@ bool detonate{};uint64_t detonateHeld{};
 bool leftOwns{};bool LeftHandOwnsPrompt(){return leftOwns;}
 bool leftCarry{};bool LeftHandCarrying(){return leftCarry;}
 bool leftNear{},leftOnWeapon{};bool LeftHandNearWeapon(){return leftNear;}void SetLeftHandOnWeapon(bool v){leftOnWeapon=v;}bool gameSprint{};void SetGameSprintHeld(bool v){gameSprint=v;}
+bool TwoHandSprintBlocked(){return gameSprint;}
 bool DetonateReady(){return detonate;}void NoteDetonatePress(uint64_t ms){detonateHeld=ms;}
 unsigned CurrentScreenReasons(){return reasons;}
 bool SnapTurnView(float&){return reasons==0;}
@@ -97,6 +98,8 @@ int wmain(int argc,wchar_t** argv) {
     h.menu.blocked=0;assert(GamepadBridge::GetHook(0,&state)==ERROR_SUCCESS&&!state.Gamepad.wButtons);
     physical={};GamepadBridge::GetHook(0,&state);
     physical.wButtons=XINPUT_GAMEPAD_A;GamepadBridge::GetHook(0,&state);assert(state.Gamepad.wButtons==XINPUT_GAMEPAD_A);
+    physical.wButtons=XINPUT_GAMEPAD_LEFT_SHOULDER;GamepadBridge::GetHook(0,&state);assert(EngineCamera::gameSprint);
+    physical={};GamepadBridge::GetHook(0,&state);assert(!EngineCamera::gameSprint);
     // A stale host must not hold game input forever.
     h.menu.blocked=1;h.menu.hostTick=1;physical={};GamepadBridge::GetHook(0,&state);assert(!GamepadBridge::menuBlocked);
     auto missing=std::filesystem::absolute(dir/L"missing-parent"/L"not-an-ini.ini");

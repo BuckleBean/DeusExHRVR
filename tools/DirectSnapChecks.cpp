@@ -28,7 +28,9 @@ void SetDirectSnapEnabled(bool){}void CancelDirectSnap(){++cancels;}
 bool RequestDirectSnap(float degrees){requestedAngle=degrees;++requests;return true;}
 int QuickBarAutoHide(bool){assert(false);return 0;}unsigned QuickBarSetting(){return 0;}void SetQuickBar(bool){}
 bool ImmersiveScopeButton(){return false;}void ArmHandCalibration(){}void Recenter(){}
-bool ThrowMarkerEnabled(){return false;}void SetThrowAiming(bool){}void NoteThrowRelease(uint64_t){}bool LeftHandOwnsPrompt(){return false;}bool LeftHandCarrying(){return false;}bool LeftHandNearWeapon(){return false;}void SetLeftHandOnWeapon(bool){}void SetGameSprintHeld(bool){}bool DetonateReady(){return false;}void NoteDetonatePress(uint64_t){}
+bool sprintBlocked{},nearWeapon{},weaponHeld{};
+bool TwoHandSprintBlocked(){return sprintBlocked;}
+bool ThrowMarkerEnabled(){return false;}void SetThrowAiming(bool){}void NoteThrowRelease(uint64_t){}bool LeftHandOwnsPrompt(){return false;}bool LeftHandCarrying(){return false;}bool LeftHandNearWeapon(){return nearWeapon;}void SetLeftHandOnWeapon(bool v){weaponHeld=v;}void SetGameSprintHeld(bool){}bool DetonateReady(){return false;}void NoteDetonatePress(uint64_t){}
 }
 int main(){
     DirectSnap::Request q;
@@ -87,4 +89,25 @@ int main(){
     tick(0,0);tick(30000,0);assert(EngineCamera::requests==previousRequests+1);
     puts("PASS cover stick: no stick aiming, no queued snap, first-person up/down buttons kept, smooth-turn axis kept, return to first person requires neutral rearm");
     puts("PASS direct snap: one-shot/expiry/ownership/cancel, yaw direction/wrap, actual bridge rearm/focus/menu and untouched left stick");
+    for(bool remapped:{false,true}) {
+        GamepadBridge::remapActive=remapped;
+        for(size_t i=0;i<GamepadBridge::buttonCount;i++)GamepadBridge::buttonTarget[i]=GamepadBridge::buttonSources[i].bit;
+        if(remapped)GamepadBridge::buttonTarget[2]=XINPUT_GAMEPAD_B; // Dante's LeftX override
+        auto grip=[&](bool down){pad={};pad.wButtons=down?XINPUT_GAMEPAD_LEFT_SHOULDER:0;GamepadBridge::ApplyButtons(pad);};
+        EngineCamera::nearWeapon=true;EngineCamera::sprintBlocked=false;
+        grip(false);grip(true);assert(EngineCamera::weaponHeld&&pad.wButtons==0);
+        EngineCamera::sprintBlocked=true;grip(true);
+        assert(!EngineCamera::weaponHeld&&pad.wButtons==0);
+        EngineCamera::sprintBlocked=false;grip(true);
+        assert(!EngineCamera::weaponHeld&&pad.wButtons==0); // no automatic return
+        grip(false);grip(true);assert(EngineCamera::weaponHeld);
+        grip(false);EngineCamera::sprintBlocked=true;grip(true);
+        assert(!EngineCamera::weaponHeld&&(pad.wButtons&XINPUT_GAMEPAD_LEFT_SHOULDER));
+        EngineCamera::sprintBlocked=false;grip(true);
+        assert(!EngineCamera::weaponHeld&&(pad.wButtons&XINPUT_GAMEPAD_LEFT_SHOULDER)); // same press stays sprint
+        grip(false);EngineCamera::nearWeapon=false;grip(true);
+        assert(!EngineCamera::weaponHeld&&(pad.wButtons&XINPUT_GAMEPAD_LEFT_SHOULDER));
+        grip(false);
+        puts("PASS real bridge: sprint cancels hold, release required, sprint re-press never becomes a grab mid-press");
+    }
 }

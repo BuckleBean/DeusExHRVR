@@ -5,6 +5,7 @@
 #include <cstdarg>
 #include "CeilingGuard.h"
 #include "TwoHandAttach.h"
+#include "NativeSprint.h"
 #include "TwoHandSteer.h"
 #include "TakedownView.h"
 #include "TakedownRide.h"
@@ -2083,7 +2084,24 @@ Transport::Pose TwoHandHudPose(bool right,const Transport::Pose& grip) {
     return TwoHandSteer::ApplyShift(grip,shift);
 }
 std::atomic<bool> leftOnWeapon{},gameSprintHeld{};
+std::atomic<bool> nativeSprintBlocked{true};
+std::atomic<uint64_t> nativeSprintTick{},twoHandCancelGeneration{};
 std::atomic<uint64_t> leftNearWeaponTick{};
+bool SprintBlocksTwoHand() {
+    const auto tick=nativeSprintTick.load();const auto now=GetTickCount64();
+    return gameSprintHeld.load()||nativeSprintBlocked.load()||!tick||now<tick||now-tick>=250;
+}
+void CancelTwoHandForSprint() {
+    leftOnWeapon=false;leftNearWeaponTick=0;leftSteerTick=0;
+    ++twoHandCancelGeneration;
+    PublishTwoHandHud(0,nullptr);PublishTwoHandHud(1,nullptr);
+}
+// Camera update owns these reads; no native function calls or game-memory writes.
+bool ReadSprintMemory(uintptr_t address,void* destination,size_t size) {
+    if(address<0x10000||address>UINTPTR_MAX-size)return false;
+    __try {memcpy(destination,reinterpret_cast<const void*>(address),size);return true;}
+    __except(EXCEPTION_EXECUTE_HANDLER){return false;}
+}
 std::atomic<uintptr_t> grabManager{},forgivingPlayer{};
 std::atomic<uint64_t> grabStart{};
 bool forgivingAimLog{}; // [VR] ForgivingAimLog=1 writes its diagnostic lines
@@ -3892,6 +3910,14 @@ float TwoHandStep(CameraMath::Matrix* palette,const std::array<bool,223>& select
                   const CameraMath::Matrix& rightTarget,float scale,void* weapon,
                   const CameraMath::Matrix& muzzle,float leftGrip,void* holder,bool poseActive) {
     static thread_local TwoHandAttach::State state;
+    static thread_local uint64_t cancelled{};
+    const auto generation=twoHandCancelGeneration.load();
+    if(SprintBlocksTwoHand()||generation!=cancelled) {
+        cancelled=generation;state.Cancel(leftOnWeapon.load());
+        leftNearWeaponTick=0;leftSteerTick=0;
+        PublishTwoHandHud(0,nullptr);
+        return 0; // RestLeft has already placed the hand at its controller.
+    }
     std::array<CameraMath::Matrix,17> placed{};
     bool valid=leftMoved&&haveNative&&paired&&selected[101];
     for(unsigned i=0;valid&&i<17;i++)if(selected[100+i]) {
@@ -3907,8 +3933,8 @@ float TwoHandStep(CameraMath::Matrix* palette,const std::array<bool,223>& select
     const float gap=WorldDistance(leftTarget,rightTarget);
     uint32_t key{};
     if(weapon)HandMeshDiagnostic::Read(uintptr_t(weapon)+0x58,&key,4);
-    // What the game actually receives as sprint. The raw pad's LB is the left grip itself.
-    const bool sprinting=gameSprintHeld.load();
+    // Native sprint/transition state plus mapped sprint input; raw LB is left grip.
+    const bool sprinting=SprintBlocksTwoHand();
     if(valid&&!sprinting&&key) {
         static thread_local uint32_t seen[32]{};static thread_local unsigned seenCount{};
         bool known=false;for(unsigned i=0;i<seenCount;i++)known=known||seen[i]==key;
@@ -3928,7 +3954,7 @@ float TwoHandStep(CameraMath::Matrix* palette,const std::array<bool,223>& select
     const bool ready=weaponGrip!=TwoHandAttach::Grip::None&&TwoHandAttach::WeaponReady(known,weaponState,pendingWeapon,throwAiming.load(),grabActive.load());
     const bool eligible=TwoHandAttach::Eligible(valid,sprinting,ready,state.attached,spread);
     const bool inReach=valid&&!sprinting&&ready&&TwoHandAttach::Supported(spread)&&reach<=TwoHandAttach::GrabMetres*scale;
-    if(inReach)leftNearWeaponTick.store(GetTickCount64(),std::memory_order_relaxed);
+    leftNearWeaponTick.store(inReach?GetTickCount64():0,std::memory_order_relaxed);
     {
         static thread_local bool gripWas{};
         const bool grip=leftGrip>.5f;
@@ -3941,7 +3967,7 @@ float TwoHandStep(CameraMath::Matrix* palette,const std::array<bool,223>& select
     if(key!=lastKey){if(lastKey)state.Drop(leftOnWeapon.load());lastKey=key;}
     const float amount=state.Update(double(GetTickCount64()),leftOnWeapon.load(),eligible&&(state.attached||!state.broken),gap,scale);
     if(state.attached!=wasAttached)TwoHandNote(state.attached?"attached":(state.broken?"pulled away":"released"),key,spread,reach,gap);
-    if(twoHandedAim&&weaponGrip==TwoHandAttach::Grip::Full&&state.attached&&eligible)leftSteerTick.store(GetTickCount64(),std::memory_order_relaxed);
+    leftSteerTick.store(twoHandedAim&&weaponGrip==TwoHandAttach::Grip::Full&&state.attached&&eligible?GetTickCount64():0,std::memory_order_relaxed);
     if(!valid||amount<=0){PublishTwoHandHud(0,nullptr);return 0;}
     {
         // The cuff is carried by the wrist bone.
@@ -5157,6 +5183,22 @@ void __fastcall UpdateHook(void* self,void*) {
         const bool nativeScope=ScreenMode::Scope(base,manager);
         Transport::Tracking scopeTracking{};
         const auto now=GetTickCount64();
+        if(twoHandedWeapons) {
+            static const bool sprintLayout=
+                !memcmp(reinterpret_cast<void*>(base+0x788070-0x400000),"\x56\x8b\x74\x24\x08\x85\xf6",7)&&
+                !memcmp(reinterpret_cast<void*>(base+0x7804e0-0x400000),"\x8b\x49\x44\x85\xc9",5)&&
+                !memcmp(reinterpret_cast<void*>(base+0x7af3e0-0x400000),"\x8b\x8f\xb0\x00\x00\x00\x53\x03\xce",9)&&
+                !memcmp(reinterpret_cast<void*>(base+0x6544a0-0x400000),"\x8b\x54\x24\x04\x0f\xbe\x42\x05",8);
+            const auto entity=active==manager+0x6f0?*reinterpret_cast<uintptr_t*>(active+0xaa0):0;
+            const auto sprint=sprintLayout?NativeSprint::Read(entity,ReadSprintMemory):NativeSprint::Status{};
+            const bool blocked=!sprint.known||sprint.active;
+            const bool was=nativeSprintBlocked.exchange(blocked);
+            nativeSprintTick=now;
+            if(blocked){
+                if(!was||leftOnWeapon.load())CancelTwoHandForSprint();
+                leftNearWeaponTick=0;leftSteerTick=0;
+            }
+        }
         bool scopeWeapon=false;
         if(active==manager+0x6f0) {
             auto entity=*reinterpret_cast<void**>(active+0xaa0);
@@ -5676,8 +5718,13 @@ void __fastcall UpdateHook(void* self,void*) {
                             const auto steerTick=leftSteerTick.load(std::memory_order_relaxed);
                             const bool steering=steerTick&&now>=steerTick&&now-steerTick<250;
                             static TwoHandSteer::ScopeHold scopeHold;
-                            const bool throughScope=scopeHold.Update(immersiveScopeActive,steering,leftOnWeapon.load(),now);
-                            const bool show=poses&&((nativeRequested&&steering)||throughScope);
+                            static uint64_t cancelled{};
+                            const auto generation=twoHandCancelGeneration.load();
+                            const bool sprintBlocked=SprintBlocksTwoHand()||generation!=cancelled;
+                            cancelled=generation;
+                            if(sprintBlocked){scopeHold={};steer.Reset();}
+                            const bool throughScope=!sprintBlocked&&scopeHold.Update(immersiveScopeActive,steering,leftOnWeapon.load(),now);
+                            const bool show=!sprintBlocked&&poses&&((nativeRequested&&steering)||throughScope);
                             bool turned=false;
                             if(!poses)steer.Reset();
                             else if(steer.Update(double(now),show,steerRight,steerLeft,worldScale)) {
@@ -6846,9 +6893,10 @@ void SetThrowAiming(bool aiming){throwAiming=aiming;}
 void NoteThrowRelease(uint64_t heldMs){throwHeldMs=heldMs;}
 bool DetonateReady(){return detonateReady.load();}
 bool LeftHandCarrying(){return leftCarryThrow&&grabActive.load()&&grabLeft.load();}
-bool LeftHandNearWeapon(){const auto tick=leftNearWeaponTick.load(std::memory_order_relaxed);const auto now=GetTickCount64();return twoHandedWeapons&&tick&&now>=tick&&now-tick<250;}
+bool LeftHandNearWeapon(){const auto tick=leftNearWeaponTick.load(std::memory_order_relaxed);const auto now=GetTickCount64();return twoHandedWeapons&&!SprintBlocksTwoHand()&&tick&&now>=tick&&now-tick<250;}
 void SetLeftHandOnWeapon(bool on){leftOnWeapon=on;}
-void SetGameSprintHeld(bool on){gameSprintHeld=on;}
+void SetGameSprintHeld(bool on){const bool was=gameSprintHeld.exchange(on);if(on&&!was)CancelTwoHandForSprint();}
+bool TwoHandSprintBlocked(){return twoHandedWeapons&&SprintBlocksTwoHand();}
 bool LeftHandOwnsPrompt(){const auto tick=leftPromptTick.load(std::memory_order_relaxed);const auto now=GetTickCount64();return forgivingAimEnabled&&leftHandInteract&&tick&&now>=tick&&now-tick<250;}
 void NoteDetonatePress(uint64_t heldMs){NoteDetonate("press passed through as RB",heldMs);}
 void SetMovementDirection(unsigned value){if(value<=3)movementDirection.store(static_cast<DirectionConfig::Source>(value));}

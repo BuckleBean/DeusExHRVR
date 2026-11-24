@@ -34,11 +34,15 @@ bool leftGripInteract{},leftGripWeapon{},leftGripWait{},leftGripPrevious{};
 LeftCarry::TriggerSwap carryTriggers;
 std::atomic<bool> lastInteractLeft{};bool interactPrevious{};
 LeftGrip LeftGripStep(bool on,bool wheel) {
+    if(leftGripWeapon&&EngineCamera::TwoHandSprintBlocked()) {
+        leftGripWeapon=false;leftGripWait=on;
+        EngineCamera::SetLeftHandOnWeapon(false);
+    }
     if(leftGripWait){if(!on)leftGripWait=false;leftGripPrevious=on;return LeftGrip::Swallow;}
     if(on&&!leftGripPrevious&&!wheel) {
         // A prompt comes first, so holding the weapon never makes interaction harder.
         leftGripInteract=EngineCamera::LeftHandOwnsPrompt();
-        leftGripWeapon=!leftGripInteract&&EngineCamera::LeftHandNearWeapon();
+        leftGripWeapon=!leftGripInteract&&!EngineCamera::TwoHandSprintBlocked()&&EngineCamera::LeftHandNearWeapon();
         if(leftGripWeapon)EngineCamera::SetLeftHandOnWeapon(true);
     }
     leftGripPrevious=on;
@@ -398,7 +402,6 @@ bool Read(XINPUT_GAMEPAD& pad) {
         if(interact&&!interactPrevious)lastInteractLeft=leftGripInteract;
         interactPrevious=interact;
     }
-    EngineCamera::SetGameSprintHeld(fresh&&latest.gamepad.valid&&(pad.wButtons&XINPUT_GAMEPAD_LEFT_SHOULDER)!=0);
     PublishInteraction(fresh && latest.gamepad.valid && (pad.wButtons&XINPUT_GAMEPAD_X)!=0,now,!leftGripInteract);
     // Keep the device connected after first activation, but release every
     // button/axis on focus loss, sleeping controllers or a stalled companion.
@@ -411,7 +414,7 @@ DWORD WINAPI GetHook(DWORD index,XINPUT_STATE* state) {
     std::lock_guard lock(guard);XINPUT_GAMEPAD pad{};
     bool active=Read(pad);
     SyncQuickSave(); // also releases F5 when input stops or the game loses focus
-    if(!active)return result;
+    if(!active){EngineCamera::SetGameSprintHeld(false);return result;}
     ++polls;
     if(result==ERROR_SUCCESS) {
         const auto& real=state->Gamepad;
@@ -423,6 +426,7 @@ DWORD WINAPI GetHook(DWORD index,XINPUT_STATE* state) {
     }
     const XINPUT_GAMEPAD real=result==ERROR_SUCCESS?state->Gamepad:XINPUT_GAMEPAD{};
     if(menuGate.Physical(menuBlocked,real))pad={}; // includes physical pad release after closing
+    EngineCamera::SetGameSprintHeld((pad.wButtons&XINPUT_GAMEPAD_LEFT_SHOULDER)!=0);
     if(std::memcmp(&pad,&previous,sizeof(pad))){previous=pad;++packet;++changes;}
     state->Gamepad=pad;state->dwPacketNumber=packet;
     return ERROR_SUCCESS;

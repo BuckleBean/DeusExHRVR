@@ -50,6 +50,7 @@ bool LeftHandNearWeapon();
 void SetLeftHandOnWeapon(bool on);
 // LB as actually sent to the game after the button layout (sprint).
 void SetGameSprintHeld(bool on);
+bool TwoHandSprintBlocked();
 void NoteDetonatePress(uint64_t heldMs);
 void Recenter();
 // Local patch: bit mask of active virtual-screen reasons (1 interaction, 2 menu, 4 video, 8 game over, 16 scope,

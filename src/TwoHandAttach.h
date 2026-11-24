@@ -63,6 +63,9 @@ struct State {
     // gap: distance between the two controllers. Returns 0 (own pose) to 1 (on the weapon).
     // The weapon changed: let go, and stay off until the grip is pressed again.
     void Drop(bool held){attached=false;broken=held;}
+    // Sprint cancels the hold entirely. Never blend through a running palette
+    // or automatically restore the grip when sprint ends.
+    void Cancel(bool held){Drop(held);amount=0;have=false;}
     float Update(double nowMs,bool held,bool eligible,float gap,float scale) {
         if(!held){attached=false;broken=false;}
         else if(attached&&std::isfinite(gap)&&gap>base+BreakMetres*scale){attached=false;broken=true;}
