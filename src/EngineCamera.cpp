@@ -2035,10 +2035,13 @@ std::atomic<uint64_t> leftPromptTick{};
 bool leftCarryThrow{};
 std::atomic<bool> grabActive{},grabLeft{};
 bool carriedThrowAim{}; // [VR] CarriedThrowAim=0 keeps native camera-based throws
-// [VR] CarriedItemAtHand=0 keeps carried boxes in front of the camera.
+// [VR] CarriedItemAtHand=0 restores native object carrying and body dragging.
 // CarriedItemHandCm (0 to 40, default 3) is the gap between the palm and the object's surface.
 bool carriedItemAtHand{};float carriedItemHandMetres=.03f;
-float carrySurfacePoint[3]{};uint64_t carrySurfaceTick{},carriedExtentGrab{};float carriedExtentUnits{};
+float carrySurfacePoint[3]{};uint64_t carrySurfaceTick{};uintptr_t carrySurfaceOwner{};
+float carriedGrabPoint[3]{},carriedLocalContact[4]{};uintptr_t carriedGrabOwner{},carriedContactBody{};
+bool carriedGrabPointValid{},carriedContactTried{},carriedContactValid{};
+unsigned carriedPlacementLogCount[2]{};
 // Two-handed weapons, stage one. [VR] TwoHandedWeapons=0 turns it off;
 // TwoHandedWeaponsLog=1 writes DeusExHRVR-twohand.log.
 bool twoHandedWeapons{},twoHandedLog{};
@@ -2261,7 +2264,16 @@ GrabDispatch originalGrabDispatch{};
 int __cdecl GrabDispatchHook(int id,void* value,void* key) {
     if((id==0x53||id==0x54)&&reinterpret_cast<uintptr_t>(value)==VA(0xaa6124)&&
        key&&reinterpret_cast<uintptr_t>(key)==forgivingPlayer.load()) {
-        if(id==0x53){grabLeft=GamepadBridge::LastInteractWasLeft();grabStart=GetTickCount64();grabActive=true;}
+        if(id==0x53){
+            grabLeft=GamepadBridge::LastInteractWasLeft();grabStart=GetTickCount64();
+            // Freeze the accepted hit at grab start. Selection continues updating
+            // while carrying and must not replace this object's contact point.
+            carriedGrabPointValid=CarriedHand::Fresh(grabStart.load(),carrySurfaceTick);
+            memcpy(carriedGrabPoint,carrySurfacePoint,sizeof(carriedGrabPoint));
+            carriedGrabOwner=carrySurfaceOwner;
+            carriedContactTried=carriedContactValid=false;carriedContactBody=0;carriedPlacementLogCount[0]=carriedPlacementLogCount[1]=0;
+            grabActive=true;
+        }
         else grabActive=false;
         if(interactionTimingLog)TimingLine(id==0x53?"carry start":"carry end");
         if(forgivingAimLog) {
@@ -2330,32 +2342,52 @@ bool CarriedBodyRaw(uintptr_t manager,unsigned offset,int& state,uintptr_t& body
         return true;
     } __except(EXCEPTION_EXECUTE_HANDLER) {return false;}
 }
-bool CarriedBodyPositionRaw(uintptr_t body,float* out) {
+// Native physics vectors and quaternions are aligned 16-byte values. 0x4CECB0
+// is the game's quaternion/vector transform, also used by 0x4FD4C0 for pivots.
+bool CarriedRotateRaw(const float* rotation,const float* vector,float* out,bool inverse=false) {
     __try {
-        alignas(16) float p[4]{};
-        reinterpret_cast<void*(__thiscall*)(void*,float*)>(VA(0x6467a0))(reinterpret_cast<void*>(body),p);
-        memcpy(out,p,3*sizeof(float));
+        alignas(16) float q[4],v[4]{vector[0],vector[1],vector[2],0},r[4]{};
+        memcpy(q,rotation,sizeof(q));
+        float n=0;for(int i=0;i<4;i++){if(!std::isfinite(q[i]))return false;n+=q[i]*q[i];}
+        if(std::abs(n-1.f)>.02f)return false;
+        if(inverse)for(int i=0;i<3;i++)q[i]=-q[i];
+        reinterpret_cast<void*(__thiscall*)(void*,float*,const float*)>(VA(0x4cecb0))(q,r,v);
+        for(int i=0;i<3;i++){if(!std::isfinite(r[i]))return false;out[i]=r[i];}
         return true;
     } __except(EXCEPTION_EXECUTE_HANDLER) {return false;}
 }
-// Once per grab: how far this object's surface is from its center.
-void CarriedMeasure(uintptr_t manager,float scale) {
-    const auto grab=grabStart.load();
-    if(carriedExtentGrab==grab&&carriedExtentUnits>0)return;
-    carriedExtentGrab=grab;
-    int state=-1;uintptr_t body{};float center[3]{};bool measured=false;
-    carriedExtentUnits=CarriedHand::DefaultExtentMetres*scale;
-    if(carrySurfaceTick&&grab>=carrySurfaceTick&&grab-carrySurfaceTick<=CarriedHand::MaxPointAgeMs&&
-       CarriedBodyRaw(manager,0xa0,state,body)&&body&&CarriedBodyPositionRaw(body,center))
-        carriedExtentUnits=CarriedHand::Extent(carrySurfacePoint,center,scale,&measured);
-    if(interactionTimingLog) {
-        char line[80]{};
-        sprintf_s(line,"carry surface %s cm=%.1f",measured?"measured":"default",carriedExtentUnits/scale*100.f);
-        TimingLine(line);
-    }
+bool CarriedGeometryRaw(uintptr_t manager,uintptr_t caller,const float* native,float scale,
+                        float* contact,float* anchor) {
+    __try {
+        const auto body=*reinterpret_cast<uintptr_t*>(manager+0xa0);
+        if(!body)return false;
+        const auto* center=reinterpret_cast<const float*>(body+0x80);
+        const auto* rotation=reinterpret_cast<const float*>(body+0x90);
+        if(!carriedContactTried) {
+            carriedContactTried=true;carriedContactBody=body;
+            const auto handle=*reinterpret_cast<uint32_t*>(manager+0x14);
+            const auto owner=handle==0x7fffffff?0:reinterpret_cast<uintptr_t(__cdecl*)(uint32_t)>(VA(0x6082a0))(handle);
+            float offset[3]{};
+            carriedContactValid=carriedGrabPointValid&&owner&&owner==carriedGrabOwner&&
+                CarriedHand::Contact(carriedGrabPoint,center,scale,offset)&&
+                CarriedRotateRaw(rotation,offset,carriedLocalContact,true);
+            if(interactionTimingLog)TimingLine(carriedContactValid?"carry contact captured":"carry contact unavailable; using palm offset");
+        }
+        if(!carriedContactValid||body!=carriedContactBody)return false;
+        // Attached call 0x66055E takes [esp+60h]; its next rotation call takes
+        // [esp+40h]. Use that upcoming rotation, not last frame's body rotation.
+        if(caller==CarriedHand::HoldReturn)rotation=native-8;
+        if(!CarriedRotateRaw(rotation,carriedLocalContact,contact))return false;
+        if(caller==CarriedHand::PullReturn) {
+            const auto constraint=*reinterpret_cast<uintptr_t*>(manager+0x9c);
+            // 0x4FD4C0 = body.position + rotate(body.rotation, constraint+0x10).
+            if(!constraint||*reinterpret_cast<uintptr_t*>(constraint+0x160)!=body)return false;
+            if(!CarriedRotateRaw(rotation,reinterpret_cast<const float*>(constraint+0x10),anchor))return false;
+        }
+        return true;
+    } __except(EXCEPTION_EXECUTE_HANDLER) {return false;}
 }
-// The object rests against the palm: its center is past the palm by its own size plus the gap.
-bool CarriedHandTarget(uintptr_t manager,bool left,const float* native,float* out) {
+bool CarriedHandTarget(uintptr_t manager,int state,uintptr_t caller,bool left,const float* native,float* out) {
     float palm[3]{},direction[3]{},scale{};
     if(!HandPosition(left,palm))return false;
     {
@@ -2364,13 +2396,28 @@ bool CarriedHandTarget(uintptr_t manager,bool left,const float* native,float* ou
         if(!grip.valid)return false;
         const auto baseWorld=(current.nativeHeading||coverCamera.held)?current.controllerBase:RenderBase(current.originalWorld);
         const auto world=CameraMath::HeadWorld(baseWorld,reference,grip.pose,current.scale);
-        // Grip +X row: the left palm faces +X and the right palm faces -X.
         for(int i=0;i<3;i++)direction[i]=world.m[i]*(left?1.f:-1.f);
         scale=current.scale;
     }
     if(!std::isfinite(scale)||scale<=0)return false;
-    CarriedMeasure(manager,scale);
-    return CarriedHand::Target(palm,direction,carriedExtentUnits+carriedItemHandMetres*scale,native,CarriedHand::MaxJumpMetres*scale,out);
+    float contact[3]{},anchor[3]{};
+    const bool body=state==7;
+    const bool measured=!body&&CarriedGeometryRaw(manager,caller,native,scale,contact,anchor);
+    // Move only the ragdoll's existing drag handle, never its body's origin.
+    const bool moved=body?CarriedHand::Target(palm,direction,0,native,CarriedHand::MaxJumpMetres*scale,out):
+        measured?CarriedHand::ContactTarget(palm,contact,anchor,carriedItemHandMetres*scale,native,CarriedHand::MaxJumpMetres*scale,out):
+        CarriedHand::Target(palm,direction,(CarriedHand::DefaultExtentMetres+carriedItemHandMetres)*scale,native,CarriedHand::MaxJumpMetres*scale,out);
+    const unsigned logSite=caller==CarriedHand::PullReturn?0:1;
+    if(interactionTimingLog&&carriedPlacementLogCount[logSite]<6) {
+        ++carriedPlacementLogCount[logSite];
+        char line[512]{};
+        sprintf_s(line,"carry placement state=%d site=%s mode=%s moved=%d scale=%.2f palm=%.2f,%.2f,%.2f native=%.2f,%.2f,%.2f target=%.2f,%.2f,%.2f contact=%.2f,%.2f,%.2f anchor=%.2f,%.2f,%.2f",
+            state,caller==CarriedHand::PullReturn?"pull":"hold",body?"body":measured?"surface":"fallback",int(moved),scale,
+            palm[0],palm[1],palm[2],native[0],native[1],native[2],out[0],out[1],out[2],
+            contact[0],contact[1],contact[2],anchor[0],anchor[1],anchor[2]);
+        TimingLine(line);
+    }
+    return moved;
 }
 void* __fastcall CarriedPositionHook(void* self,void*,const float* position) {
     const auto caller=reinterpret_cast<uintptr_t>(_ReturnAddress())-base+0x400000;
@@ -2378,9 +2425,9 @@ void* __fastcall CarriedPositionHook(void* self,void*,const float* position) {
         const auto manager=grabManager.load();
         int state=-1;uintptr_t body{};
         if(manager&&CarriedBodyRaw(manager,CarriedHand::BodyOffset(caller),state,body)&&
-           CarriedHand::BoxState(state)&&body==reinterpret_cast<uintptr_t>(self)) {
+           CarriedHand::Supported(state,caller)&&body==reinterpret_cast<uintptr_t>(self)) {
             alignas(16) float moved[4]{position[0],position[1],position[2],position[3]};
-            if(CarriedHandTarget(manager,grabLeft.load(),position,moved)) {
+            if(CarriedHandTarget(manager,state,caller,grabLeft.load(),position,moved)) {
                 if(interactionTimingLog){++timingHandItemMoved;if(CarriedHand::ReplaceCallerTarget(caller))++timingHandItemPull;}
                 if(CarriedHand::ReplaceCallerTarget(caller)) {
                     memcpy(const_cast<float*>(position),moved,3*sizeof(float));
@@ -2751,7 +2798,7 @@ void ForgivingBegin(void* self) {
 void ForgivingEnd() {
     const auto now=GetTickCount64();
     const auto selected=forgivingSelected;
-    if(selected){memcpy(carrySurfacePoint,forgivingSelectedPoint,sizeof(carrySurfacePoint));carrySurfaceTick=now;}
+    if(selected){memcpy(carrySurfacePoint,forgivingSelectedPoint,sizeof(carrySurfacePoint));carrySurfaceTick=now;carrySurfaceOwner=selected;}
     if(forgivingAimLog)PathResult(forgivingSelector.LastPlan(),selected,now);
     forgivingSelector.Note(selected,forgivingSelectedPoint,now);
     leftPromptTick.store(selected&&forgivingSelector.HeldHand()==1?now:0,std::memory_order_relaxed);

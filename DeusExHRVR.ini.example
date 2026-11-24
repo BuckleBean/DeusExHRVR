@@ -184,10 +184,10 @@ LeftHandCarryThrow=1
 ; ForgivingAim=1 for grab ownership. Tracking loss falls back to the native camera direction.
 ; 0 restores native carried-object direction. Grenade ThrowAim is separate. Restart to apply.
 CarriedThrowAim=1
-; Carried boxes and other objects rest against the palm of the hand that grabbed them
-; instead of floating in front of the camera. Bodies are unchanged. CarriedItemHandCm
-; (0 to 40, default 3) is the gap between palm and object. CarriedItemAtHand=0 turns
-; this off. Restart after editing.
+; Carried objects retain their picked surface at the grabbing palm. Bodies use the
+; hand as their drag target. CarriedItemHandCm (0 to 40, default 3) is the rigid
+; object's surface gap; it does not offset body dragging. Missing surface data
+; uses a fixed palm offset. CarriedItemAtHand=0 disables both. Restart to apply.
 CarriedItemAtHand=1
 CarriedItemHandCm=3
 ; Which camera modes the hands step aside for, as a bit mask over the game's

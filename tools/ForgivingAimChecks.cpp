@@ -152,6 +152,19 @@ static void CarriedHandChecks() {
     Check(Site(PullReturn)&&Site(HoldReturn)&&!Site(0x660564),"only the two grab positioning calls are changed");
     Check(BodyOffset(PullReturn)==0x84&&BodyOffset(HoldReturn)==0xa0,"each call is matched to its own held object");
     Check(ReplaceCallerTarget(PullReturn)&&!ReplaceCallerTarget(HoldReturn),"the pull path also gives the game's velocity step the hand target");
+    Check(Supported(7,PullReturn)&&!Supported(7,HoldReturn)&&!Supported(6,PullReturn),"ragdolls move only the drag handle, never a direct body position");
+    Check(Fresh(2000,1000)&&!Fresh(2001,1000)&&!Fresh(999,1000)&&!Fresh(1000,0),"contact sample rejects stale, future and absent timestamps");
+    {const float palm[3]{10,20,30},center[3]{100,100,100},hit[3]{70,140,100},zero[3]{},anchor[3]{4,5,6};float contact[3]{},target[3]{};
+     Check(Contact(hit,center,300,contact)&&contact[0]==-30&&contact[1]==40,"contact retains direction and size instead of estimating a radius");
+     Check(ContactTarget(palm,contact,zero,0,palm,450,target)&&target[0]+contact[0]==palm[0]&&target[1]+contact[1]==palm[1],"direct placement puts the picked surface exactly at the palm");
+     Check(ContactTarget(palm,contact,anchor,0,palm,450,target)&&target[0]-anchor[0]+contact[0]==palm[0]&&target[1]-anchor[1]+contact[1]==palm[1],"pull constraint offset produces the same surface placement as direct carrying");
+     Check(ContactTarget(palm,contact,zero,5,palm,450,target)&&std::abs(target[0]+contact[0]-palm[0]-3)<.001f&&std::abs(target[1]+contact[1]-palm[1]+4)<.001f,"gap keeps the surface beyond the hand along the measured contact direction");
+     const float rotated[3]{-40,-30,0};
+     Check(ContactTarget(palm,rotated,zero,0,palm,450,target)&&target[0]+rotated[0]==palm[0]&&target[1]+rotated[1]==palm[1],"rotating the contact keeps that point attached to the hand");
+     target[0]=123;Check(!ContactTarget(palm,contact,zero,0,palm,1,target)&&target[0]==123,"excessive displacement retains the native target");
+     Check(!Contact(center,center,300,contact),"a center hit is not accepted as a surface contact");
+     const float bad[3]{NAN,0,0};Check(!Contact(bad,center,300,contact)&&!ContactTarget(palm,bad,zero,0,palm,450,target),"nonfinite contacts are rejected");
+     const float direction[3]{1,0,0};Check(Target(palm,direction,0,palm,450,target)&&target[0]==10&&target[1]==20&&target[2]==30,"body drag handle goes to the palm without the rigid-object gap");}
     const float palm[3]{10,20,30},dir[3]{0,0,2},closeBy[3]{10,20,60},farAway[3]{900,20,30};float out[3]{1,2,3};
     Check(Target(palm,dir,36,closeBy,450,out)&&out[0]==10&&out[1]==20&&std::abs(out[2]-66)<1e-4f,"box sits past the palm along the hand");
     out[0]=1;Check(!Target(palm,dir,36,farAway,450,out)&&out[0]==1,"a hand far from the game's spot keeps the game's position");
