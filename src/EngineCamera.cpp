@@ -2088,7 +2088,7 @@ bool forgivingAimLog{}; // [VR] ForgivingAimLog=1 writes its diagnostic lines
 bool interactionTimingLog{},timingStarted{};
 InteractionTiming::Second timingSecond;
 uint64_t timingLast{},timingNextWrite{};unsigned timingLines{};double timingMicros{};
-std::atomic<unsigned> timingHandItemMoved{},timingHandItemSkipped{};
+std::atomic<unsigned> timingHandItemMoved{},timingHandItemSkipped{},timingHandItemPull{};
 std::atomic<unsigned> timingThrowCalls{},timingThrowApplied{};std::atomic<uint64_t> timingThrowLast{};
 uint64_t TimingNow(){LARGE_INTEGER v{};QueryPerformanceCounter(&v);return uint64_t(v.QuadPart);}
 void TimingLine(const char* text) {
@@ -2346,7 +2346,11 @@ void* __fastcall CarriedPositionHook(void* self,void*,const float* position) {
            CarriedHand::BoxState(state)&&body==reinterpret_cast<uintptr_t>(self)) {
             alignas(16) float moved[4]{position[0],position[1],position[2],position[3]};
             if(CarriedHandTarget(grabLeft.load(),position,moved)) {
-                if(interactionTimingLog)++timingHandItemMoved;
+                if(interactionTimingLog){++timingHandItemMoved;if(CarriedHand::ReplaceCallerTarget(caller))++timingHandItemPull;}
+                if(CarriedHand::ReplaceCallerTarget(caller)) {
+                    memcpy(const_cast<float*>(position),moved,3*sizeof(float));
+                    return originalCarriedSetPosition(self,position);
+                }
                 return originalCarriedSetPosition(self,moved);
             }
             if(interactionTimingLog)++timingHandItemSkipped;
@@ -2729,7 +2733,7 @@ void TimingFinish(uint64_t begin,uint64_t afterBegin,uint64_t afterGame) {
     char line[340]{};
     const int used=InteractionTiming::Format(timingSecond,timingMicros,line,sizeof(line));
     if(used>0&&size_t(used)<sizeof(line))
-        sprintf_s(line+used,sizeof(line)-used," throwCalls=%u throwApplied=%u handItemMoved=%u handItemSkipped=%u",timingThrowCalls.exchange(0),timingThrowApplied.exchange(0),timingHandItemMoved.exchange(0),timingHandItemSkipped.exchange(0));
+        sprintf_s(line+used,sizeof(line)-used," throwCalls=%u throwApplied=%u handItemMoved=%u handItemPull=%u handItemSkipped=%u",timingThrowCalls.exchange(0),timingThrowApplied.exchange(0),timingHandItemMoved.exchange(0),timingHandItemPull.exchange(0),timingHandItemSkipped.exchange(0));
     timingSecond={};
     TimingLine(line);
     timingLast=0; // the file write is not part of the next gap

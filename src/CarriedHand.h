@@ -12,6 +12,9 @@ inline constexpr float MaxJumpMetres=1.5f; // farther than this from the game's 
 inline bool BoxState(int state){return state>=2&&state<=5;}
 inline bool Site(uintptr_t va){return va==PullReturn||va==HoldReturn;}
 inline unsigned BodyOffset(uintptr_t va){return va==PullReturn?0x84u:0xa0u;}
+// While pulling, the caller reads this same target again (0x661322) to set the handle's
+// velocity, so the hand target must replace the caller's copy too.
+inline bool ReplaceCallerTarget(uintptr_t va){return va==PullReturn;}
 inline bool Target(const float* palm,const float* direction,float forward,const float* native,float maxJump,float* out) {
     const float n=std::sqrt(direction[0]*direction[0]+direction[1]*direction[1]+direction[2]*direction[2]);
     if(!std::isfinite(n)||n<1e-5f||!std::isfinite(forward)||forward<0)return false;

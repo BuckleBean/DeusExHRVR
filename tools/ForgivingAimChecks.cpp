@@ -151,6 +151,7 @@ static void CarriedHandChecks() {
     Check(BoxState(2)&&BoxState(3)&&BoxState(4)&&BoxState(5)&&!BoxState(0)&&!BoxState(1)&&!BoxState(6)&&!BoxState(7),"only box carry states move to the hand; bodies do not");
     Check(Site(PullReturn)&&Site(HoldReturn)&&!Site(0x660564),"only the two grab positioning calls are changed");
     Check(BodyOffset(PullReturn)==0x84&&BodyOffset(HoldReturn)==0xa0,"each call is matched to its own held object");
+    Check(ReplaceCallerTarget(PullReturn)&&!ReplaceCallerTarget(HoldReturn),"the pull path also gives the game's velocity step the hand target");
     const float palm[3]{10,20,30},dir[3]{0,0,2},closeBy[3]{10,20,60},farAway[3]{900,20,30};float out[3]{1,2,3};
     Check(Target(palm,dir,36,closeBy,450,out)&&out[0]==10&&out[1]==20&&std::abs(out[2]-66)<1e-4f,"box sits past the palm along the hand");
     out[0]=1;Check(!Target(palm,dir,36,farAway,450,out)&&out[0]==1,"a hand far from the game's spot keeps the game's position");
