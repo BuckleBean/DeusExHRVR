@@ -156,6 +156,11 @@ static void CarriedHandChecks() {
     Check(Target(palm,dir,36,closeBy,450,out)&&out[0]==10&&out[1]==20&&std::abs(out[2]-66)<1e-4f,"box sits past the palm along the hand");
     out[0]=1;Check(!Target(palm,dir,36,farAway,450,out)&&out[0]==1,"a hand far from the game's spot keeps the game's position");
     const float none[3]{0,0,0};Check(!Target(palm,none,36,closeBy,450,out),"a missing hand direction keeps the game's position");
+    {const float c[3]{0,0,0},hit[3]{0,0,60},touching[3]{0,0,1},wild[3]{0,0,900},bad[3]{NAN,0,0};bool m=false;
+     Check(std::abs(Extent(hit,c,300,&m)-60)<1e-4f&&m,"object size comes from the game's hit point");
+     Check(std::abs(Extent(touching,c,300,&m)-9)<1e-4f&&m,"a very small measurement has a minimum size");
+     Check(std::abs(Extent(wild,c,300,&m)-36)<1e-4f&&!m,"an implausible measurement uses the default size");
+     Check(std::abs(Extent(bad,c,300,&m)-36)<1e-4f&&!m,"an invalid measurement uses the default size");}
 }
 static void TimingChecks() {
     CarriedHandChecks();

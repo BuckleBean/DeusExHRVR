@@ -15,6 +15,23 @@ inline unsigned BodyOffset(uintptr_t va){return va==PullReturn?0x84u:0xa0u;}
 // While pulling, the caller reads this same target again (0x661322) to set the handle's
 // velocity, so the hand target must replace the caller's copy too.
 inline bool ReplaceCallerTarget(uintptr_t va){return va==PullReturn;}
+// How far the object's surface is from its center, from the game's accepted hit point at
+// the grab. A missing or implausible measurement uses DefaultExtentMetres.
+inline constexpr float DefaultExtentMetres=.12f,MinExtentMetres=.03f,MaxExtentMetres=.6f;
+inline constexpr uint64_t MaxPointAgeMs=1000;
+inline float Extent(const float* hit,const float* center,float scale,bool* measured=nullptr) {
+    if(measured)*measured=false;
+    const float fallback=DefaultExtentMetres*scale;
+    float d2=0;
+    for(int i=0;i<3;i++) {
+        if(!std::isfinite(hit[i])||!std::isfinite(center[i]))return fallback;
+        d2+=(hit[i]-center[i])*(hit[i]-center[i]);
+    }
+    const float d=std::sqrt(d2);
+    if(!std::isfinite(d)||d>MaxExtentMetres*scale)return fallback;
+    if(measured)*measured=true;
+    return d<MinExtentMetres*scale?MinExtentMetres*scale:d;
+}
 inline bool Target(const float* palm,const float* direction,float forward,const float* native,float maxJump,float* out) {
     const float n=std::sqrt(direction[0]*direction[0]+direction[1]*direction[1]+direction[2]*direction[2]);
     if(!std::isfinite(n)||n<1e-5f||!std::isfinite(forward)||forward<0)return false;

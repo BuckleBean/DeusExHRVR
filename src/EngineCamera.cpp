@@ -2036,8 +2036,9 @@ bool leftCarryThrow{};
 std::atomic<bool> grabActive{},grabLeft{};
 bool carriedThrowAim{}; // [VR] CarriedThrowAim=0 keeps native camera-based throws
 // [VR] CarriedItemAtHand=0 keeps carried boxes in front of the camera.
-// CarriedItemHandCm (0 to 40, default 12) is how far past the palm the box sits.
-bool carriedItemAtHand{};float carriedItemHandMetres=.12f;
+// CarriedItemHandCm (0 to 40, default 3) is the gap between the palm and the object's surface.
+bool carriedItemAtHand{};float carriedItemHandMetres=.03f;
+float carrySurfacePoint[3]{};uint64_t carrySurfaceTick{},carriedExtentGrab{};float carriedExtentUnits{};
 // Two-handed weapons, stage one. [VR] TwoHandedWeapons=0 turns it off;
 // TwoHandedWeaponsLog=1 writes DeusExHRVR-twohand.log.
 bool twoHandedWeapons{},twoHandedLog{};
@@ -2329,13 +2330,47 @@ bool CarriedBodyRaw(uintptr_t manager,unsigned offset,int& state,uintptr_t& body
         return true;
     } __except(EXCEPTION_EXECUTE_HANDLER) {return false;}
 }
-bool CarriedHandTarget(bool left,const float* native,float* out) {
-    float palm[3]{};CameraMath::Matrix line;
-    if(!HandPosition(left,palm)||!InteractionLine(left?DirectionConfig::Source::LeftController:DirectionConfig::Source::Controller,line))return false;
-    float scale{};
-    {std::lock_guard lock(stateMutex);scale=current.scale;}
+bool CarriedBodyPositionRaw(uintptr_t body,float* out) {
+    __try {
+        alignas(16) float p[4]{};
+        reinterpret_cast<void*(__thiscall*)(void*,float*)>(VA(0x6467a0))(reinterpret_cast<void*>(body),p);
+        memcpy(out,p,3*sizeof(float));
+        return true;
+    } __except(EXCEPTION_EXECUTE_HANDLER) {return false;}
+}
+// Once per grab: how far this object's surface is from its center.
+void CarriedMeasure(uintptr_t manager,float scale) {
+    const auto grab=grabStart.load();
+    if(carriedExtentGrab==grab&&carriedExtentUnits>0)return;
+    carriedExtentGrab=grab;
+    int state=-1;uintptr_t body{};float center[3]{};bool measured=false;
+    carriedExtentUnits=CarriedHand::DefaultExtentMetres*scale;
+    if(carrySurfaceTick&&grab>=carrySurfaceTick&&grab-carrySurfaceTick<=CarriedHand::MaxPointAgeMs&&
+       CarriedBodyRaw(manager,0xa0,state,body)&&body&&CarriedBodyPositionRaw(body,center))
+        carriedExtentUnits=CarriedHand::Extent(carrySurfacePoint,center,scale,&measured);
+    if(interactionTimingLog) {
+        char line[80]{};
+        sprintf_s(line,"carry surface %s cm=%.1f",measured?"measured":"default",carriedExtentUnits/scale*100.f);
+        TimingLine(line);
+    }
+}
+// The object rests against the palm: its center is past the palm by its own size plus the gap.
+bool CarriedHandTarget(uintptr_t manager,bool left,const float* native,float* out) {
+    float palm[3]{},direction[3]{},scale{};
+    if(!HandPosition(left,palm))return false;
+    {
+        std::lock_guard lock(stateMutex);
+        const auto& grip=left?current.tracking.leftGrip:current.tracking.rightGrip;
+        if(!grip.valid)return false;
+        const auto baseWorld=(current.nativeHeading||coverCamera.held)?current.controllerBase:RenderBase(current.originalWorld);
+        const auto world=CameraMath::HeadWorld(baseWorld,reference,grip.pose,current.scale);
+        // Grip +X row: the left palm faces +X and the right palm faces -X.
+        for(int i=0;i<3;i++)direction[i]=world.m[i]*(left?1.f:-1.f);
+        scale=current.scale;
+    }
     if(!std::isfinite(scale)||scale<=0)return false;
-    return CarriedHand::Target(palm,line.m+8,carriedItemHandMetres*scale,native,CarriedHand::MaxJumpMetres*scale,out);
+    CarriedMeasure(manager,scale);
+    return CarriedHand::Target(palm,direction,carriedExtentUnits+carriedItemHandMetres*scale,native,CarriedHand::MaxJumpMetres*scale,out);
 }
 void* __fastcall CarriedPositionHook(void* self,void*,const float* position) {
     const auto caller=reinterpret_cast<uintptr_t>(_ReturnAddress())-base+0x400000;
@@ -2345,7 +2380,7 @@ void* __fastcall CarriedPositionHook(void* self,void*,const float* position) {
         if(manager&&CarriedBodyRaw(manager,CarriedHand::BodyOffset(caller),state,body)&&
            CarriedHand::BoxState(state)&&body==reinterpret_cast<uintptr_t>(self)) {
             alignas(16) float moved[4]{position[0],position[1],position[2],position[3]};
-            if(CarriedHandTarget(grabLeft.load(),position,moved)) {
+            if(CarriedHandTarget(manager,grabLeft.load(),position,moved)) {
                 if(interactionTimingLog){++timingHandItemMoved;if(CarriedHand::ReplaceCallerTarget(caller))++timingHandItemPull;}
                 if(CarriedHand::ReplaceCallerTarget(caller)) {
                     memcpy(const_cast<float*>(position),moved,3*sizeof(float));
@@ -2375,7 +2410,7 @@ void InstallInteractionProbes(){
     carriedThrowAim=GetPrivateProfileIntW(L"VR",L"CarriedThrowAim",1,diagConfig)!=0;
     carriedItemAtHand=GetPrivateProfileIntW(L"VR",L"CarriedItemAtHand",1,diagConfig)!=0;
     {
-        wchar_t carryText[32]{};GetPrivateProfileStringW(L"VR",L"CarriedItemHandCm",L"12",carryText,32,diagConfig);
+        wchar_t carryText[32]{};GetPrivateProfileStringW(L"VR",L"CarriedItemHandCm",L"3",carryText,32,diagConfig);
         const float cm=float(_wtof(carryText));
         if(std::isfinite(cm)&&cm>=0.f&&cm<=40.f)carriedItemHandMetres=cm*.01f;
     }
@@ -2716,6 +2751,7 @@ void ForgivingBegin(void* self) {
 void ForgivingEnd() {
     const auto now=GetTickCount64();
     const auto selected=forgivingSelected;
+    if(selected){memcpy(carrySurfacePoint,forgivingSelectedPoint,sizeof(carrySurfacePoint));carrySurfaceTick=now;}
     if(forgivingAimLog)PathResult(forgivingSelector.LastPlan(),selected,now);
     forgivingSelector.Note(selected,forgivingSelectedPoint,now);
     leftPromptTick.store(selected&&forgivingSelector.HeldHand()==1?now:0,std::memory_order_relaxed);
