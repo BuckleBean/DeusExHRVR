@@ -83,9 +83,9 @@ inline bool BuildLeftFrame(const std::array<Segment,223>& segments,Matrix& resul
     f.m[15]=1;result=f;return true;
 }
 // Left-handed mirror mode ([VR] LeftHanded=1): the gun hand (the model's right hand)
-// is placed at the LEFT controller and the model's left hand at the RIGHT one; both
-// are then drawn reflected across their own grip's side-to-side axis (MirrorAcross),
-// so each appears as the opposite hand in place. Only hand/gun placement calls this.
+// is first placed at the LEFT controller and the model's left hand at the RIGHT one;
+// MirrorPose then gives each model hand the mirror image of the other's pose, so the
+// model's real left hand holds at the left controller. Only hand/gun placement calls this.
 inline bool swapHands=false;
 inline bool GripTarget(const Transport::Tracking& t,uint64_t now,const Matrix& base,
                        const Transport::Pose& reference,float scale,Matrix& result,bool left=false){
@@ -141,7 +141,7 @@ inline bool MoveWithDelta(Matrix* palette,unsigned count,const std::array<bool,2
 }
 // Row-vector reflection across the plane through target's position whose normal is
 // target's first axis (the grip's side-to-side axis): p -> p - 2((p-c).n)n.
-// Deliberately not rigid (determinant -1); MoveWithDelta refuses it, Mirror applies it.
+// Not rigid (determinant -1) on its own; MirrorPose pairs it with the bind-space mirror.
 inline bool MirrorAcross(const Matrix& target,Matrix& result) {
     if(!Finite(target))return false;
     V n{target.m[0],target.m[1],target.m[2]};
@@ -153,22 +153,39 @@ inline bool MirrorAcross(const Matrix& target,Matrix& result) {
     r.m[15]=1;
     if(!Finite(r))return false;result=r;return true;
 }
-// Applies a reflection to the selected bones in [first,last] through MoveSkinMatrix,
-// which keeps the shader's w-column (slots 3/7/11/15). All or nothing.
-inline bool Mirror(Matrix* palette,unsigned count,const std::array<bool,223>& selected,
-                   const Matrix& reflection,unsigned first,unsigned last) {
-    if(!palette||(count!=223 && count!=162)||last>=count||first>last||!Finite(reflection))return false;
-    std::array<Matrix,32> moved{};
-    if(last-first+1>moved.size())return false;
+// Left-handed mode, pose mirror. Reflecting the hand MESH drew it inside out in the
+// headset (November 25, 3ad24d5), so each model hand is instead posed as the mirror image
+// of the other. The model is symmetric across its x=0 plane (right palm pivot
+// (-209.55,-14.73,412.86), left (+209.55,...); BuildRightFrame/BuildLeftFrame), and
+// right bone 129+k pairs with left bone 100+k (same parent structure). For a right skin
+// matrix S (bind -> placed), the left bone gets B*S*R: B mirrors bind space (x -> -x),
+// R mirrors placed space across the controller's plane (MirrorAcross). det(B)det(R)=+1,
+// so the result is rigid and draws normally. Each destination keeps its own w-column
+// (slots 3/7/11/15), as RestLeft does. Both hands are computed before either is written.
+inline bool MirrorPose(Matrix* palette,unsigned count,const std::array<bool,223>& rightBones,
+                       const std::array<bool,223>& leftBones,const Matrix& atLeft,const Matrix& atRight) {
+    if(!palette||(count!=223 && count!=162)||!Finite(atLeft)||!Finite(atRight))return false;
+    std::array<Matrix,17> newLeft{},newRight{};
+    auto mirrored=[](const Matrix& skin,const Matrix& reflection,const Matrix& keep,Matrix& out) {
+        if(!Finite(skin))return false;
+        Matrix affine=skin;affine.m[3]=affine.m[7]=affine.m[11]=0;affine.m[15]=1;
+        for(int j=0;j<3;j++)affine.m[j]=-affine.m[j];   // B*S: bind-space x -> -x
+        out=CameraMath::Multiply(affine,reflection);
+        for(int j:{3,7,11,15})out.m[j]=keep.m[j];
+        if(!Finite(out))return false;
+        V x{out.m[0],out.m[1],out.m[2]},y{out.m[4],out.m[5],out.m[6]},z{out.m[8],out.m[9],out.m[10]};
+        return Dot(Cross(x,y),z)>.98;   // rigid, not a reflection
+    };
     bool any=false;
-    for(unsigned i=first;i<=last;i++)if(selected[i]){
-        if(!Finite(palette[i]))return false;
-        moved[i-first]=CameraMath::MoveSkinMatrix(palette[i],reflection);
-        if(!Finite(moved[i-first]))return false;
+    for(unsigned k=0;k<17;k++) {
+        const unsigned r=129+k,l=100+k;
+        if(rightBones[r]!=leftBones[l])return false;
+        if(!rightBones[r])continue;
+        if(!mirrored(palette[r],atLeft,palette[l],newLeft[k])||!mirrored(palette[l],atRight,palette[r],newRight[k]))return false;
         any=true;
     }
     if(!any)return false;
-    for(unsigned i=first;i<=last;i++)if(selected[i])palette[i]=moved[i-first];
+    for(unsigned k=0;k<17;k++)if(rightBones[129+k]){palette[100+k]=newLeft[k];palette[129+k]=newRight[k];}
     return true;
 }
 inline bool Move(Matrix* palette,unsigned count,const std::array<bool,223>& selected,

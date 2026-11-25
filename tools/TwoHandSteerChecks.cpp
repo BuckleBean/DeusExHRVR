@@ -85,17 +85,40 @@ int main() {
         Matrix twice=CameraMath::Multiply(r,r);bool identity=true;
         for(int i=0;i<16;i++)identity=identity&&Near(twice.m[i],(i%5==0)?1.f:0.f);
         Check(identity,"mirroring twice gives back the original");
-        std::array<Matrix,223> palette{};std::array<bool,223> sel{};
-        for(auto& m:palette){m=At(1,2,3);m.m[3]=.25f;m.m[7]=.5f;m.m[11]=.75f;}
-        for(unsigned i=129;i<=145;i++)sel[i]=true;
-        Check(Mirror(palette.data(),223,sel,r,129,145),"mirror applies to the hand bones");
-        Check(palette[130].m[3]==.25f&&palette[130].m[7]==.5f&&palette[130].m[11]==.75f,"the shader's w-column slots survive");
-        Check(palette[100].m[12]==1&&palette[100].m[13]==2,"bones outside the hand are untouched");
-        Check(!MoveWithDelta(palette.data(),223,sel,r),"the normal hand mover still refuses a mirror");
-        Matrix bad=r;bad.m[0]=std::nanf("");
-        auto saved=palette[131];
-        Check(!Mirror(palette.data(),223,sel,bad,129,145)&&palette[131].m[12]==saved.m[12],"an invalid mirror changes nothing");
-        std::array<bool,223> none{};Check(!Mirror(palette.data(),223,none,r,129,145),"no selected bones means no mirror");
+        // Pose mirror: the model's left hand takes the mirror image of the right hand's pose.
+        std::array<Matrix,223> palette{};std::array<bool,223> right{},left{};
+        for(unsigned i=129;i<=145;i++)right[i]=true;
+        for(unsigned i=100;i<=116;i++)left[i]=true;
+        for(unsigned k=0;k<17;k++) {
+            palette[129+k]=YawAt(20.f+k,5.f+k,-3,40);palette[129+k].m[3]=.25f;   // right: placed, w slot marked
+            palette[100+k]=YawAt(-50.f-k,-30,4,41);palette[100+k].m[3]=.5f;      // left: elsewhere
+        }
+        const auto oldRight=palette[133],oldLeft=palette[104];
+        Matrix atLeft{},atRight{};
+        Check(MirrorAcross(YawAt(0,5,-3,40),atLeft)&&MirrorAcross(YawAt(0,-30,4,41),atRight),"both controller mirrors built");
+        Check(MirrorPose(palette.data(),223,right,left,atLeft,atRight),"pose mirror applies");
+        auto apply=[](const Matrix& m,const float* v,float* o){for(int j=0;j<3;j++){o[j]=m.m[12+j];for(int k=0;k<3;k++)o[j]+=v[k]*m.m[k*4+j];}};
+        const float vr[3]{11,-2,7},vl[3]{-11,-2,7};   // a right-hand bind vertex and its mirror on the left hand
+        float placedRight[3]{},mirrorOfIt[3]{},leftNow[3]{};
+        apply(oldRight,vr,placedRight);
+        {Matrix pt=At(placedRight[0],placedRight[1],placedRight[2]);auto q=CameraMath::Multiply(pt,atLeft);for(int j=0;j<3;j++)mirrorOfIt[j]=q.m[12+j];}
+        apply(palette[104],vl,leftNow);
+        Check(Near(leftNow[0],mirrorOfIt[0],.01f)&&Near(leftNow[1],mirrorOfIt[1],.01f)&&Near(leftNow[2],mirrorOfIt[2],.01f),
+              "the left hand lands exactly where the mirrored right hand would be");
+        float placedLeft[3]{},mirrorOfLeft[3]{},rightNow[3]{};
+        apply(oldLeft,vl,placedLeft);
+        {Matrix pt=At(placedLeft[0],placedLeft[1],placedLeft[2]);auto q=CameraMath::Multiply(pt,atRight);for(int j=0;j<3;j++)mirrorOfLeft[j]=q.m[12+j];}
+        apply(palette[133],vr,rightNow);
+        Check(Near(rightNow[0],mirrorOfLeft[0],.01f)&&Near(rightNow[1],mirrorOfLeft[1],.01f)&&Near(rightNow[2],mirrorOfLeft[2],.01f),
+              "and the right hand where the mirrored left hand would be");
+        const auto& m=palette[104];
+        const float poseDet=m.m[0]*(m.m[5]*m.m[10]-m.m[6]*m.m[9])-m.m[1]*(m.m[4]*m.m[10]-m.m[6]*m.m[8])+m.m[2]*(m.m[4]*m.m[9]-m.m[5]*m.m[8]);
+        Check(Near(poseDet,1),"the result is an ordinary rotation (draws normally, no inside-out)");
+        Check(palette[104].m[3]==.5f&&palette[133].m[3]==.25f,"each hand keeps its own shader w-column slots");
+        auto saved=palette;std::array<bool,223> uneven=right;uneven[130]=false;
+        Check(!MirrorPose(palette.data(),223,uneven,left,atLeft,atRight)&&palette[104].m[12]==saved[104].m[12],"unpaired bones change nothing");
+        Matrix bad=atLeft;bad.m[0]=std::nanf("");
+        Check(!MirrorPose(palette.data(),223,right,left,bad,atRight)&&palette[133].m[12]==saved[133].m[12],"an invalid mirror changes nothing");
         Matrix nan=grip;nan.m[0]=nan.m[1]=nan.m[2]=0;Check(!MirrorAcross(nan,r),"a grip without a side axis gives no mirror");
     }
     return failures?1:0;

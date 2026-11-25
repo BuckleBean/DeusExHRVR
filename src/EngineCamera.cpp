@@ -2022,17 +2022,10 @@ std::atomic<unsigned> interactionSampleCount{};
 bool interactionProbesReady{};
 bool handPush{},handPushLog{},handPushReady{},bodyPushLog{},bodyPushReady{};
 // [VR] LeftHanded=1 (default 0): left-handed mirror mode, stage 1 (hands). See
-// ModelHandAlignment::swapHands/MirrorAcross and HandOnlyGeometry::cullFlip.
-bool leftHanded{},leftHandedCull{};
+// ModelHandAlignment::swapHands and MirrorPose.
+bool leftHanded{};
 std::atomic<unsigned> leftHandedMirrored{},leftHandedMirrorFailed{};
-void LeftHandedCullFlip(void* state,bool begin);
 bool leftHandedLog{}; // [VR] LeftHandedLog=1 (default 0)
-// How mirrored hands are culled: 0 flip (default), 1 none (both faces), 2 unchanged.
-// While LeftHandedLog=1 it cycles automatically every 8 s for testing (logged).
-std::atomic<int> leftHandedCullMode{0};
-// Test aid (LeftHandedLog=1): 0 swap+mirror, 1 swap only, 2 mirror only; cycles every 8 s.
-std::atomic<int> leftHandedVariant{0};
-ID3D11Device* leftHandedDevice{};
 float handPushRadiusMetres=HandPush::DefaultRadiusMetres,handPushStrength=1.f;
 bool handPushShove=true;
 std::atomic<float> bodyPushScale{};
@@ -2724,16 +2717,10 @@ void InstallInteractionProbes(){
     leftHanded=GetPrivateProfileIntW(L"VR",L"LeftHanded",0,diagConfig)!=0;
     leftHandedLog=leftHanded&&GetPrivateProfileIntW(L"VR",L"LeftHandedLog",0,diagConfig)!=0;
     if(leftHanded) {
-        // The game's cull setter, used to draw mirrored hands right side out.
-        static const unsigned char cullBytes[]={0x8b,0x44,0x24,0x04,0x33,0xd2,0x53,0x8a,0x5c,0x24,0x0c,0x84,0xdb,0x0f,0x95,0xc2};
-        leftHandedCull=!memcmp(reinterpret_cast<void*>(base+0x54fc10-0x400000),cullBytes,sizeof(cullBytes));
-        if(leftHandedCull) {
-            ModelHandAlignment::swapHands=true;
-            HandOnlyGeometry::cullFlip=&LeftHandedCullFlip;
-            // Stage 1: the two-handed hold assumes the support hand is the left one.
-            twoHandedWeapons=false;twoHandedAim=false;
-        } else leftHanded=false;
-        FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")){fprintf(f,"leftHanded requested=1 active=%d cullSetter=%d\n",int(leftHanded),int(leftHandedCull));fclose(f);}
+        ModelHandAlignment::swapHands=true;
+        // Stage 1: the two-handed hold assumes the support hand is the left one.
+        twoHandedWeapons=false;twoHandedAim=false;
+        FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")){fprintf(f,"leftHanded active=1 method=poseMirror\n");fclose(f);}
     }
     float forgivingDegrees=15.f;
     {
@@ -4530,76 +4517,20 @@ float TwoHandStep(CameraMath::Matrix* palette,const std::array<bool,223>& select
     }
     return amount;
 }
-// Flips the game's cull mode for one mirrored hand draw, then restores it. The draw
-// state's +0x24 holds the D3D cull value the commit uses (1 none, 2 front, 3 back);
-// +0x28 the setter's flag; +0x43C only caches the setter's last request, which can be
-// stale (stage 1 read it, and the hands drew inside out), so it is not trusted here.
-// The setter 0x54FC10 maps mode 0/1/2 to cull 1/3/2 and marks the state dirty; +0x43C
-// is cleared first so its cache cannot skip the write.
-// [VR] LeftHandedLog=1 (default 0): DeusExHRVR-left-handed.log, the first 40 mirrored
-// draws' values before/after and a count every 2 s, at most 400 lines.
-thread_local int leftHandedCullSaved=-1,leftHandedFlagSaved{};
+// [VR] LeftHandedLog=1 (default 0): DeusExHRVR-left-handed.log, a count of mirrored
+// and failed hand poses every 2 s, at most 400 lines.
 unsigned leftHandedLogLines{};
-std::atomic<unsigned> leftHandedFlips{},leftHandedNoCull{},leftHandedFaults{};
 void LeftHandedLine(const char* format,...) {
     if(!leftHandedLog||leftHandedLogLines>=400)return;
     FILE* f{};if(fopen_s(&f,"DeusExHRVR-left-handed.log",leftHandedLogLines?"a":"w"))return;
     ++leftHandedLogLines;fprintf(f,"%llu ",GetTickCount64());
     va_list args;va_start(args,format);vfprintf(f,format,args);va_end(args);fputc('\n',f);fclose(f);
 }
-void LeftHandedCullFlip(void* state,bool begin) {
-    using SetCull=void(__thiscall*)(void*,int,int);
-    auto* s=static_cast<unsigned char*>(state);
-    int before=-1,flag=-1,cache=-1,after=-1;
-    __try {
-        auto set=reinterpret_cast<SetCull>(base+0x54fc10-0x400000);
-        before=*reinterpret_cast<const int*>(s+0x24);flag=*reinterpret_cast<const int*>(s+0x28);cache=*reinterpret_cast<const int*>(s+0x43c);
-        if(begin) {
-            leftHandedCullSaved=before;leftHandedFlagSaved=flag;
-            const int mode=leftHandedCullMode.load();
-            if(mode==0&&(before==3||before==2)) {
-                *reinterpret_cast<int*>(s+0x43c)=-1;
-                set(state,before==3?2:1,flag!=0);
-                ++leftHandedFlips;
-            } else if(mode==1&&before!=1) {
-                *reinterpret_cast<int*>(s+0x43c)=-1;
-                set(state,0,flag!=0);
-                ++leftHandedFlips;
-            } else ++leftHandedNoCull;
-        } else if(leftHandedCullSaved==3||leftHandedCullSaved==2||leftHandedCullSaved==1) {
-            *reinterpret_cast<int*>(s+0x43c)=-1;
-            set(state,leftHandedCullSaved==3?1:leftHandedCullSaved==2?2:0,leftHandedFlagSaved!=0);
-            leftHandedCullSaved=-1;
-        }
-        after=*reinterpret_cast<const int*>(s+0x24);
-    } __except(EXCEPTION_EXECUTE_HANDLER){leftHandedCullSaved=-1;++leftHandedFaults;}
-    if(leftHandedLog) {
-        static std::atomic<unsigned> detailed{};
-        static std::atomic<int> detailedMode{-1};
-        if(detailedMode.exchange(leftHandedVariant.load())!=leftHandedVariant.load())detailed=0;
-        // After the hand draw, before its restore: the GPU's cull, depth and blend state.
-        int d3dCull=-1,frontCcw=-1,depthOn=-1,depthWrite=-1,depthFunc=-1,blend=-1;
-        if(!begin&&leftHandedDevice&&detailed.load()<40) {
-            ID3D11DeviceContext* ctx{};leftHandedDevice->GetImmediateContext(&ctx);
-            if(ctx) {
-                ID3D11RasterizerState* rs{};ctx->RSGetState(&rs);
-                if(rs){D3D11_RASTERIZER_DESC d{};rs->GetDesc(&d);d3dCull=int(d.CullMode);frontCcw=int(d.FrontCounterClockwise);rs->Release();}
-                else d3dCull=0;
-                ID3D11DepthStencilState* ds{};UINT ref{};ctx->OMGetDepthStencilState(&ds,&ref);
-                if(ds){D3D11_DEPTH_STENCIL_DESC d{};ds->GetDesc(&d);depthOn=int(d.DepthEnable);depthWrite=int(d.DepthWriteMask);depthFunc=int(d.DepthFunc);ds->Release();}
-                ID3D11BlendState* bs{};float factor[4]{};UINT mask{};ctx->OMGetBlendState(&bs,factor,&mask);
-                if(bs){D3D11_BLEND_DESC d{};bs->GetDesc(&d);blend=int(d.RenderTarget[0].BlendEnable);bs->Release();}else blend=0;
-                ctx->Release();
-            }
-        }
-        // DepthFunc: 2 less, 3 equal, 4 less-equal, 5 greater, 7 greater-equal, 8 always.
-        if(!begin&&detailed.load()<40){++detailed;LeftHandedLine("hand draw variant=%d gpuCull=%d frontCCW=%d depthTest=%d depthWrite=%d depthFunc=%d blend=%d",
-            leftHandedVariant.load(),d3dCull,frontCcw,depthOn,depthWrite,depthFunc,blend);}
-        static std::atomic<uint64_t> last{};const auto now=GetTickCount64();auto l=last.load();
-        if(now>=l+2000&&last.compare_exchange_strong(l,now))
-            LeftHandedLine("summary flips=%u noCull=%u faults=%u mirroredHands=%u mirrorFailed=%u",
-                leftHandedFlips.load(),leftHandedNoCull.load(),leftHandedFaults.load(),leftHandedMirrored.load(),leftHandedMirrorFailed.load());
-    }
+void LeftHandedSummary() {
+    if(!leftHandedLog)return;
+    static uint64_t last{};const auto now=GetTickCount64();
+    if(now<last+2000)return;
+    last=now;LeftHandedLine("summary mirroredHands=%u mirrorFailed=%u",leftHandedMirrored.load(),leftHandedMirrorFailed.load());
 }
 bool TryModelHand(void* model,unsigned char* data,CameraMath::Matrix* palette,uint32_t n) {
     CameraMath::Matrix target{},leftTarget{};bool leftValid=false;uint32_t gripBits{};
@@ -4692,19 +4623,18 @@ bool TryModelHand(void* model,unsigned char* data,CameraMath::Matrix* palette,ui
             if(amount>0)InteractionCurl::Apply(palette,n,curl,amount);
         }
     }
-    // Left-handed mode: reflect each placed hand across its own grip's side-to-side
-    // axis, so the model's right hand (at the left controller) appears as a left hand
-    // and its left hand (at the right controller) as a right hand. Gun: stage 2.
-    bool mirrored=false;
-    if(leftHanded&&leftHandedVariant.load()!=1) {
-        CameraMath::Matrix gunHand{},otherHand{};
-        mirrored=ModelHandAlignment::MirrorAcross(target,gunHand)&&
-            ModelHandAlignment::Mirror(palette,n,plan->bones,gunHand,129,145);
-        if(mirrored&&leftMoved&&!(ModelHandAlignment::MirrorAcross(leftTarget,otherHand)&&
-            ModelHandAlignment::Mirror(palette,n,plan->leftBones,otherHand,100,116)))leftMoved=false;
-        if(mirrored)++leftHandedMirrored;else ++leftHandedMirrorFailed;
+    // Left-handed mode: each model hand takes the mirror image of the other's placed pose,
+    // so the model's left hand holds at the left controller and its right hand rests at
+    // the right one (MirrorPose). Without both hands placed, the plain swap is drawn.
+    if(leftHanded) {
+        CameraMath::Matrix atLeft{},atRight{};
+        const bool mirroredPose=leftMoved&&ModelHandAlignment::MirrorAcross(target,atLeft)&&
+            ModelHandAlignment::MirrorAcross(leftTarget,atRight)&&
+            ModelHandAlignment::MirrorPose(palette,n,plan->bones,plan->leftBones,atLeft,atRight);
+        if(mirroredPose)++leftHandedMirrored;else ++leftHandedMirrorFailed;
+        LeftHandedSummary();
     }
-    HandOnlyGeometry::Activate(uintptr_t(data),frameId.load(),plan,palette[130].m,leftMoved,false,mirrored);
+    HandOnlyGeometry::Activate(uintptr_t(data),frameId.load(),plan,palette[130].m,leftMoved);
 
     if(DiagnosticOptions::hands)++modelHandApplied;return true;
 }
@@ -7465,19 +7395,6 @@ Transport::RenderInfo OnPresent(uint64_t frame,bool capture) {
     // via [Luma] SubstituteShaders=1). Lets you A/B the swap in-headset without
     // restarting. Matches the existing F3/F4/F7 toggle pattern.
     bool f12=(GetAsyncKeyState(VK_F12)&0x8000)!=0;
-    // Test aid: with LeftHanded=1 and LeftHandedLog=1 the hands cycle every 8 s between
-    // swap+mirror (0, the mode itself), swap only (1) and mirror only (2), so no key press
-    // is needed in VR. Culling stays at flip for mirrored draws.
-    if(leftHanded&&leftHandedLog) {
-        static uint64_t cycleStart{};const auto cycleNow=GetTickCount64();
-        if(!cycleStart)cycleStart=cycleNow;
-        const int variant=int(((cycleNow-cycleStart)/8000)%3);
-        if(leftHandedVariant.exchange(variant)!=variant) {
-            ModelHandAlignment::swapHands=variant!=2;
-            static const char* const names[3]={"swap+mirror","swap only (no mirror)","mirror only (no swap)"};
-            LeftHandedLine("variant=%s (automatic, every 8 s)",names[variant]);
-        }
-    }
     if(f12&&!f12Down && !(GetAsyncKeyState(VK_CONTROL)&0x8000)){
         bool on=ToggleShaderSubstitution();
         FILE* f{};if(!fopen_s(&f,"DeusExHRVR-effects.log","a")){fprintf(f,"lumaSubstitute=%d frame=%llu\n",on,frame);fclose(f);}
@@ -7699,7 +7616,6 @@ void SetQuickBar(bool autoHide) {
 }
 
 void SetShaderSwapDevice(ID3D11Device* device){
-    leftHandedDevice=device;
     shaderSwap.SetDevice(device);
     HandBand::renderer.SetDevice(device); // used only by the hand HUD test
     // Phase 3: also init the injected-pass subsystem now that the device is
