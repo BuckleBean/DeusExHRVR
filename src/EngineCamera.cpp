@@ -5782,8 +5782,13 @@ void __fastcall UpdateHook(void* self,void*) {
             auto data=weapon?*reinterpret_cast<unsigned char**>(weapon+0x7c):nullptr;
             scopeWeapon=data && data[0x425]!=0;
         }
+        bool scopeRead=trackingReader.Read(channel,scopeTracking,now);
+        // Left-handed mode: the gun is in the left hand, so the scope comes up with the left
+        // controller. The gesture (ImmersiveScope::Gesture) reads rightController; give it
+        // the left one in this local copy only. Its limits are symmetric left/right.
+        if(scopeRead&&leftHanded)std::swap(scopeTracking.leftController,scopeTracking.rightController);
         const bool scopeAllowed=immersiveScope && motionControls && experimentalMotionControls && requested &&
-            scopeWeapon && !(screenReasons&~16u) && !gameMenuOpen && trackingReader.Read(channel,scopeTracking,now) && scopeTracking.rightController.valid;
+            scopeWeapon && !(screenReasons&~16u) && !gameMenuOpen && scopeRead && scopeTracking.rightController.valid;
         const bool calibrating=scopeTracking.controllerButtons==3 || calibration.Busy();
         if(calibrating)scopePulseUntil=0;
         const bool nearEye=scopeGesture.Update(scopeTracking,scopeAllowed&&!calibrating,now);
