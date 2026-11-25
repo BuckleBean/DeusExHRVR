@@ -1600,7 +1600,7 @@ std::atomic<bool> wheelOpen{};
 // controllerRaw is the muzzle BEFORE fubar's per-weapon grip offset is applied.
 // muzzle carries that offset, which is right for the gun and wrong for the
 // hand: the offset is a property of the weapon, not of where Mark's hand is.
-struct WeaponPose {void* weapon{};void* instance{};CameraMath::Matrix muzzle;uint64_t tick{};bool active{};void* owner{};CameraMath::Matrix controllerRaw;bool nativeRequested{},nativeValid{},nativeCover{};CameraMath::Matrix gripTarget{},nativeSkin{},delta{};uint64_t equippedTick{};uint32_t buttons{};Transport::Gamepad diagnosticPad{};float scale=LiveWorldScale::Default;void* holder{};};
+struct WeaponPose {void* weapon{};void* instance{};CameraMath::Matrix muzzle;uint64_t tick{};bool active{};void* owner{};CameraMath::Matrix controllerRaw;bool nativeRequested{},nativeValid{},nativeCover{};CameraMath::Matrix gripTarget{},mirrorTarget{},nativeSkin{},delta{};uint64_t equippedTick{};uint32_t buttons{};Transport::Gamepad diagnosticPad{};float scale=LiveWorldScale::Default;void* holder{};};
 WeaponPose weaponPose;
 void* diagnosticWeapon{};void* diagnosticInstance{};uint64_t diagnosticEquippedTick{};
 std::atomic<uint64_t> controllerDraws{},controllerMuzzles{};
@@ -2085,7 +2085,10 @@ void TakedownNote(const char* what,uint64_t frame) {
 std::mutex twoHandHudMutex;
 TwoHandSteer::HudShift twoHandHud[2];
 uint64_t twoHandHudTick[2]{};
+// hand: 0 the support hand, 1 the gun hand. Slots are physical wrists, so left-handed
+// mode stores the support hand at [1] and the gun hand at [0].
 void PublishTwoHandHud(int hand,const TwoHandSteer::HudShift* shift) {
+    if(leftHanded)hand=1-hand;
     std::lock_guard lock(twoHandHudMutex);
     twoHandHudTick[hand]=shift?GetTickCount64():0;
     if(shift)twoHandHud[hand]=*shift;
@@ -3683,7 +3686,7 @@ WeaponPose ReadWeaponPose(bool resolve=true,MuzzleQueryDiagnostic::Site site=Muz
     // reads the pose with resolve=false and stays right-handed until MirrorPose.
     if(leftHanded&&resolve&&pose.active&&!pose.nativeCover) {
         CameraMath::Matrix c{};
-        if(ModelHandAlignment::MirrorGun(pose.muzzle,pose.gripTarget,c)) {
+        if(ModelHandAlignment::MirrorGun(pose.muzzle,pose.mirrorTarget,c)) {
             pose.muzzle=CameraMath::Multiply(pose.muzzle,c);
             if(pose.nativeValid)pose.delta=CameraMath::Multiply(pose.delta,c);
             pose.controllerRaw=CameraMath::Multiply(pose.controllerRaw,c);
@@ -4461,7 +4464,8 @@ float TwoHandStep(CameraMath::Matrix* palette,const std::array<bool,223>& select
                   bool leftMoved,const std::array<CameraMath::Matrix,17>& nativeLeft,bool haveNative,
                   const CameraMath::Matrix& delta,bool paired,const CameraMath::Matrix& leftTarget,
                   const CameraMath::Matrix& rightTarget,float scale,void* weapon,
-                  const CameraMath::Matrix& muzzle,float leftGrip,void* holder,bool poseActive) {
+                  const CameraMath::Matrix& muzzle,float leftGrip,void* holder,bool poseActive,
+                  const CameraMath::Matrix* physicalMirror) {
     static thread_local TwoHandAttach::State state;
     static thread_local uint64_t cancelled{};
     const auto generation=twoHandCancelGeneration.load();
@@ -4526,7 +4530,12 @@ float TwoHandStep(CameraMath::Matrix* palette,const std::array<bool,223>& select
         // The cuff is carried by the wrist bone.
         const auto visible=CameraMath::Multiply(leftFrame,ModelHandAlignment::Affine(placed[selected[100]?0:1]));
         TwoHandSteer::HudShift shift;
-        PublishTwoHandHud(0,TwoHandSteer::MakeShift(visible,leftTarget,scale,amount,shift)?&shift:nullptr);
+        // Left-handed mode: both frames back in the physical world (the right controller).
+        const bool made=physicalMirror?
+            TwoHandSteer::MakeShift(ModelHandAlignment::MirrorWorld(visible,*physicalMirror),
+                                    ModelHandAlignment::MirrorWorld(leftTarget,*physicalMirror),scale,amount,shift):
+            TwoHandSteer::MakeShift(visible,leftTarget,scale,amount,shift);
+        PublishTwoHandHud(0,made?&shift:nullptr);
     }
     for(unsigned i=0;i<17;i++)if(selected[100+i])for(int j=0;j<16;j++) {
         if(j==3||j==7||j==11||j==15)continue; // the shader's fourth column stays as it is
@@ -4607,9 +4616,12 @@ bool TryModelHand(void* model,unsigned char* data,CameraMath::Matrix* palette,ui
     InteractionCurl::Definition leftCurl;
     bool leftMoved=leftValid && LeftModelFrame(model,plan,leftFrame,unused,&leftCurl) &&
         ModelHandAlignment::RestLeft(palette,n,plan->leftBones,leftFrame,leftTarget);
-    const float onWeapon=twoHandedWeapons?TwoHandStep(palette,plan->leftBones,leftFrame,leftMoved,nativeLeft,haveNativeLeft,
+    CameraMath::Matrix physicalMirror{};
+    const bool havePhysicalMirror=leftHanded&&ModelHandAlignment::MirrorAcross(target,physicalMirror);
+    const float onWeapon=twoHandedWeapons&&(!leftHanded||havePhysicalMirror)?TwoHandStep(palette,plan->leftBones,leftFrame,leftMoved,nativeLeft,haveNativeLeft,
         twoHandDelta,twoHandPaired,leftTarget,pose.gripTarget,handDrawScale,pose.weapon,pose.muzzle,
-        leftHanded?Transport::RightGrip(gripBits):Transport::LeftGrip(gripBits),pose.holder,pose.active):0.f;
+        leftHanded?Transport::RightGrip(gripBits):Transport::LeftGrip(gripBits),pose.holder,pose.active,
+        leftHanded?&physicalMirror:nullptr):0.f;
     if(controllerHandsInteractCurl){
         // Holstered is state 4 or 6 (InteractionCurl::Holstered); do not infer empty from a missing muzzle.
         // Validate the current holder association, not just a cached weapon address.
@@ -6295,6 +6307,9 @@ void __fastcall UpdateHook(void* self,void*) {
                         bool nativeRequested=controllerHandsModelAlignment.load() && controllerHands && controllerHandsWeapon &&
                             controllerHandsMode==15 && !handsSuspendedByMode.load() && !handsAsideForScope.load() && activeCameraIsPlayer.load() && !handsFarFromBody.load();
                         bool targetValid=nativeRequested && ModelHandAlignment::GripTarget(t,now,renderBase,reference,worldScale,modelTarget);
+                        // Left-handed mode: the gun is mirrored across the controller as it is,
+                        // not as two-handed steering turns it, the same plane the hands use.
+                        const auto mirrorTarget=modelTarget;
                         if(twoHandedAim) {
                             // The hand, barrel, shots and crosshair all derive from these.
                             static TwoHandSteer::Steer steer;
@@ -6318,7 +6333,10 @@ void __fastcall UpdateHook(void* self,void*) {
                                 if(targetValid) {
                                     steer.Apply(modelTarget,steerRight);
                                     TwoHandSteer::HudShift hud;
-                                    turned=TwoHandSteer::MakeShift(modelTarget,steerRight,worldScale,1.f,hud);
+                                    CameraMath::Matrix mirror{};
+                                    turned=!leftHanded?TwoHandSteer::MakeShift(modelTarget,steerRight,worldScale,1.f,hud):
+                                        ModelHandAlignment::MirrorAcross(steerRight,mirror)&&
+                                        TwoHandSteer::MakeShift(ModelHandAlignment::MirrorWorld(modelTarget,mirror),steerRight,worldScale,1.f,hud);
                                     if(turned)PublishTwoHandHud(1,&hud);
                                 }
                             }
@@ -6361,7 +6379,7 @@ void __fastcall UpdateHook(void* self,void*) {
                         }
                         weaponPose={weapon,instance,raw,t.tick,true,*reinterpret_cast<void**>(weapon+0x64),rawController};
                         weaponPose.scale=worldScale;weaponPose.holder=holder;
-                        weaponPose.nativeRequested=nativeRequested;weaponPose.gripTarget=modelTarget;
+                        weaponPose.nativeRequested=nativeRequested;weaponPose.gripTarget=modelTarget;weaponPose.mirrorTarget=mirrorTarget;
                         if(diagnosticWeapon!=weapon || diagnosticInstance!=instance){
                             diagnosticWeapon=weapon;diagnosticInstance=instance;diagnosticEquippedTick=now;
                         }

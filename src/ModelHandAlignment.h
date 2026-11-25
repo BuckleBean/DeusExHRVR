@@ -94,6 +94,13 @@ inline bool swapHands=false;
 inline bool PhysicalGripTarget(const Transport::Tracking& t,uint64_t now,const Matrix& base,
                                const Transport::Pose& reference,float scale,Matrix& result,bool useLeft);
 inline bool MirrorAcross(const Matrix& target,Matrix& result);
+// Between the physical world and the left-handed mirror world (S*X*M; its own inverse).
+// mirror is MirrorAcross of the physical left grip; S negates the side axis (row 0).
+inline Matrix MirrorWorld(const Matrix& x,const Matrix& mirror) {
+    auto r=CameraMath::Multiply(x,mirror);
+    for(int j=0;j<3;j++)r.m[j]=-r.m[j];
+    return r;
+}
 inline bool GripTarget(const Transport::Tracking& t,uint64_t now,const Matrix& base,
                        const Transport::Pose& reference,float scale,Matrix& result,bool left=false){
     if(!swapHands)return PhysicalGripTarget(t,now,base,reference,scale,result,left);
@@ -101,8 +108,7 @@ inline bool GripTarget(const Transport::Tracking& t,uint64_t now,const Matrix& b
     Matrix gunHand{},support{},mirror{};
     if(!PhysicalGripTarget(t,now,base,reference,scale,gunHand,true)||
        !PhysicalGripTarget(t,now,base,reference,scale,support,false)||!MirrorAcross(gunHand,mirror))return false;
-    auto virtualSupport=CameraMath::Multiply(support,mirror);
-    for(int j=0;j<3;j++)virtualSupport.m[j]=-virtualSupport.m[j];
+    const auto virtualSupport=MirrorWorld(support,mirror);
     if(!Finite(virtualSupport))return false;
     result=virtualSupport;return true;
 }
