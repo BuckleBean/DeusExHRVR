@@ -281,8 +281,8 @@ TwoHandedAim=1
 TwoHandedWeaponsLog=0
 ; EXPERIMENTAL left-handed mode, stage 1 (hands). 1 mirrors the hands: Jensen's left
 ; hand holds at the left controller, posed as the mirror image of his right hand, and his
-; right hand rests at the right controller. Not yet mirrored: the gun itself, the wrist
-; HUD sides. Two-handed weapons are off while it is on. For firing with the left
+; right hand rests at the right controller. The gun is held as the mirror image of a
+; right-handed hold. Not yet mirrored: the wrist HUD sides. Two-handed weapons are off while it is on. For firing with the left
 ; trigger, add to [Buttons]: LeftTrigger=RT and RightTrigger=LT. 0 (default) turns it off.
 LeftHanded=0
 ; Diagnostic log DeusExHRVR-left-handed.log (mirrored/failed hand poses every 2 s, at

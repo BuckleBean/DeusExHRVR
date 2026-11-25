@@ -3672,6 +3672,17 @@ WeaponPose ReadWeaponPose(bool resolve=true,MuzzleQueryDiagnostic::Site site=Muz
         pose.nativeValid=false;pose.nativeRequested=false;pose.muzzle=pose.controllerRaw;
         pose.active=NativeHandWeapon::Rigid(pose.muzzle);
     }
+    // Left-handed mode: the gun is moved as a mirror image of its right-handed hold (see
+    // ModelHandAlignment::MirrorGun), for its draw and its shots alike. Hand placement
+    // reads the pose with resolve=false and stays right-handed until MirrorPose.
+    if(leftHanded&&resolve&&pose.active&&!pose.nativeCover) {
+        CameraMath::Matrix c{};
+        if(ModelHandAlignment::MirrorGun(pose.muzzle,pose.gripTarget,c)) {
+            pose.muzzle=CameraMath::Multiply(pose.muzzle,c);
+            if(pose.nativeValid)pose.delta=CameraMath::Multiply(pose.delta,c);
+            pose.controllerRaw=CameraMath::Multiply(pose.controllerRaw,c);
+        }
+    }
     return pose;
 }
 
@@ -4609,12 +4620,13 @@ bool TryModelHand(void* model,unsigned char* data,CameraMath::Matrix* palette,ui
         if(handGripClose) {
             static thread_local InteractionCurl::GripEnvelope rightGrip,leftGrip;
             const float right=rightGrip.Update(now,frameId.load(),rightOwner,rightFree,
-                InteractionCurl::GripTarget(Transport::RightGrip(gripBits),GamepadBridge::InteractionVisualHeld(now)));
+                // Left-handed mode: the model's right hand ends up as the visual left hand.
+                InteractionCurl::GripTarget(leftHanded?Transport::LeftGrip(gripBits):Transport::RightGrip(gripBits),GamepadBridge::InteractionVisualHeld(now)));
             if(right>0)InteractionCurl::Apply(palette,n,curl,right);
             bool leftReady=leftMoved&&leftCurl.valid;
             for(unsigned i=101;leftReady&&i<=116;i++)leftReady=plan->leftBones[i];
             const float left=leftGrip.Update(now,frameId.load(),uintptr_t(model),leftReady,
-                InteractionCurl::GripTarget(Transport::LeftGrip(gripBits),false));
+                InteractionCurl::GripTarget(leftHanded?Transport::RightGrip(gripBits):Transport::LeftGrip(gripBits),false));
             // On the weapon the fingers are the game's own grip.
             if(left>0&&onWeapon<1)InteractionCurl::Apply(palette,n,leftCurl,left*(1-onWeapon));
         } else {

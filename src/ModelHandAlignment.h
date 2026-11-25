@@ -153,6 +153,20 @@ inline bool MirrorAcross(const Matrix& target,Matrix& result) {
     r.m[15]=1;
     if(!Finite(r))return false;result=r;return true;
 }
+// Left-handed mode, the gun: reflect it across its own vertical plane through the barrel
+// (the muzzle frame's first row is "right"; CameraFromMuzzle), then across the gun hand's
+// plane. Two reflections make a rigid move (det +1), so the gun draws normally and
+// appears as the mirror image of the right-handed hold; being treated as symmetric, its
+// lettering still reads the right way. Applied to the gun's draw and its shots alike.
+inline bool MirrorGun(const Matrix& muzzle,const Matrix& handTarget,Matrix& result) {
+    Matrix self{},hand{};
+    if(!MirrorAcross(muzzle,self)||!MirrorAcross(handTarget,hand))return false;
+    const auto r=CameraMath::Multiply(self,hand);
+    if(!Finite(r))return false;
+    V x{r.m[0],r.m[1],r.m[2]},y{r.m[4],r.m[5],r.m[6]},z{r.m[8],r.m[9],r.m[10]};
+    if(Dot(Cross(x,y),z)<.98)return false;
+    result=r;return true;
+}
 // Left-handed mode, pose mirror. Reflecting the hand MESH drew it inside out in the
 // headset (November 25, 3ad24d5), so each model hand is instead posed as the mirror image
 // of the other. The model is symmetric across its x=0 plane (right palm pivot

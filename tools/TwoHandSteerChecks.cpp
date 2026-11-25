@@ -119,6 +119,23 @@ int main() {
         Check(!MirrorPose(palette.data(),223,uneven,left,atLeft,atRight)&&palette[104].m[12]==saved[104].m[12],"unpaired bones change nothing");
         Matrix bad=atLeft;bad.m[0]=std::nanf("");
         Check(!MirrorPose(palette.data(),223,right,left,bad,atRight)&&palette[133].m[12]==saved[133].m[12],"an invalid mirror changes nothing");
+        // The gun: its own plane, then the hand's plane -> a rigid move.
+        {
+            Matrix muzzle=YawAt(10,20,0,30),hand=YawAt(0,12,0,30),c{};   // muzzle row 0 = gun's right
+            Check(MirrorGun(muzzle,hand,c),"gun mirror built");
+            const float gunDet=c.m[0]*(c.m[5]*c.m[10]-c.m[6]*c.m[9])-c.m[1]*(c.m[4]*c.m[10]-c.m[6]*c.m[8])+c.m[2]*(c.m[4]*c.m[9]-c.m[5]*c.m[8]);
+            Check(Near(gunDet,1),"the gun moves rigidly (draws normally)");
+            auto moved=CameraMath::Multiply(muzzle,c);
+            Matrix handMirror{};MirrorAcross(hand,handMirror);
+            auto expected=CameraMath::Multiply(At(20,0,30),handMirror);
+            Check(Near(moved.m[12],expected.m[12])&&Near(moved.m[13],expected.m[13])&&Near(moved.m[14],expected.m[14]),
+                  "the muzzle lands at the mirror of the right-handed muzzle");
+            V barrel{-muzzle.m[4],-muzzle.m[5],-muzzle.m[6]},hn{hand.m[0],hand.m[1],hand.m[2]};Normalize(hn);
+            const double along=Dot(barrel,hn);V want{barrel[0]-2*along*hn[0],barrel[1]-2*along*hn[1],barrel[2]-2*along*hn[2]};
+            Check(Near(-moved.m[4],float(want[0]))&&Near(-moved.m[5],float(want[1]))&&Near(-moved.m[6],float(want[2])),
+                  "and the barrel points where the mirrored barrel would");
+            Matrix zero{};Check(!MirrorGun(muzzle,zero,c),"no grip target, no gun mirror");
+        }
         Matrix nan=grip;nan.m[0]=nan.m[1]=nan.m[2]=0;Check(!MirrorAcross(nan,r),"a grip without a side axis gives no mirror");
     }
     return failures?1:0;
