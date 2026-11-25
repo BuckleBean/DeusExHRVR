@@ -286,7 +286,8 @@ TwoHandedWeaponsLog=0
 ; LeftTrigger=RT and RightTrigger=LT. 0 (default) turns it off. Restart after editing.
 LeftHanded=0
 ; Diagnostic log DeusExHRVR-left-handed.log (cull values of mirrored hand draws,
-; at most 400 lines). 0 (default) turns it off.
+; at most 400 lines). 0 (default) turns it off. Testing aid while LeftHanded=1: Ctrl+F12
+; cycles the mirrored hands' culling between flip (default), none and unchanged.
 LeftHandedLog=0
 ; EXPERIMENTAL first-person takedowns, off by default. Set FirstPersonTakedowns=1 to try
 ; them. The game's animation still runs. Your view rides along with Jensen's eyes and turns

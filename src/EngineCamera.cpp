@@ -2027,6 +2027,10 @@ bool leftHanded{},leftHandedCull{};
 std::atomic<unsigned> leftHandedMirrored{},leftHandedMirrorFailed{};
 void LeftHandedCullFlip(void* state,bool begin);
 bool leftHandedLog{}; // [VR] LeftHandedLog=1 (default 0)
+// Ctrl+F12 cycles how mirrored hands are culled, for testing: 0 flip (default), 1 none
+// (both faces), 2 unchanged. Logged to the camera log and the left-handed log.
+std::atomic<int> leftHandedCullMode{0};
+ID3D11Device* leftHandedDevice{};
 float handPushRadiusMetres=HandPush::DefaultRadiusMetres,handPushStrength=1.f;
 bool handPushShove=true;
 std::atomic<float> bodyPushScale{};
@@ -4550,9 +4554,14 @@ void LeftHandedCullFlip(void* state,bool begin) {
         before=*reinterpret_cast<const int*>(s+0x24);flag=*reinterpret_cast<const int*>(s+0x28);cache=*reinterpret_cast<const int*>(s+0x43c);
         if(begin) {
             leftHandedCullSaved=before;leftHandedFlagSaved=flag;
-            if(before==3||before==2) {
+            const int mode=leftHandedCullMode.load();
+            if(mode==0&&(before==3||before==2)) {
                 *reinterpret_cast<int*>(s+0x43c)=-1;
                 set(state,before==3?2:1,flag!=0);
+                ++leftHandedFlips;
+            } else if(mode==1&&before!=1) {
+                *reinterpret_cast<int*>(s+0x43c)=-1;
+                set(state,0,flag!=0);
                 ++leftHandedFlips;
             } else ++leftHandedNoCull;
         } else if(leftHandedCullSaved==3||leftHandedCullSaved==2||leftHandedCullSaved==1) {
@@ -4564,7 +4573,22 @@ void LeftHandedCullFlip(void* state,bool begin) {
     } __except(EXCEPTION_EXECUTE_HANDLER){leftHandedCullSaved=-1;++leftHandedFaults;}
     if(leftHandedLog) {
         static std::atomic<unsigned> detailed{};
-        if(detailed.load()<40){++detailed;LeftHandedLine("%s cull=%d flag=%d cache=%d -> cull=%d",begin?"flip":"restore",before,flag,cache,after);}
+        static std::atomic<int> detailedMode{-1};
+        if(detailedMode.exchange(leftHandedCullMode.load())!=leftHandedCullMode.load())detailed=0;
+        // After the hand draw, before its restore: which cull did the GPU actually get?
+        int d3dCull=-1,frontCcw=-1;
+        if(!begin&&leftHandedDevice&&detailed.load()<80) {
+            ID3D11DeviceContext* ctx{};leftHandedDevice->GetImmediateContext(&ctx);
+            if(ctx) {
+                ID3D11RasterizerState* rs{};ctx->RSGetState(&rs);
+                if(rs){D3D11_RASTERIZER_DESC d{};rs->GetDesc(&d);d3dCull=int(d.CullMode);frontCcw=int(d.FrontCounterClockwise);rs->Release();}
+                else d3dCull=0;
+                ctx->Release();
+            }
+        }
+        if(detailed.load()<80){++detailed;LeftHandedLine("%s mode=%d cull=%d flag=%d cache=%d -> cull=%d%s",begin?"flip":"restore",leftHandedCullMode.load(),before,flag,cache,after,
+            begin?"":(d3dCull<0?" gpu=?":d3dCull==0?" gpu=default(back)":d3dCull==1?" gpu=none":d3dCull==2?" gpu=front":" gpu=back"));
+            if(!begin&&frontCcw>=0)LeftHandedLine("  gpuFrontCounterClockwise=%d",frontCcw);}
         static std::atomic<uint64_t> last{};const auto now=GetTickCount64();auto l=last.load();
         if(now>=l+2000&&last.compare_exchange_strong(l,now))
             LeftHandedLine("summary flips=%u noCull=%u faults=%u mirroredHands=%u mirrorFailed=%u",
@@ -7435,6 +7459,12 @@ Transport::RenderInfo OnPresent(uint64_t frame,bool capture) {
     // via [Luma] SubstituteShaders=1). Lets you A/B the swap in-headset without
     // restarting. Matches the existing F3/F4/F7 toggle pattern.
     bool f12=(GetAsyncKeyState(VK_F12)&0x8000)!=0;
+    if(f12&&!f12Down && (GetAsyncKeyState(VK_CONTROL)&0x8000) && leftHanded) {
+        const int mode=(leftHandedCullMode.load()+1)%3;leftHandedCullMode=mode;
+        static const char* const names[3]={"flip","none","unchanged"};
+        FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")){fprintf(f,"leftHanded cullMode=%s frame=%llu\n",names[mode],frame);fclose(f);}
+        LeftHandedLine("cullMode=%s (Ctrl+F12)",names[mode]);
+    }
     if(f12&&!f12Down && !(GetAsyncKeyState(VK_CONTROL)&0x8000)){
         bool on=ToggleShaderSubstitution();
         FILE* f{};if(!fopen_s(&f,"DeusExHRVR-effects.log","a")){fprintf(f,"lumaSubstitute=%d frame=%llu\n",on,frame);fclose(f);}
@@ -7656,6 +7686,7 @@ void SetQuickBar(bool autoHide) {
 }
 
 void SetShaderSwapDevice(ID3D11Device* device){
+    leftHandedDevice=device;
     shaderSwap.SetDevice(device);
     HandBand::renderer.SetDevice(device); // used only by the hand HUD test
     // Phase 3: also init the injected-pass subsystem now that the device is
