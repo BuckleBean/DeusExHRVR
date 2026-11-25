@@ -81,6 +81,11 @@ Transport::Header* channel{};
 Transport::TrackingReader trackingReader;
 bool requested=true,referenceValid{},recenterRequested{},f6Down{},f9Down{},f7Down{},effectsFix=true,f4Down{},eyeViewFix=true,f3Down{},instanceFix=true;
 bool interactionScreen{},scopeScreen{};
+// [VR] LeftHanded=1 (default 0): left-handed mirror mode. The gun is in the left hand, so
+// gun aim, cover aim, throws and readiness checks use the left controller (GunController).
+bool leftHanded{};
+inline const Transport::Controller& GunController(const Transport::Tracking& t){return leftHanded?t.leftController:t.rightController;}
+inline DirectionConfig::Source GunSource(){return leftHanded?DirectionConfig::Source::LeftController:DirectionConfig::Source::Controller;}
 // ImmersiveScope: atomic since the VR settings menu switches it (transport 24).
 std::atomic<bool> immersiveScope{},immersiveScopeReady{};bool immersiveScopeActive{};
 std::atomic<float> scopeMagnification{4.f}; // also set from the VR settings menu
@@ -1821,7 +1826,7 @@ std::atomic<float> nativeLookBefore{},nativeLookAfter{},nativeLookYaw{};
 bool NativeCoverActiveLocked() { // stateMutex held
     auto now=GetTickCount64();
     if(!requested || !current.active || screenReasons || gameMenuOpen || wheelOpen ||
-       immersiveScopeActive || scopeScreen || !current.tracking.rightController.valid ||
+       immersiveScopeActive || scopeScreen || !GunController(current.tracking).valid ||
        now<current.tracking.tick || now-current.tracking.tick>=250)return false;
     return NativeCover::Mode(base,current.managerAddress,reinterpret_cast<uintptr_t>(current.playerInstance),HandMeshDiagnostic::Read);
 }
@@ -2002,7 +2007,7 @@ bool HandPosition(bool left,float* out) {
 // ray, a rocket's launch ray and the cover crosshair, so all three meet at
 // the same point. No frame (tracking lost, menus) = the game's own aim.
 bool CoverPointingFrame(CameraMath::Matrix& frame) {
-    if(!DirectionWorld(DirectionConfig::Source::Controller,frame))return false;
+    if(!DirectionWorld(GunSource(),frame))return false;
     const float* f=frame.m+8;const float n=f[0]*f[0]+f[1]*f[1]+f[2]*f[2];
     return std::isfinite(n) && std::abs(n-1.f)<.02f &&
         std::isfinite(frame.m[12]) && std::isfinite(frame.m[13]) && std::isfinite(frame.m[14]);
@@ -2023,7 +2028,6 @@ bool interactionProbesReady{};
 bool handPush{},handPushLog{},handPushReady{},bodyPushLog{},bodyPushReady{};
 // [VR] LeftHanded=1 (default 0): left-handed mirror mode, stage 1 (hands). See
 // ModelHandAlignment::swapHands and MirrorPose.
-bool leftHanded{};
 std::atomic<unsigned> leftHandedMirrored{},leftHandedMirrorFailed{};
 bool leftHandedLog{}; // [VR] LeftHandedLog=1 (default 0)
 float handPushRadiusMetres=HandPush::DefaultRadiusMetres,handPushStrength=1.f;
@@ -2332,7 +2336,8 @@ bool InteractionLine(DirectionConfig::Source source,CameraMath::Matrix& result) 
     const bool left=source==DirectionConfig::Source::LeftController;
     std::lock_guard lock(stateMutex);
     const auto now=GetTickCount64();
-    if(!left&&barrelLineTick&&now>=barrelLineTick&&now-barrelLineTick<100){result=barrelLine;return true;}
+    // The barrel belongs to the gun hand (the left one in left-handed mode).
+    if(left==leftHanded&&barrelLineTick&&now>=barrelLineTick&&now-barrelLineTick<100){result=barrelLine;return true;}
     const auto& grip=left?current.tracking.leftGrip:current.tracking.rightGrip;
     if(!grip.valid)return true;
     const auto baseWorld=(current.nativeHeading||coverCamera.held)?current.controllerBase:RenderBase(current.originalWorld);
@@ -3284,8 +3289,10 @@ void UpdateHandPush(float dt) {
             for(int hand=0;hand<2;hand++) {
                 const auto& grip=hand?current.tracking.leftGrip:current.tracking.rightGrip;
                 const auto empty=rightHandEmptyTick.load();
-                valid[hand]=grip.valid&&(hand?(controllerHandsLeft.load()&&!leftOnWeapon.load()):
-                    (empty&&now>=empty&&now-empty<100));
+                // The gun hand pushes only when empty; in left-handed mode that is the left hand.
+                const bool gunHand=(hand==1)==leftHanded;
+                valid[hand]=grip.valid&&(gunHand?(empty&&now>=empty&&now-empty<100):
+                    (controllerHandsLeft.load()&&!leftOnWeapon.load()));
                 if(valid[hand]) {
                     auto world=CameraMath::HeadWorld(frame,reference,grip.pose,scale);
                     for(int j=0;j<3;j++)points[hand][j]=world.m[12+j];
@@ -3434,7 +3441,8 @@ void* __fastcall PlayerWorldHook(void* self,void*) {
         auto native=static_cast<float*>(originalPlayerWorld(self));
         if(sample)++throwSample.queries;
         thread_local CameraMath::Matrix throwTarget;
-        if(native && DirectionWorld(throwAim,throwTarget,nullptr,ThrowAim::ManagerOf(self))) {
+        const auto throwSource=leftHanded&&throwAim.load()==DirectionConfig::Source::Controller?DirectionConfig::Source::LeftController:throwAim.load();
+        if(native && DirectionWorld(throwSource,throwTarget,nullptr,ThrowAim::ManagerOf(self))) {
             if(sample && throwSample.applied++==0){ThrowAim::CopyRows(throwSample.native,native);ThrowAim::CopyRows(throwSample.used,throwTarget.m);}
             return throwTarget.m;
         }
@@ -4081,7 +4089,7 @@ bool FirstPersonAimLocked(bool requireRight=true) { // stateMutex held
     if(!requested || !current.active || screenReasons || gameMenuOpen || wheelOpen ||
        immersiveScopeActive || scopeScreen || !experimentalMotionControls ||
        handsSuspendedByMode.load() || handsAsideForScope.load() || !activeCameraIsPlayer.load() ||
-       (requireRight&&!current.tracking.rightController.valid) || now<current.tracking.tick || now-current.tracking.tick>=250)return false;
+       (requireRight&&!GunController(current.tracking).valid) || now<current.tracking.tick || now-current.tracking.tick>=250)return false;
     return NativeCombatCamera(current.playerInstance,current.managerAddress);
 }
 // The ray shots use: the controller's in cover, the barrel's in first person.
@@ -4151,7 +4159,7 @@ void UpdateHandPointers() {
     const auto now=GetTickCount64();
     const bool cover=NativeCoverActive();
     bool eligible{},rightTracked{};void* owner{};float scale{};
-    {std::lock_guard lock(stateMutex);eligible=!cover&&FirstPersonAimLocked(false);rightTracked=current.tracking.rightController.valid;owner=current.playerInstance;scale=current.scale;}
+    {std::lock_guard lock(stateMutex);eligible=!cover&&FirstPersonAimLocked(false);rightTracked=GunController(current.tracking).valid;owner=current.playerInstance;scale=current.scale;}
     bool haveBarrel=false;CameraMath::Matrix barrel;
     if(eligible&&rightTracked&&(interactionFromHand||mode!=HandPointer::Off)) {
         const auto emptyTick=rightHandEmptyTick.load(std::memory_order_relaxed);
@@ -4621,7 +4629,7 @@ bool TryModelHand(void* model,unsigned char* data,CameraMath::Matrix* palette,ui
             static thread_local InteractionCurl::GripEnvelope rightGrip,leftGrip;
             const float right=rightGrip.Update(now,frameId.load(),rightOwner,rightFree,
                 // Left-handed mode: the model's right hand ends up as the visual left hand.
-                InteractionCurl::GripTarget(leftHanded?Transport::LeftGrip(gripBits):Transport::RightGrip(gripBits),GamepadBridge::InteractionVisualHeld(now)));
+                InteractionCurl::GripTarget(leftHanded?Transport::LeftGrip(gripBits):Transport::RightGrip(gripBits),!leftHanded&&GamepadBridge::InteractionVisualHeld(now)));
             if(right>0)InteractionCurl::Apply(palette,n,curl,right);
             bool leftReady=leftMoved&&leftCurl.valid;
             for(unsigned i=101;leftReady&&i<=116;i++)leftReady=plan->leftBones[i];
@@ -6104,7 +6112,7 @@ void __fastcall UpdateHook(void* self,void*) {
                 {
                     auto coverInstance=*reinterpret_cast<void**>(active+0xaa0);
                     auto& cc=coverCamera;
-                    const bool gate=coverCameraFollow && motionControls && t.rightController.valid &&
+                    const bool gate=coverCameraFollow && motionControls && GunController(t).valid &&
                         !gameMenuOpen && !wheelOpen && !dialogue;
                     const auto mgr=reinterpret_cast<uintptr_t>(manager);const auto who=reinterpret_cast<uintptr_t>(coverInstance);
                     const bool coverMode=gate && NativeCover::Mode(base,mgr,who,HandMeshDiagnostic::Read);
@@ -6254,7 +6262,7 @@ void __fastcall UpdateHook(void* self,void*) {
                     }
                 }
             }
-            if(experimentalMotionControls && t.rightController.valid && active==manager+0x6f0) {
+            if(experimentalMotionControls && GunController(t).valid && active==manager+0x6f0) {
                 auto entity=*reinterpret_cast<void**>(active+0xaa0);
                 using Equipped=unsigned char*(__cdecl*)(void*);
                 auto holder=entity?reinterpret_cast<Equipped>(base+0x66af40-0x400000)(entity):nullptr;
@@ -6277,7 +6285,7 @@ void __fastcall UpdateHook(void* self,void*) {
                     auto handle=*reinterpret_cast<uint32_t*>(weapon+0x6c);
                     auto instance=handle!=0x7fffffffu?reinterpret_cast<FindInstance>(base+0x6082a0-0x400000)(handle):nullptr;
                     if(instance) {
-                        auto raw=CameraMath::ControllerMuzzle(renderBase,reference,t.rightController.aim,worldScale,controllerMuzzleForward);
+                        auto raw=CameraMath::ControllerMuzzle(renderBase,reference,GunController(t).aim,worldScale,controllerMuzzleForward);
                         // Before any per-weapon offset: this is the controller and
                         // nothing else, which is what the hand must follow.
                         auto rawController=raw;
