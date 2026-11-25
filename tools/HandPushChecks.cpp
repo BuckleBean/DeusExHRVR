@@ -41,5 +41,22 @@ int main(){
         check(std::abs(mg1-300.f)<.01f&&std::abs(mg2-600.f)<.01f,"HandPushStrength=2 doubles the cap");
         check(HandPush::HorizontalForce(pa,ce,hv,bv,75,300,.01f,fo,nullptr,nullptr,0.f)==HandPush::ForceInput,"zero strength rejected");
     }
+    // A swipe through an object keeps pushing past its centre, but never pulls.
+    {
+        HandPush::SwipeMemory mem;float pa[3]{0,0,0},ce[3]{30,0,0},v[3]{300,0,0},bv[3]{},fo[4]{};
+        check(HandPush::HorizontalForce(pa,ce,v,bv,75,300,.01f,fo,nullptr,nullptr,1.f,nullptr)==HandPush::ForceOk,"swipe starts toward the object");
+        mem.Note(7,v,1000);
+        const float past[3]{60,0,0};
+        check(HandPush::HorizontalForce(past,ce,v,bv,75,300,.01f,fo)==HandPush::ForceNotInward,"without the swipe rule, past the centre stops the push");
+        auto* sw=mem.Find(7,1011);
+        check(sw&&HandPush::HorizontalForce(past,ce,v,bv,75,300,.01f,fo,nullptr,nullptr,1.f,sw->dir)==HandPush::ForceOk&&fo[0]>0,"with it, the swipe keeps pushing past the centre");
+        const float back[3]{-300,0,0};
+        check(sw&&HandPush::HorizontalForce(past,ce,back,bv,75,300,.01f,fo,nullptr,nullptr,1.f,sw->dir)==HandPush::ForceNotInward,"pulling the hand back never drags the object");
+        const float curve[3]{0,300,0};
+        check(sw&&HandPush::HorizontalForce(past,ce,curve,bv,75,300,.01f,fo,nullptr,nullptr,1.f,sw->dir)==HandPush::ForceNotInward,"a 90 degree turn ends the swipe");
+        check(!mem.Find(7,1000+HandPush::SwipeKeepMs+1),"a swipe ends after a short break in contact");
+        mem.Note(7,v,1100);check(mem.Find(7,1200)!=nullptr,"continued contact keeps the swipe alive");
+        check(!mem.Find(8,1100),"another object is a new contact");
+    }
     return fail?1:0;
 }
