@@ -2,6 +2,8 @@
 #include "NativeCover.h"
 #include "CoverCrosshair.h"
 #include "HandPointer.h"
+#include "HandPush.h"
+#include "HandPushNative.h"
 #include <cstdarg>
 #include "CeilingGuard.h"
 #include "TwoHandAttach.h"
@@ -2016,6 +2018,8 @@ thread_local InteractionSample interactionSample;
 std::atomic<uint64_t> interactionNextSample{};
 std::atomic<unsigned> interactionSampleCount{};
 bool interactionProbesReady{};
+bool handPush{},handPushLog{},handPushReady{};
+unsigned handPushLogLines{};
 // Forgiving aim (November 21): see ForgivingAim.h. [VR] ForgivingAim=0 turns it
 // off; ForgivingAimDegrees sets the cone around the aim line (default 15).
 bool forgivingAimEnabled{};
@@ -2480,6 +2484,9 @@ void InstallInteractionProbes(){
         if(std::isfinite(cm)&&cm>=0.f&&cm<=40.f)carriedItemHandMetres=cm*.01f;
     }
     handContact=GetPrivateProfileIntW(L"VR",L"HandContactInteract",1,diagConfig)!=0;
+    handPush=GetPrivateProfileIntW(L"VR",L"HandPush",0,diagConfig)!=0;
+    handPushLog=GetPrivateProfileIntW(L"VR",L"HandPushLog",0,diagConfig)!=0;
+    handPushReady=handPush&&HandPushNative::Matches(base);
     handContactExact=handContact&&GetPrivateProfileIntW(L"VR",L"HandContactExact",1,diagConfig)!=0;
     {
         wchar_t contactText[32]{};GetPrivateProfileStringW(L"VR",L"HandContactCm",L"15",contactText,32,diagConfig);
@@ -2839,6 +2846,152 @@ void TimingFinish(uint64_t begin,uint64_t afterBegin,uint64_t afterGame) {
     TimingLine(line);
     timingLast=0; // the file write is not part of the next gap
 }
+// Independent physical contact search: no padded interaction geometry, no
+// locomotion-list edits and no retained native pointers across game updates.
+int HandPushRaw(void* player,const float* palm,const float* velocity,float scale,float dt,
+                uintptr_t* pushed,unsigned& pushedCount,int* observed) {
+    uintptr_t world{},savedFilter{},savedOwner{};void* shape{};bool filterSet{},ownerSet{};
+    auto* ownerSlot=reinterpret_cast<uintptr_t*>(VA(0xe9aa34));
+    alignas(16) unsigned char hits[0x80*32]{};
+    alignas(16) float position[4]{palm[0],palm[1],palm[2],1};
+    alignas(16) float rotation[4]{0,0,0,1};
+    alignas(16) uintptr_t ignore[4]{reinterpret_cast<uintptr_t>(player),0,0,0};
+    int result=0;
+    __try {
+        world=*reinterpret_cast<uintptr_t*>(VA(0x1c7bf64));
+        if(!world||!player)return 0;
+        shape=reinterpret_cast<void*(__thiscall*)(uintptr_t)>(VA(0x50f020))(world+0x10);
+        if(!shape)return 0;
+        reinterpret_cast<void(__thiscall*)(void*,int)>(VA(0x4fb620))(shape,0x0c);
+        reinterpret_cast<void(__thiscall*)(void*,void*)>(VA(0x4fb5e0))(shape,ignore);
+        // Same primitive constructor as the game's overlap search, with a tiny
+        // axial length: effectively a palm sphere, not a remote targeting cone.
+        reinterpret_cast<void(__thiscall*)(void*,float,float,const float*,const float*)>(VA(0x4fcd50))(
+            shape,HandPush::RadiusMetres*scale,.001f*scale,position,rotation);
+        reinterpret_cast<void(__thiscall*)(void*,int)>(VA(0x4fb550))(shape,0x42);
+        reinterpret_cast<void(__thiscall*)(void*,const float*)>(VA(0x4fd100))(shape,position);
+        reinterpret_cast<void(__thiscall*)(void*,const float*)>(VA(0x4fd140))(shape,rotation);
+        savedFilter=*reinterpret_cast<uintptr_t*>(world+0x2330);filterSet=true;
+        reinterpret_cast<void(__thiscall*)(uintptr_t,void*)>(VA(0x4c7680))(world,reinterpret_cast<void*>(VA(0x688fe0)));
+        savedOwner=*ownerSlot;ownerSet=true;
+        *ownerSlot=*reinterpret_cast<uintptr_t*>(*reinterpret_cast<uintptr_t*>(static_cast<unsigned char*>(player)+8)+0x5c);
+        const int found=reinterpret_cast<int(__thiscall*)(uintptr_t,void*,int,void*,int)>(VA(0x50f1c0))(
+            world+0x10,hits,32,shape,1);
+        observed[0]=found;
+        *ownerSlot=savedOwner;ownerSet=false;
+        reinterpret_cast<void(__thiscall*)(uintptr_t,void*)>(VA(0x4c7680))(world,reinterpret_cast<void*>(savedFilter));filterSet=false;
+        for(int i=0;i<found&&i<32&&pushedCount<4;i++) {
+            auto* hit=hits+i*0x80;
+            void* a=*reinterpret_cast<void**>(hit+0x58);void* b=*reinterpret_cast<void**>(hit+0x5c);
+            if(a!=shape&&b!=shape)continue;
+            ++observed[1];
+            void* other=a==shape?b:a;if(!other)continue;
+            void* descriptor{};
+            auto owner=reinterpret_cast<void*(__cdecl*)(void*,void**)>(VA(0x688ed0))(other,&descriptor);
+            if(!owner||owner==player||!descriptor)continue;
+            auto* desc=static_cast<unsigned char*>(descriptor);
+            if(!*reinterpret_cast<uint32_t*>(desc)||!desc[0x10])continue;
+            auto* body=reinterpret_cast<unsigned char*(__thiscall*)(void*)>(VA(0x5b2900))(other);
+            if(!body)continue; // No ragdoll/actor fallback in this prototype.
+            bool duplicate=false;for(unsigned j=0;j<pushedCount;j++)if(pushed[j]==reinterpret_cast<uintptr_t>(body))duplicate=true;
+            if(duplicate)continue;
+            void* bodyOwner=reinterpret_cast<void*(__thiscall*)(void*)>(VA(0x4f8880))(body);
+            if(!bodyOwner||bodyOwner!=owner)continue;
+            const int kind=reinterpret_cast<int(__cdecl*)(void*)>(VA(0x6f42d0))(bodyOwner);
+            if(kind!=1&&kind!=2)continue;
+            if(kind==2) {
+                auto aug=reinterpret_cast<void*(__cdecl*)(void*)>(VA(0x65ba80))(player);
+                if(!aug||!reinterpret_cast<bool(__thiscall*)(void*,int)>(VA(0x65c2e0))(aug,0x2e))continue;
+            }
+            ++observed[2];
+            const float mass=reinterpret_cast<float(__thiscall*)(void*)>(VA(0x4f8960))(body);
+            alignas(16) float normal[4]{},point[4]{},bodyVelocity[4]{},force[4]{};
+            for(int j=0;j<3;j++){point[j]=reinterpret_cast<float*>(hit)[j];normal[j]=reinterpret_cast<float*>(hit+0x10)[j]*(a==shape?-1.f:1.f);}
+            point[3]=1;
+            reinterpret_cast<void*(__thiscall*)(void*,float*)>(VA(0x4f8aa0))(body,bodyVelocity);
+            if(!HandPush::Force(palm,point,normal,velocity,bodyVelocity,mass,scale,dt,force))continue;
+            const float* centre=reinterpret_cast<const float*>(body+0x80);
+            if(!HandPush::Finite(centre))continue;
+            float lever[3]{};for(int j=0;j<3;j++)lever[j]=point[j]-centre[j];
+            const float length=std::sqrt(HandPush::Dot(lever,lever));
+            if(!std::isfinite(length)||length>3.f*scale)continue;
+            // Limit turning force on long objects as well as linear force.
+            const float torqueCap=length>.25f*scale?(.25f*scale/length):1.f;
+            for(int j=0;j<3;j++)force[j]*=torqueCap;
+            reinterpret_cast<void(__thiscall*)(void*)>(VA(0x4f8c00))(body);
+            reinterpret_cast<void(__thiscall*)(void*,const float*,const float*)>(VA(0x4f9020))(body,force,point);
+            pushed[pushedCount++]=reinterpret_cast<uintptr_t>(body);++result;
+        }
+    } __except(EXCEPTION_EXECUTE_HANDLER) {result=-1;}
+    __try {
+        if(ownerSet)*ownerSlot=savedOwner;
+        if(filterSet)reinterpret_cast<void(__thiscall*)(uintptr_t,void*)>(VA(0x4c7680))(world,reinterpret_cast<void*>(savedFilter));
+        if(shape)reinterpret_cast<void(__thiscall*)(uintptr_t,void*)>(VA(0x50ef00))(world+0x10,shape);
+    } __except(EXCEPTION_EXECUTE_HANDLER) {result=-1;}
+    return result;
+}
+void UpdateHandPush(float dt) {
+    static HandPush::Motion motion[2];
+    static CameraMath::Matrix oldBase{};static Transport::Pose oldReference{};
+    static bool haveBase{};static uint64_t lastTick{};
+    float points[2][3]{},scale{};bool valid[2]{},eligible{};void* player{};uint64_t tick{};
+    {
+        std::lock_guard lock(stateMutex);
+        const auto now=GetTickCount64();
+        eligible=handPushReady&&requested&&motionControls&&controllerHands&&current.active&&referenceValid&&
+            !screenReasons&&!gameMenuOpen&&!wheelOpen&&!immersiveScopeActive&&!scopeScreen&&
+            !handsSuspendedByMode.load()&&!handsAsideForScope.load()&&!grabActive.load()&&
+            !recenterRequested&&activeCameraIsPlayer.load()&&current.tracking.tick<=now&&
+            now-current.tracking.tick<100&&NativeCombatCamera(current.playerInstance,current.managerAddress);
+        if(eligible) {
+            player=current.playerInstance;scale=current.scale;tick=current.tracking.tick;
+            const auto frame=(current.nativeHeading||coverCamera.held)?current.controllerBase:RenderBase(current.originalWorld);
+            // Camera cuts, snap turns and recentering must not become hand blows.
+            float baseDelta[3]{};for(int j=0;j<3;j++)baseDelta[j]=frame.m[12+j]-oldBase.m[12+j];
+            bool discontinuity=!haveBase||memcmp(&reference,&oldReference,sizeof(reference))!=0||
+                HandPush::Dot(baseDelta,baseDelta)>.05f*.05f*scale*scale;
+            if(haveBase)for(int j=0;j<12;j++)if(std::abs(frame.m[j]-oldBase.m[j])>.03f)discontinuity=true;
+            if(discontinuity)for(auto& m:motion)m.Reset();
+            oldBase=frame;oldReference=reference;haveBase=true;
+            for(int hand=0;hand<2;hand++) {
+                const auto& grip=hand?current.tracking.leftGrip:current.tracking.rightGrip;
+                const auto empty=rightHandEmptyTick.load();
+                valid[hand]=grip.valid&&(hand?(controllerHandsLeft.load()&&!leftOnWeapon.load()):
+                    (empty&&now>=empty&&now-empty<100));
+                if(valid[hand]) {
+                    auto world=CameraMath::HeadWorld(frame,reference,grip.pose,scale);
+                    for(int j=0;j<3;j++)points[hand][j]=world.m[12+j];
+                }
+            }
+        }
+    }
+    if(handPushLog&&handPushLogLines==0) {
+        FILE* f{};if(!fopen_s(&f,"DeusExHRVR-hand-push.log","w")) {
+            fprintf(f,"startup enabled=%d signatures=%d eligible=%d dt=%g radiusCm=3.5\n",int(handPush),int(handPushReady),int(eligible),dt);
+            fclose(f);++handPushLogLines;
+        }
+    }
+    if(!eligible||!std::isfinite(dt)||dt<.001f||dt>.1f) {
+        for(auto& m:motion)m.Reset();haveBase=false;lastTick=0;return;
+    }
+    if(tick==lastTick)return;lastTick=tick;
+    uintptr_t pushed[4]{};unsigned count{};
+    for(int hand=0;hand<2;hand++) {
+        float velocity[3]{};
+        if(!valid[hand]){motion[hand].Reset();continue;}
+        if(!motion[hand].Step(points[hand],scale,tick,velocity))continue;
+        int observed[3]{};
+        const int result=HandPushRaw(player,points[hand],velocity,scale,dt,pushed,count,observed);
+        if(result<0){handPushReady=false;for(auto& m:motion)m.Reset();}
+        if(handPushLog&&handPushLogLines<200) {
+            FILE* f{};if(!fopen_s(&f,"DeusExHRVR-hand-push.log",handPushLogLines?"a":"w")) {
+                fprintf(f,"tick=%llu hand=%s pushed=%d hits=%d pairs=%d eligibleBodies=%d dt=%g scale=%g velocity=%g,%g,%g\n",tick,hand?"left":"right",result,observed[0],observed[1],observed[2],dt,scale,velocity[0],velocity[1],velocity[2]);
+                fclose(f);++handPushLogLines;
+            }
+        }
+        if(result<0)break;
+    }
+}
 void __fastcall SenseUpdateHook(void* self,void*,float dt) {
     auto previous=senseQueries;
     {std::lock_guard lock(stateMutex);
@@ -2866,7 +3019,9 @@ void __fastcall SenseUpdateHook(void* self,void*,float dt) {
         std::lock_guard lock(stateMutex);interactionSample.native=current.originalWorld;
         interactionSample.scale=current.scale;interactionSample.source=unsigned(interactionAim.load());
     }
+    const bool pushUpdate=!previous&&senseQueries;
     originalSenseUpdate(self,dt);senseQueries=previous;
+    if(pushUpdate&&handPush)UpdateHandPush(dt);
     if(forgivingDrive&&interactionTimingLog)timingAfterGame=TimingNow();
     if(forgivingDrive)ForgivingEnd();
     if(forgivingDrive&&interactionTimingLog)TimingFinish(timingBegin,timingAfterBegin,timingAfterGame);

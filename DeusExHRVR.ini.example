@@ -166,6 +166,11 @@ HandPointers=Off
 ; and only a real hit on your item counts. Walls still stop the line. It can also pass
 ; a closed door, since doors are usable items. 0 turns it off. Needs HandContactExact=1.
 ; Restart after editing.
+; Experimental physical nudges from empty hands; restart after changing.
+; Off by default until tested in the headset. No grip press needed.
+HandPush=0
+; Bounded diagnostic (200 moving-hand samples); 0 disables logging.
+HandPushLog=0
 HandContactInteract=1
 HandContactExact=1
 HandContactThroughItems=1
