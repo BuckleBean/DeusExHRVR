@@ -2030,6 +2030,8 @@ bool leftHandedLog{}; // [VR] LeftHandedLog=1 (default 0)
 // How mirrored hands are culled: 0 flip (default), 1 none (both faces), 2 unchanged.
 // While LeftHandedLog=1 it cycles automatically every 8 s for testing (logged).
 std::atomic<int> leftHandedCullMode{0};
+// Test aid (LeftHandedLog=1): 0 swap+mirror, 1 swap only, 2 mirror only; cycles every 8 s.
+std::atomic<int> leftHandedVariant{0};
 ID3D11Device* leftHandedDevice{};
 float handPushRadiusMetres=HandPush::DefaultRadiusMetres,handPushStrength=1.f;
 bool handPushShove=true;
@@ -4574,21 +4576,25 @@ void LeftHandedCullFlip(void* state,bool begin) {
     if(leftHandedLog) {
         static std::atomic<unsigned> detailed{};
         static std::atomic<int> detailedMode{-1};
-        if(detailedMode.exchange(leftHandedCullMode.load())!=leftHandedCullMode.load())detailed=0;
-        // After the hand draw, before its restore: which cull did the GPU actually get?
-        int d3dCull=-1,frontCcw=-1;
-        if(!begin&&leftHandedDevice&&detailed.load()<80) {
+        if(detailedMode.exchange(leftHandedVariant.load())!=leftHandedVariant.load())detailed=0;
+        // After the hand draw, before its restore: the GPU's cull, depth and blend state.
+        int d3dCull=-1,frontCcw=-1,depthOn=-1,depthWrite=-1,depthFunc=-1,blend=-1;
+        if(!begin&&leftHandedDevice&&detailed.load()<40) {
             ID3D11DeviceContext* ctx{};leftHandedDevice->GetImmediateContext(&ctx);
             if(ctx) {
                 ID3D11RasterizerState* rs{};ctx->RSGetState(&rs);
                 if(rs){D3D11_RASTERIZER_DESC d{};rs->GetDesc(&d);d3dCull=int(d.CullMode);frontCcw=int(d.FrontCounterClockwise);rs->Release();}
                 else d3dCull=0;
+                ID3D11DepthStencilState* ds{};UINT ref{};ctx->OMGetDepthStencilState(&ds,&ref);
+                if(ds){D3D11_DEPTH_STENCIL_DESC d{};ds->GetDesc(&d);depthOn=int(d.DepthEnable);depthWrite=int(d.DepthWriteMask);depthFunc=int(d.DepthFunc);ds->Release();}
+                ID3D11BlendState* bs{};float factor[4]{};UINT mask{};ctx->OMGetBlendState(&bs,factor,&mask);
+                if(bs){D3D11_BLEND_DESC d{};bs->GetDesc(&d);blend=int(d.RenderTarget[0].BlendEnable);bs->Release();}else blend=0;
                 ctx->Release();
             }
         }
-        if(detailed.load()<80){++detailed;LeftHandedLine("%s mode=%d cull=%d flag=%d cache=%d -> cull=%d%s",begin?"flip":"restore",leftHandedCullMode.load(),before,flag,cache,after,
-            begin?"":(d3dCull<0?" gpu=?":d3dCull==0?" gpu=default(back)":d3dCull==1?" gpu=none":d3dCull==2?" gpu=front":" gpu=back"));
-            if(!begin&&frontCcw>=0)LeftHandedLine("  gpuFrontCounterClockwise=%d",frontCcw);}
+        // DepthFunc: 2 less, 3 equal, 4 less-equal, 5 greater, 7 greater-equal, 8 always.
+        if(!begin&&detailed.load()<40){++detailed;LeftHandedLine("hand draw variant=%d gpuCull=%d frontCCW=%d depthTest=%d depthWrite=%d depthFunc=%d blend=%d",
+            leftHandedVariant.load(),d3dCull,frontCcw,depthOn,depthWrite,depthFunc,blend);}
         static std::atomic<uint64_t> last{};const auto now=GetTickCount64();auto l=last.load();
         if(now>=l+2000&&last.compare_exchange_strong(l,now))
             LeftHandedLine("summary flips=%u noCull=%u faults=%u mirroredHands=%u mirrorFailed=%u",
@@ -4690,7 +4696,7 @@ bool TryModelHand(void* model,unsigned char* data,CameraMath::Matrix* palette,ui
     // axis, so the model's right hand (at the left controller) appears as a left hand
     // and its left hand (at the right controller) as a right hand. Gun: stage 2.
     bool mirrored=false;
-    if(leftHanded) {
+    if(leftHanded&&leftHandedVariant.load()!=1) {
         CameraMath::Matrix gunHand{},otherHand{};
         mirrored=ModelHandAlignment::MirrorAcross(target,gunHand)&&
             ModelHandAlignment::Mirror(palette,n,plan->bones,gunHand,129,145);
@@ -7459,15 +7465,17 @@ Transport::RenderInfo OnPresent(uint64_t frame,bool capture) {
     // via [Luma] SubstituteShaders=1). Lets you A/B the swap in-headset without
     // restarting. Matches the existing F3/F4/F7 toggle pattern.
     bool f12=(GetAsyncKeyState(VK_F12)&0x8000)!=0;
-    // Test aid: with LeftHanded=1 and LeftHandedLog=1 the mirrored hands' culling moves
-    // to the next mode every 8 s (flip, none, unchanged), so no key press is needed in VR.
+    // Test aid: with LeftHanded=1 and LeftHandedLog=1 the hands cycle every 8 s between
+    // swap+mirror (0, the mode itself), swap only (1) and mirror only (2), so no key press
+    // is needed in VR. Culling stays at flip for mirrored draws.
     if(leftHanded&&leftHandedLog) {
         static uint64_t cycleStart{};const auto cycleNow=GetTickCount64();
         if(!cycleStart)cycleStart=cycleNow;
-        const int mode=int(((cycleNow-cycleStart)/8000)%3);
-        if(leftHandedCullMode.exchange(mode)!=mode) {
-            static const char* const names[3]={"flip","none","unchanged"};
-            LeftHandedLine("cullMode=%s (automatic, every 8 s)",names[mode]);
+        const int variant=int(((cycleNow-cycleStart)/8000)%3);
+        if(leftHandedVariant.exchange(variant)!=variant) {
+            ModelHandAlignment::swapHands=variant!=2;
+            static const char* const names[3]={"swap+mirror","swap only (no mirror)","mirror only (no swap)"};
+            LeftHandedLine("variant=%s (automatic, every 8 s)",names[variant]);
         }
     }
     if(f12&&!f12Down && !(GetAsyncKeyState(VK_CONTROL)&0x8000)){
