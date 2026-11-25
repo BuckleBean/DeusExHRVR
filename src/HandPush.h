@@ -3,8 +3,14 @@
 #include <cmath>
 #include <cstdint>
 
+// Hand nudges ([VR] HandPush=1). Pure math; the native calls are in EngineCamera.cpp.
 namespace HandPush {
-constexpr float RadiusMetres=.035f;
+// Measured from the game's own walk-into-object push (BodyPushLog, November 24): the
+// force is horizontal, at most 1200 and at most 4 times the object's mass, at world
+// scale 300 units per metre.
+constexpr float NativeMaxForce=1200.f,NativeMaxPerMass=4.f,NativeScale=300.f;
+// Radius of the search around the hand ([VR] HandPushCm, 3 to 20).
+constexpr float DefaultRadiusMetres=.08f;
 inline bool Finite(const float* p){return std::isfinite(p[0])&&std::isfinite(p[1])&&std::isfinite(p[2]);}
 inline float Dot(const float* a,const float* b){return a[0]*b[0]+a[1]*b[1]+a[2]*b[2];}
 // Why Step gave no velocity, for the optional log (HandPushLog=1).
@@ -31,71 +37,33 @@ struct Motion {
         why=StepOk;return true;
     }
 };
-// Why Force refused, for the optional log. The decisions are unchanged.
-enum ForceWhy:int{ForceOk=0,ForceInput,ForceFar,ForceNormal,ForceBehind,ForceNotInward,ForceReceding,ForceMagnitude,ForceWhyCount};
-inline int ForceReason(const float* palm,const float* point,const float* outward,
-                  const float* handVelocity,const float* bodyVelocity,float mass,
-                  float scale,float dt,float* force,float* inwardOut=nullptr,float* magnitudeOut=nullptr) {
-    if(!Finite(palm)||!Finite(point)||!Finite(outward)||!Finite(handVelocity)||!Finite(bodyVelocity)||
-       !std::isfinite(mass)||mass<=0||mass>100000||!std::isfinite(scale)||scale<=0||
-       !std::isfinite(dt)||dt<.001f||dt>.1f)return ForceInput;
-    float delta[3]{};for(int i=0;i<3;i++)delta[i]=palm[i]-point[i];
-    if(Dot(delta,delta)>RadiusMetres*RadiusMetres*scale*scale*1.1f)return ForceFar;
-    const float norm=std::sqrt(Dot(outward,outward));if(norm<.9f||norm>1.1f)return ForceNormal;
-    float n[3]{};for(int i=0;i<3;i++)n[i]=outward[i]/norm;
-    // Reject ambiguous inverted/inside contacts instead of flipping their normals.
-    if(Dot(delta,n)<-.002f*scale)return ForceBehind;
-    const float inward=-Dot(handVelocity,n);
-    if(inwardOut)*inwardOut=inward;
-    if(inward<.025f*scale)return ForceNotInward;
-    const float closing=inward+Dot(bodyVelocity,n);
-    if(closing<=0)return ForceReceding;
-    const float magnitude=std::min({mass*closing/(dt*30.f),mass*scale*.5f,20.f*scale});
-    if(magnitudeOut)*magnitudeOut=magnitude;
-    if(!std::isfinite(magnitude)||magnitude<=0)return ForceMagnitude;
-    for(int i=0;i<3;i++)force[i]=-n[i]*magnitude;
-    force[3]=0;return ForceOk;
-}
-// Items met by the pickup search (no surface normal). Touching: the object's own
-// position within CentreTouchMetres of the hand, or the search's hit point within
-// HitTouchMetres (large objects). Only motion toward the object's position pushes, and
-// the push follows the hand's movement. Same force formula and caps as Force.
-constexpr float CentreTouchMetres=.21f,HitTouchMetres=.12f;
-inline bool Touching(const float* palm,const float* centre,const float* hit,float scale,float* centreCm=nullptr,float* hitCm=nullptr) {
-    float c[3]{},h[3]{};for(int i=0;i<3;i++){c[i]=centre[i]-palm[i];h[i]=hit[i]-palm[i];}
-    const float dc=std::sqrt(Dot(c,c)),dh=std::sqrt(Dot(h,h));
-    if(centreCm)*centreCm=dc*100.f/scale;
-    if(hitCm)*hitCm=dh*100.f/scale;
-    return (std::isfinite(dc)&&dc<=CentreTouchMetres*scale)||(std::isfinite(dh)&&dh<=HitTouchMetres*scale);
-}
-inline int TowardForce(const float* palm,const float* centre,const float* handVelocity,const float* bodyVelocity,
-                       float mass,float scale,float dt,float* force,float* inwardOut=nullptr,float* magnitudeOut=nullptr) {
+// Why HorizontalForce refused, for the optional log.
+enum ForceWhy:int{ForceOk=0,ForceInput,ForceNotInward,ForceReceding,ForceMagnitude,ForceWhyCount};
+// A push like the walk push: horizontal, along the hand's horizontal movement, only
+// while the hand moves toward the object's centre faster than the object moves away.
+inline int HorizontalForce(const float* palm,const float* centre,const float* handVelocity,const float* bodyVelocity,
+                           float mass,float scale,float dt,float* force,float* inwardOut=nullptr,float* magnitudeOut=nullptr) {
     if(!Finite(palm)||!Finite(centre)||!Finite(handVelocity)||!Finite(bodyVelocity)||
        !std::isfinite(mass)||mass<=0||mass>100000||!std::isfinite(scale)||scale<=0||
        !std::isfinite(dt)||dt<.001f||dt>.1f)return ForceInput;
-    const float speed=std::sqrt(Dot(handVelocity,handVelocity));
+    const float v[2]{handVelocity[0],handVelocity[1]};
+    const float speed=std::sqrt(v[0]*v[0]+v[1]*v[1]);
     if(!std::isfinite(speed)||speed<=0)return ForceNotInward;
-    float n[3]{};for(int i=0;i<3;i++)n[i]=centre[i]-palm[i];
-    float length=std::sqrt(Dot(n,n));
-    // Hand at the object's own position: any movement counts as toward it.
-    if(!std::isfinite(length)||length<.01f*scale){for(int i=0;i<3;i++)n[i]=handVelocity[i];length=speed;}
-    for(int i=0;i<3;i++)n[i]/=length;
-    const float inward=Dot(handVelocity,n);
+    float n[2]{centre[0]-palm[0],centre[1]-palm[1]};
+    float length=std::sqrt(n[0]*n[0]+n[1]*n[1]);
+    // Hand right over the object's centre: any horizontal movement counts as toward it.
+    if(!std::isfinite(length)||length<.01f*scale){n[0]=v[0];n[1]=v[1];length=speed;}
+    n[0]/=length;n[1]/=length;
+    const float inward=v[0]*n[0]+v[1]*n[1];
     if(inwardOut)*inwardOut=inward;
     if(inward<.025f*scale)return ForceNotInward;
-    const float closing=inward-Dot(bodyVelocity,n);
+    const float closing=inward-(bodyVelocity[0]*n[0]+bodyVelocity[1]*n[1]);
     if(closing<=0)return ForceReceding;
-    const float magnitude=std::min({mass*closing/(dt*30.f),mass*scale*.5f,20.f*scale});
+    const float units=scale/NativeScale;
+    const float magnitude=std::min({mass*closing/(dt*30.f),NativeMaxPerMass*mass*units,NativeMaxForce*units});
     if(magnitudeOut)*magnitudeOut=magnitude;
     if(!std::isfinite(magnitude)||magnitude<=0)return ForceMagnitude;
-    for(int i=0;i<3;i++)force[i]=handVelocity[i]/speed*magnitude;
-    force[3]=0;return ForceOk;
-}
-// Normal points out of the object toward the hand. Only inward motion pushes.
-// Preserve the native body's force response (dt*30), with conservative caps.
-inline bool Force(const float* palm,const float* point,const float* outward,
-                  const float* handVelocity,const float* bodyVelocity,float mass,
-                  float scale,float dt,float* force) {
-    return ForceReason(palm,point,outward,handVelocity,bodyVelocity,mass,scale,dt,force)==ForceOk;
+    force[0]=v[0]/speed*magnitude;force[1]=v[1]/speed*magnitude;force[2]=0;force[3]=0;
+    return ForceOk;
 }
 }

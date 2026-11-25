@@ -2019,6 +2019,7 @@ std::atomic<uint64_t> interactionNextSample{};
 std::atomic<unsigned> interactionSampleCount{};
 bool interactionProbesReady{};
 bool handPush{},handPushLog{},handPushReady{},bodyPushLog{},bodyPushReady{};
+float handPushRadiusMetres=HandPush::DefaultRadiusMetres;
 std::atomic<float> bodyPushScale{};
 unsigned handPushLogLines{};
 // Forgiving aim (November 21): see ForgivingAim.h. [VR] ForgivingAim=0 turns it
@@ -2110,8 +2111,8 @@ bool ReadSprintMemory(uintptr_t address,void* destination,size_t size) {
 // [VR] BodyPushLog=1 (default 0) writes DeusExHRVR-body-push.log, replaced each launch,
 // at most 4000 lines. Observation only, for designing hand nudges: what the game's own
 // walk-into-object push does. It watches the body's collision search (caller 0x4C53B3)
-// and the push it applies (caller 0x689E73), and runs a test search at each hand set up
-// like the body's. Nothing is pushed or changed by it. BodyPushLog=0 turns it off.
+// and the push it applies (caller 0x689E73). Nothing is pushed or changed by it.
+// BodyPushLog=0 turns it off.
 using BodyOverlapFn=int(__thiscall*)(uintptr_t,void*,int,void*,int);
 using BodyForceFn=void(__thiscall*)(void*,const float*,const float*);
 BodyOverlapFn originalBodyOverlap{};
@@ -2217,52 +2218,6 @@ void __fastcall BodyForceHook(void* body,void*,const float* force,const float* p
         ReadSprintMemory(reinterpret_cast<uintptr_t>(body)+0xe0,after,sizeof(after));
         BodyForceNote(body,force,point,before,after);
     }
-}
-// A 15 cm search at the hand set up like the body's (its shape bytes 9d/9e and its
-// filter), with no owner value. Reports only. Returns false on a fault.
-bool BodyStyleProbe(void* player,const float* palm,float scale,unsigned& raw,unsigned& paired,unsigned& withBody,unsigned& kind12,unsigned& usable) {
-    if(!bodyProxy.have)return true;
-    uintptr_t world{},savedFilter{};void* shape{};bool filterSet{};
-    alignas(16) unsigned char hits[0x80*32]{};
-    alignas(16) float position[4]{palm[0],palm[1],palm[2],1};
-    alignas(16) float rotation[4]{0,0,0,1};
-    alignas(16) uintptr_t ignore[4]{reinterpret_cast<uintptr_t>(player),0,0,0};
-    bool ok=true;
-    __try {
-        world=*reinterpret_cast<uintptr_t*>(VA(0x1c7bf64));
-        if(!world||!player)return true;
-        shape=reinterpret_cast<void*(__thiscall*)(uintptr_t)>(VA(0x50f020))(world+0x10);
-        if(!shape)return true;
-        reinterpret_cast<void(__thiscall*)(void*,int)>(VA(0x4fb620))(shape,bodyProxy.b9d);
-        reinterpret_cast<void(__thiscall*)(void*,void*)>(VA(0x4fb5e0))(shape,ignore);
-        reinterpret_cast<void(__thiscall*)(void*,float,float,const float*,const float*)>(VA(0x4fcd50))(shape,.15f*scale,.001f*scale,position,rotation);
-        reinterpret_cast<void(__thiscall*)(void*,int)>(VA(0x4fb550))(shape,bodyProxy.b9e);
-        reinterpret_cast<void(__thiscall*)(void*,const float*)>(VA(0x4fd100))(shape,position);
-        reinterpret_cast<void(__thiscall*)(void*,const float*)>(VA(0x4fd140))(shape,rotation);
-        savedFilter=*reinterpret_cast<uintptr_t*>(world+0x2330);filterSet=true;
-        reinterpret_cast<void(__thiscall*)(uintptr_t,void*)>(VA(0x4c7680))(world,reinterpret_cast<void*>(bodyProxy.filter));
-        const int found=originalBodyOverlap?originalBodyOverlap(world+0x10,hits,32,shape,1):
-            reinterpret_cast<int(__thiscall*)(uintptr_t,void*,int,void*,int)>(VA(0x50f1c0))(world+0x10,hits,32,shape,1);
-        reinterpret_cast<void(__thiscall*)(uintptr_t,void*)>(VA(0x4c7680))(world,reinterpret_cast<void*>(savedFilter));filterSet=false;
-        if(found>0)raw+=unsigned(found);
-        for(int i=0;i<found&&i<32;i++) {
-            auto* hit=hits+i*0x80;
-            void* a=*reinterpret_cast<void**>(hit+0x58);void* b=*reinterpret_cast<void**>(hit+0x5c);
-            void* other=a==shape?b:b==shape?a:nullptr;
-            if(!other)continue;
-            ++paired;
-            uintptr_t owner{},body{};int use{},kind{};float mass{};
-            BodyDescribe(other,owner,use,body,kind,mass);
-            if(use)++usable;
-            if(body)++withBody;
-            if(kind==1||kind==2)++kind12;
-        }
-    } __except(EXCEPTION_EXECUTE_HANDLER) {ok=false;}
-    __try {
-        if(filterSet)reinterpret_cast<void(__thiscall*)(uintptr_t,void*)>(VA(0x4c7680))(world,reinterpret_cast<void*>(savedFilter));
-        if(shape)reinterpret_cast<void(__thiscall*)(uintptr_t,void*)>(VA(0x50ef00))(world+0x10,shape);
-    } __except(EXCEPTION_EXECUTE_HANDLER) {ok=false;}
-    return ok;
 }
 std::atomic<uintptr_t> grabManager{},forgivingPlayer{};
 std::atomic<uint64_t> grabStart{};
@@ -2645,6 +2600,11 @@ void InstallInteractionProbes(){
     handPush=GetPrivateProfileIntW(L"VR",L"HandPush",0,diagConfig)!=0;
     handPushLog=GetPrivateProfileIntW(L"VR",L"HandPushLog",0,diagConfig)!=0;
     handPushReady=handPush&&HandPushNative::Matches(base);
+    {
+        wchar_t pushText[32]{};GetPrivateProfileStringW(L"VR",L"HandPushCm",L"8",pushText,32,diagConfig);
+        const float cm=float(_wtof(pushText));
+        if(std::isfinite(cm)&&cm>=3.f&&cm<=20.f)handPushRadiusMetres=cm*.01f;
+    }
     bodyPushLog=GetPrivateProfileIntW(L"VR",L"BodyPushLog",0,diagConfig)!=0;
     if(bodyPushLog&&HandPushNative::Matches(base)) {
         // Observation only: the game's own walk-into-object search and push.
@@ -2777,23 +2737,6 @@ uintptr_t VA(uintptr_t preferred);
 // capsule shape, flags and hit layout, with a wider capsule along the aim line.
 // Game thread, inside the interaction update. No C++ objects with destructors
 // here, so a fault inside a game call is caught and reported.
-// Hand nudges (HandPush=1) use the usable items the pickup search meets, because a
-// search centred on the hand found nothing in the headset (November 24 logs). Filled
-// while ForgivingBegin searches for each hand; read by UpdateHandPush right after.
-struct NudgeSeen{uintptr_t owner{},shape{};float hit[3]{},centre[3]{};};
-NudgeSeen nudgeSeen[2][32]{};
-unsigned nudgeSeenCount[2]{};
-bool nudgeSearched[2]{};
-int nudgeCollectHand=-1;
-void NudgeCollect(void* owner,void* shape,const float* hit,const float* centre) {
-    if(nudgeCollectHand<0||nudgeCollectHand>1||!owner||!shape)return;
-    auto& n=nudgeSeenCount[nudgeCollectHand];
-    for(unsigned i=0;i<n;i++)if(nudgeSeen[nudgeCollectHand][i].owner==reinterpret_cast<uintptr_t>(owner))return;
-    if(n>=32)return;
-    auto& e=nudgeSeen[nudgeCollectHand][n++];
-    e.owner=reinterpret_cast<uintptr_t>(owner);e.shape=reinterpret_cast<uintptr_t>(shape);
-    for(int j=0;j<3;j++){e.hit[j]=hit[j];e.centre[j]=centre[j];}
-}
 // Adds to `out`. contactShell > 0 searches a small sphere of that radius at the hand,
 // because the game returns at most 32 hits and the wide search can fill them.
 bool ForgivingQueryRaw(void* self,const float* origin,const float* dir,float minRadius,const float* hand,float contactReach,ForgivingAim::Candidate* out,unsigned& count,float contactShell=0,bool* mayHoldMore=nullptr) {
@@ -2858,7 +2801,6 @@ bool ForgivingQueryRaw(void* self,const float* origin,const float* dir,float min
             const float reach=*reinterpret_cast<const float*>(d+4)*316.05f;
             if(!std::isfinite(reach)||reach<=0)continue;
             if(mayHoldMore)*mayHoldMore=true; // usable, before any distance filter
-            NudgeCollect(owner,object,reinterpret_cast<const float*>(hit),reinterpret_cast<const float*>(owner+0x20));
             const auto* point=reinterpret_cast<const float*>(hit);
             float score{};
             bool usable=ForgivingAim::Score(origin,dir,point,reach,forgivingTan,minRadius,score);
@@ -2943,7 +2885,6 @@ bool ForgivingSearch(void* self,const ForgivingAim::Frame& f,const float* hand,F
 }
 // One decision per update. See ForgivingAim.h.
 void ForgivingBegin(void* self) {
-    nudgeSeenCount[0]=nudgeSeenCount[1]=0;nudgeSearched[0]=nudgeSearched[1]=false;nudgeCollectHand=-1;
     forgivingRayActive=false;forgivingSelected=0;
     contactTouchingCount=0;contactThrough=0;pathHitSeen=false;pathHitOwner=0;
     forgivingSelector.ClearPlan();
@@ -2972,10 +2913,7 @@ void ForgivingBegin(void* self) {
         havePalm[i]=contactOn&&HandPosition(i!=0,palms[i]);
         frame.contactReach=havePalm[i]?handContactMetres*scale:0.f;
         unsigned count{};
-        nudgeCollectHand=handPush?i:-1;
-        const bool searched=ForgivingSearch(self,frame,havePalm[i]?palms[i]:nullptr,lists[i],count);
-        nudgeCollectHand=-1;nudgeSearched[i]=searched&&handPush;
-        if(!searched) {
+        if(!ForgivingSearch(self,frame,havePalm[i]?palms[i]:nullptr,lists[i],count)) {
             forgivingSelector.Reset();
             if(++forgivingFaults>=3) {
                 forgivingAimEnabled=false;
@@ -3042,30 +2980,23 @@ void TimingFinish(uint64_t begin,uint64_t afterBegin,uint64_t afterGame) {
 // Independent physical contact search: no padded interaction geometry, no
 // locomotion-list edits and no retained native pointers across game updates.
 // [VR] HandPushLog=1 writes DeusExHRVR-hand-push.log, replaced each launch, at most
-// 6000 lines: one summary each second, plus at most one line per hand every 200 ms
-// while something is found at that hand, plus one line ~0.3 s after each push saying
-// whether the object moved. While the log is on, a second, wider search (15 cm) also
-// runs at each hand. It never pushes; it only reports what is near the hand and which
-// check would refuse it. HandPushLog=0 (the default) turns all of this off.
-enum PushReject{RejNoPair,RejNoOther,RejNoOwner,RejUnusable,RejNoBody,RejDuplicate,RejOwnerMismatch,
-    RejKind,RejAug,RejForce,RejCentre,RejLever,RejNotTouching,RejCount};
-const char* const pushRejectName[RejCount]={"noPair","noOther","noOwner","notUsable","noBody","duplicate",
-    "ownerMismatch","kind","augmentation","force","centre","lever","notTouching"};
-const char* const pushForceName[HandPush::ForceWhyCount]={"ok","input","far","normal","behind","notInward","receding","magnitude"};
+// 6000 lines: one summary each second, at most one line per hand every 200 ms while the
+// hand touches something pushable, and one line ~0.3 s after each push saying whether
+// the object moved. HandPushLog=0 (the default) turns it off.
+enum PushReject{RejNoPair,RejNoOther,RejNoBody,RejDuplicate,RejNoOwner,RejKind,RejAug,RejNotMoving,RejForce,RejCentre,RejCount};
+const char* const pushRejectName[RejCount]={"noPair","noOther","noBody","duplicate","noOwner","kind","augmentation","handNotMoving","force","centre"};
+const char* const pushForceName[HandPush::ForceWhyCount]={"ok","input","notToward","receding","magnitude"};
 const char* const pushStepName[HandPush::StepWhyCount]={"ok","invalid","sameSample","noHistory","tooSoon","jump","tooFast","tooSlow"};
 struct PushStats {
-    unsigned queries{},raw{},pairs{},usable{},touching{},eligible{},pushed{},forceAdded{},forceNotAdded{};
+    unsigned queries{},raw{},pairs{},withBody{},eligible{},pushed{},forceAdded{},forceNotAdded{};
     unsigned reject[RejCount]{},force[HandPush::ForceWhyCount]{},kind1{},kind2{},kindOther{};
-    float nearestOwnerCm{-1},nearestPointCm{-1};
     uintptr_t lastOwner{};int lastKind{-99},lastForce{-1};float lastMass{NAN},lastInwardCmS{NAN},lastMagnitude{NAN};
-    void Near(float& slot,float cm){if(std::isfinite(cm)&&(slot<0||cm<slot))slot=cm;}
     void Add(const PushStats& o) {
-        queries+=o.queries;raw+=o.raw;pairs+=o.pairs;usable+=o.usable;touching+=o.touching;eligible+=o.eligible;pushed+=o.pushed;
+        queries+=o.queries;raw+=o.raw;pairs+=o.pairs;withBody+=o.withBody;eligible+=o.eligible;pushed+=o.pushed;
         forceAdded+=o.forceAdded;forceNotAdded+=o.forceNotAdded;
         for(int i=0;i<RejCount;i++)reject[i]+=o.reject[i];
         for(int i=0;i<HandPush::ForceWhyCount;i++)force[i]+=o.force[i];
         kind1+=o.kind1;kind2+=o.kind2;kindOther+=o.kindOther;
-        Near(nearestOwnerCm,o.nearestOwnerCm);Near(nearestPointCm,o.nearestPointCm);
     }
 };
 struct PushTracked{uintptr_t body{},owner{};uint64_t tick{};float centre[3]{},scale{};};
@@ -3082,16 +3013,19 @@ void HandPushLine(const char* format,...) {
     fputc('\n',f);fclose(f);
 }
 void PushStatsText(char* out,size_t size,const PushStats& s) {
-    int used=sprintf_s(out,size,"queries=%u raw=%u pairs=%u usable=%u touching=%u eligible=%u pushed=%u forceAdded=%u forceNotAdded=%u kind1=%u kind2=%u kindOther=%u nearestObjectCm=%.1f nearestHitCm=%.1f",
-        s.queries,s.raw,s.pairs,s.usable,s.touching,s.eligible,s.pushed,s.forceAdded,s.forceNotAdded,s.kind1,s.kind2,s.kindOther,s.nearestOwnerCm,s.nearestPointCm);
+    int used=sprintf_s(out,size,"searches=%u found=%u paired=%u withBody=%u kind1=%u kind2=%u kindOther=%u eligible=%u pushed=%u forceAdded=%u forceNotAdded=%u",
+        s.queries,s.raw,s.pairs,s.withBody,s.kind1,s.kind2,s.kindOther,s.eligible,s.pushed,s.forceAdded,s.forceNotAdded);
     for(int i=0;i<RejCount&&used>0&&size_t(used)<size;i++)if(s.reject[i])used+=sprintf_s(out+used,size-used," refused.%s=%u",pushRejectName[i],s.reject[i]);
     for(int i=1;i<HandPush::ForceWhyCount&&used>0&&size_t(used)<size;i++)if(s.force[i])used+=sprintf_s(out+used,size-used," force.%s=%u",pushForceName[i],s.force[i]);
 }
-// radius: the search size in metres. apply=false only classifies (the log's broad search).
-int HandPushRaw(void* player,const float* palm,const float* velocity,float scale,float dt,float radius,bool apply,
+// The game's walk push finds objects with the body's collision shape: no search filter,
+// shape settings 08/2B, no owner value (BodyPushLog, November 24). The usable-item filter
+// the pickup search uses excludes these objects. This searches a sphere at the hand the
+// same way and pushes what the walk push would: physics bodies of kind 1 or 2, kind 2
+// only with the augmentation the game checks. Returns pushes, or -1 on a fault.
+int HandPushRaw(void* player,const float* palm,const float* velocity,bool moving,float scale,float dt,
                 uintptr_t* pushed,unsigned& pushedCount,PushStats& st) {
-    uintptr_t world{},savedFilter{},savedOwner{};void* shape{};bool filterSet{},ownerSet{};
-    auto* ownerSlot=reinterpret_cast<uintptr_t*>(VA(0xe9aa34));
+    uintptr_t world{},savedFilter{};void* shape{};bool filterSet{};
     alignas(16) unsigned char hits[0x80*32]{};
     alignas(16) float position[4]{palm[0],palm[1],palm[2],1};
     alignas(16) float rotation[4]{0,0,0,1};
@@ -3102,125 +3036,35 @@ int HandPushRaw(void* player,const float* palm,const float* velocity,float scale
         if(!world||!player)return 0;
         shape=reinterpret_cast<void*(__thiscall*)(uintptr_t)>(VA(0x50f020))(world+0x10);
         if(!shape)return 0;
-        reinterpret_cast<void(__thiscall*)(void*,int)>(VA(0x4fb620))(shape,0x0c);
+        reinterpret_cast<void(__thiscall*)(void*,int)>(VA(0x4fb620))(shape,0x08);
         reinterpret_cast<void(__thiscall*)(void*,void*)>(VA(0x4fb5e0))(shape,ignore);
-        // Same primitive constructor as the game's overlap search, with a tiny
-        // axial length: effectively a palm sphere, not a remote targeting cone.
         reinterpret_cast<void(__thiscall*)(void*,float,float,const float*,const float*)>(VA(0x4fcd50))(
-            shape,radius*scale,.001f*scale,position,rotation);
-        reinterpret_cast<void(__thiscall*)(void*,int)>(VA(0x4fb550))(shape,0x42);
+            shape,handPushRadiusMetres*scale,.001f*scale,position,rotation);
+        reinterpret_cast<void(__thiscall*)(void*,int)>(VA(0x4fb550))(shape,0x2b);
         reinterpret_cast<void(__thiscall*)(void*,const float*)>(VA(0x4fd100))(shape,position);
         reinterpret_cast<void(__thiscall*)(void*,const float*)>(VA(0x4fd140))(shape,rotation);
         savedFilter=*reinterpret_cast<uintptr_t*>(world+0x2330);filterSet=true;
-        reinterpret_cast<void(__thiscall*)(uintptr_t,void*)>(VA(0x4c7680))(world,reinterpret_cast<void*>(VA(0x688fe0)));
-        savedOwner=*ownerSlot;ownerSet=true;
-        *ownerSlot=*reinterpret_cast<uintptr_t*>(*reinterpret_cast<uintptr_t*>(static_cast<unsigned char*>(player)+8)+0x5c);
+        reinterpret_cast<void(__thiscall*)(uintptr_t,void*)>(VA(0x4c7680))(world,nullptr);
         const int found=reinterpret_cast<int(__thiscall*)(uintptr_t,void*,int,void*,int)>(VA(0x50f1c0))(
             world+0x10,hits,32,shape,1);
-        ++st.queries;if(found>0)st.raw+=unsigned(found);
-        *ownerSlot=savedOwner;ownerSet=false;
         reinterpret_cast<void(__thiscall*)(uintptr_t,void*)>(VA(0x4c7680))(world,reinterpret_cast<void*>(savedFilter));filterSet=false;
-        const float toCm=100.f/scale;
-        for(int i=0;i<found&&i<32&&(!apply||pushedCount<4);i++) {
+        ++st.queries;if(found>0)st.raw+=unsigned(found);
+        for(int i=0;i<found&&i<32&&pushedCount<4;i++) {
             auto* hit=hits+i*0x80;
             void* a=*reinterpret_cast<void**>(hit+0x58);void* b=*reinterpret_cast<void**>(hit+0x5c);
             if(a!=shape&&b!=shape){++st.reject[RejNoPair];continue;}
             ++st.pairs;
             void* other=a==shape?b:a;if(!other){++st.reject[RejNoOther];continue;}
-            void* descriptor{};
-            auto owner=reinterpret_cast<void*(__cdecl*)(void*,void**)>(VA(0x688ed0))(other,&descriptor);
-            if(!owner||owner==player||!descriptor){++st.reject[RejNoOwner];continue;}
-            auto* desc=static_cast<unsigned char*>(descriptor);
-            if(!*reinterpret_cast<uint32_t*>(desc)||!desc[0x10]){++st.reject[RejUnusable];continue;}
-            ++st.usable;
-            {
-                const float* op=reinterpret_cast<const float*>(static_cast<unsigned char*>(owner)+0x20);
-                const float* hp=reinterpret_cast<const float*>(hit);
-                float d1[3]{},d2[3]{};for(int j=0;j<3;j++){d1[j]=op[j]-palm[j];d2[j]=hp[j]-palm[j];}
-                st.Near(st.nearestOwnerCm,std::sqrt(HandPush::Dot(d1,d1))*toCm);
-                st.Near(st.nearestPointCm,std::sqrt(HandPush::Dot(d2,d2))*toCm);
-            }
-            st.lastOwner=reinterpret_cast<uintptr_t>(owner);
             auto* body=reinterpret_cast<unsigned char*(__thiscall*)(void*)>(VA(0x5b2900))(other);
-            if(!body){++st.reject[RejNoBody];continue;} // No ragdoll/actor fallback in this prototype.
-            bool duplicate=false;
-            if(apply)for(unsigned j=0;j<pushedCount;j++)if(pushed[j]==reinterpret_cast<uintptr_t>(body))duplicate=true;
-            if(duplicate){++st.reject[RejDuplicate];continue;}
-            void* bodyOwner=reinterpret_cast<void*(__thiscall*)(void*)>(VA(0x4f8880))(body);
-            if(!bodyOwner||bodyOwner!=owner){++st.reject[RejOwnerMismatch];continue;}
-            const int kind=reinterpret_cast<int(__cdecl*)(void*)>(VA(0x6f42d0))(bodyOwner);
-            st.lastKind=kind;
-            if(kind==1)++st.kind1;else if(kind==2)++st.kind2;else ++st.kindOther;
-            if(kind!=1&&kind!=2){++st.reject[RejKind];continue;}
-            if(kind==2) {
-                auto aug=reinterpret_cast<void*(__cdecl*)(void*)>(VA(0x65ba80))(player);
-                if(!aug||!reinterpret_cast<bool(__thiscall*)(void*,int)>(VA(0x65c2e0))(aug,0x2e)){++st.reject[RejAug];continue;}
-            }
-            ++st.eligible;
-            const float mass=reinterpret_cast<float(__thiscall*)(void*)>(VA(0x4f8960))(body);
-            st.lastMass=mass;
-            alignas(16) float normal[4]{},point[4]{},bodyVelocity[4]{},force[4]{};
-            for(int j=0;j<3;j++){point[j]=reinterpret_cast<float*>(hit)[j];normal[j]=reinterpret_cast<float*>(hit+0x10)[j]*(a==shape?-1.f:1.f);}
-            point[3]=1;
-            reinterpret_cast<void*(__thiscall*)(void*,float*)>(VA(0x4f8aa0))(body,bodyVelocity);
-            float inward=NAN,magnitude=NAN;
-            const int why=HandPush::ForceReason(palm,point,normal,velocity,bodyVelocity,mass,scale,dt,force,&inward,&magnitude);
-            ++st.force[why];st.lastForce=why;st.lastInwardCmS=inward*toCm;st.lastMagnitude=magnitude;
-            if(why!=HandPush::ForceOk){++st.reject[RejForce];continue;}
-            const float* centre=reinterpret_cast<const float*>(body+0x80);
-            if(!HandPush::Finite(centre)){++st.reject[RejCentre];continue;}
-            float lever[3]{};for(int j=0;j<3;j++)lever[j]=point[j]-centre[j];
-            const float length=std::sqrt(HandPush::Dot(lever,lever));
-            if(!std::isfinite(length)||length>3.f*scale){++st.reject[RejLever];continue;}
-            if(!apply)continue;
-            // Limit turning force on long objects as well as linear force.
-            const float torqueCap=length>.25f*scale?(.25f*scale/length):1.f;
-            for(int j=0;j<3;j++)force[j]*=torqueCap;
-            float before[4]{},after[4]{};
-            memcpy(before,body+0xe0,sizeof(before));
-            reinterpret_cast<void(__thiscall*)(void*)>(VA(0x4f8c00))(body);
-            reinterpret_cast<void(__thiscall*)(void*,const float*,const float*)>(VA(0x4f9020))(body,force,point);
-            memcpy(after,body+0xe0,sizeof(after));
-            if(memcmp(before,after,sizeof(before)))++st.forceAdded;else ++st.forceNotAdded;
-            pushed[pushedCount++]=reinterpret_cast<uintptr_t>(body);++result;++st.pushed;
-            if(handPushLog) {
-                auto& t=pushTracked[pushTrackedNext++%8];
-                t.body=reinterpret_cast<uintptr_t>(body);t.owner=reinterpret_cast<uintptr_t>(owner);t.tick=GetTickCount64();t.scale=scale;
-                for(int j=0;j<3;j++)t.centre[j]=centre[j];
-            }
-        }
-    } __except(EXCEPTION_EXECUTE_HANDLER) {result=-1;}
-    __try {
-        if(ownerSet)*ownerSlot=savedOwner;
-        if(filterSet)reinterpret_cast<void(__thiscall*)(uintptr_t,void*)>(VA(0x4c7680))(world,reinterpret_cast<void*>(savedFilter));
-        if(shape)reinterpret_cast<void(__thiscall*)(uintptr_t,void*)>(VA(0x50ef00))(world+0x10,shape);
-    } __except(EXCEPTION_EXECUTE_HANDLER) {result=-1;}
-    return result;
-}
-// Push the usable items the pickup search met for this hand (see NudgeSeen). Same
-// eligibility, native wake and force-at-point calls as HandPushRaw; the force is applied
-// at the body's centre, so it slides rather than spins.
-int HandPushSeen(void* player,int hand,const float* palm,const float* velocity,bool moving,float scale,float dt,
-                 uintptr_t* pushed,unsigned& pushedCount,PushStats& st) {
-    int result=0;
-    __try {
-        for(unsigned i=0;i<nudgeSeenCount[hand]&&pushedCount<4;i++) {
-            const auto& e=nudgeSeen[hand][i];
-            ++st.raw;++st.usable;
-            float centreCm=NAN,hitCm=NAN;
-            const bool touching=HandPush::Touching(palm,e.centre,e.hit,scale,&centreCm,&hitCm);
-            st.Near(st.nearestOwnerCm,centreCm);st.Near(st.nearestPointCm,hitCm);
-            if(!touching){++st.reject[RejNotTouching];continue;}
-            ++st.touching;st.lastOwner=e.owner;
-            auto* body=reinterpret_cast<unsigned char*(__thiscall*)(void*)>(VA(0x5b2900))(reinterpret_cast<void*>(e.shape));
             if(!body){++st.reject[RejNoBody];continue;}
+            ++st.withBody;
             bool duplicate=false;
             for(unsigned j=0;j<pushedCount;j++)if(pushed[j]==reinterpret_cast<uintptr_t>(body))duplicate=true;
             if(duplicate){++st.reject[RejDuplicate];continue;}
             void* bodyOwner=reinterpret_cast<void*(__thiscall*)(void*)>(VA(0x4f8880))(body);
-            if(!bodyOwner||reinterpret_cast<uintptr_t>(bodyOwner)!=e.owner){++st.reject[RejOwnerMismatch];continue;}
+            if(!bodyOwner||bodyOwner==player){++st.reject[RejNoOwner];continue;}
             const int kind=reinterpret_cast<int(__cdecl*)(void*)>(VA(0x6f42d0))(bodyOwner);
-            st.lastKind=kind;
+            st.lastKind=kind;st.lastOwner=reinterpret_cast<uintptr_t>(bodyOwner);
             if(kind==1)++st.kind1;else if(kind==2)++st.kind2;else ++st.kindOther;
             if(kind!=1&&kind!=2){++st.reject[RejKind];continue;}
             if(kind==2) {
@@ -3230,15 +3074,13 @@ int HandPushSeen(void* player,int hand,const float* palm,const float* velocity,b
             ++st.eligible;
             const float mass=reinterpret_cast<float(__thiscall*)(void*)>(VA(0x4f8960))(body);
             st.lastMass=mass;
-            alignas(16) float point[4]{},bodyVelocity[4]{},force[4]{};
+            if(!moving){++st.reject[RejNotMoving];continue;}
             const float* centre=reinterpret_cast<const float*>(body+0x80);
             if(!HandPush::Finite(centre)){++st.reject[RejCentre];continue;}
-            for(int j=0;j<3;j++)point[j]=centre[j];
-            point[3]=1;
-            if(!moving){++st.force[HandPush::ForceNotInward];st.lastForce=HandPush::ForceNotInward;++st.reject[RejForce];continue;}
+            alignas(16) float point[4]{centre[0],centre[1],centre[2],1},bodyVelocity[4]{},force[4]{};
             reinterpret_cast<void*(__thiscall*)(void*,float*)>(VA(0x4f8aa0))(body,bodyVelocity);
             float inward=NAN,magnitude=NAN;
-            const int why=HandPush::TowardForce(palm,point,velocity,bodyVelocity,mass,scale,dt,force,&inward,&magnitude);
+            const int why=HandPush::HorizontalForce(palm,point,velocity,bodyVelocity,mass,scale,dt,force,&inward,&magnitude);
             ++st.force[why];st.lastForce=why;st.lastInwardCmS=inward*100.f/scale;st.lastMagnitude=magnitude;
             if(why!=HandPush::ForceOk){++st.reject[RejForce];continue;}
             float before[4]{},after[4]{};
@@ -3250,10 +3092,14 @@ int HandPushSeen(void* player,int hand,const float* palm,const float* velocity,b
             pushed[pushedCount++]=reinterpret_cast<uintptr_t>(body);++result;++st.pushed;
             if(handPushLog) {
                 auto& t=pushTracked[pushTrackedNext++%8];
-                t.body=reinterpret_cast<uintptr_t>(body);t.owner=e.owner;t.tick=GetTickCount64();t.scale=scale;
+                t.body=reinterpret_cast<uintptr_t>(body);t.owner=reinterpret_cast<uintptr_t>(bodyOwner);t.tick=GetTickCount64();t.scale=scale;
                 for(int j=0;j<3;j++)t.centre[j]=centre[j];
             }
         }
+    } __except(EXCEPTION_EXECUTE_HANDLER) {result=-1;}
+    __try {
+        if(filterSet)reinterpret_cast<void(__thiscall*)(uintptr_t,void*)>(VA(0x4c7680))(world,reinterpret_cast<void*>(savedFilter));
+        if(shape)reinterpret_cast<void(__thiscall*)(uintptr_t,void*)>(VA(0x50ef00))(world+0x10,shape);
     } __except(EXCEPTION_EXECUTE_HANDLER) {result=-1;}
     return result;
 }
@@ -3265,15 +3111,14 @@ const char* const pushGateName[GateCount]={"notReady","vrOff","motionControlsOff
     "notCombatCamera","gameTime"};
 struct PushSecond {
     uint64_t start{};unsigned updates{},eligible{},gate[GateCount]{};
-    unsigned handInvalid[2]{},noSearch[2]{},step[2][HandPush::StepWhyCount]{};float maxSpeedCmS[2]{};
-    unsigned probeQueries[2]{},probeRaw[2]{},probePaired[2]{},probeBody[2]{},probeKind12[2]{},probeUsable[2]{};
-    PushStats tight[2],broad[2];
+    unsigned handInvalid[2]{},step[2][HandPush::StepWhyCount]{};float maxSpeedCmS[2]{};
+    PushStats hands[2];
 };
 void UpdateHandPush(float dt) {
     static HandPush::Motion motion[2];
     static CameraMath::Matrix oldBase{};static Transport::Pose oldReference{};
     static bool haveBase{};static uint64_t lastTick{};
-    static PushSecond second{};static uint64_t lastEvent[2]{},lastAtItem[2]{};
+    static PushSecond second{};static uint64_t lastEvent[2]{};
     float points[2][3]{},scale{};bool valid[2]{},eligible{};void* player{};uint64_t tick{};
     int gate=GateCount;
     const auto now=GetTickCount64();
@@ -3309,8 +3154,8 @@ void UpdateHandPush(float dt) {
         }
     }
     if(handPushLog&&handPushLogLines==0)
-        HandPushLine("startup enabled=%d signatures=%d source=pickupSearch touchCentreCm=%.0f touchHitCm=%.0f bodyPushLog=%d (summary each second, hand lines while touching, a 15 cm search at a seen item each second)",
-            int(handPush),int(handPushReady),HandPush::CentreTouchMetres*100.f,HandPush::HitTouchMetres*100.f,int(bodyPushReady));
+        HandPushLine("startup enabled=%d signatures=%d search=bodyStyle radiusCm=%.1f maxForce=%.0f maxPerMass=%.1f bodyPushLog=%d",
+            int(handPush),int(handPushReady),handPushRadiusMetres*100.f,HandPush::NativeMaxForce,HandPush::NativeMaxPerMass,int(bodyPushReady));
     if(handPushLog) {
         // About 0.3 s after a push: did the object's centre move?
         for(auto& t:pushTracked) {
@@ -3318,9 +3163,8 @@ void UpdateHandPush(float dt) {
             float c[3]{};
             if(ReadSprintMemory(t.body+0x80,c,sizeof(c))&&HandPush::Finite(c)) {
                 float d[3]{};for(int j=0;j<3;j++)d[j]=c[j]-t.centre[j];
-                const float sc=t.scale;
                 HandPushLine("after-push object=%p movedCm=%.2f delta=%.2f,%.2f,%.2f msSincePush=%llu",
-                    reinterpret_cast<void*>(t.owner),sc>0?std::sqrt(HandPush::Dot(d,d))*100.f/sc:-1.f,d[0],d[1],d[2],now-t.tick);
+                    reinterpret_cast<void*>(t.owner),t.scale>0?std::sqrt(HandPush::Dot(d,d))*100.f/t.scale:-1.f,d[0],d[1],d[2],now-t.tick);
             }
             else HandPushLine("after-push object=%p unreadable",reinterpret_cast<void*>(t.owner));
             t={};
@@ -3338,16 +3182,13 @@ void UpdateHandPush(float dt) {
         for(int i=0;i<GateCount&&used>0;i++)if(second.gate[i])used+=sprintf_s(text+used,sizeof(text)-used," blocked.%s=%u",pushGateName[i],second.gate[i]);
         HandPushLine("%s",text);
         for(int hand=0;hand<2;hand++) {
-            const auto& sm=second.tight[hand];const auto& wd=second.broad[hand];
-            if(!second.handInvalid[hand]&&!second.noSearch[hand]&&!sm.raw&&!wd.queries&&!second.probeQueries[hand]&&!second.step[hand][HandPush::StepOk]&&!second.step[hand][HandPush::StepTooSlow]&&!second.step[hand][HandPush::StepTooFast])continue;
+            const auto& st=second.hands[hand];
+            if(!second.handInvalid[hand]&&!st.queries)continue;
             char steps[300]{};int su=0;
             for(int i=0;i<HandPush::StepWhyCount&&su>=0&&size_t(su)<sizeof(steps);i++)if(second.step[hand][i])su+=sprintf_s(steps+su,sizeof(steps)-su," move.%s=%u",pushStepName[i],second.step[hand][i]);
-            char a[700]{},b[700]{};PushStatsText(a,sizeof(a),sm);PushStatsText(b,sizeof(b),wd);
-            HandPushLine("second hand=%s notUsableHand=%u noPickupSearch=%u maxSpeedCmS=%.0f%s | seen: %s | smallSearchAtItem: %s",hand?"left":"right",
-                second.handInvalid[hand],second.noSearch[hand],second.maxSpeedCmS[hand],steps,a,b);
-            if(second.probeQueries[hand])
-                BodyPushLine("hand-probe-second hand=%s queries=%u raw=%u paired=%u withBody=%u kind1or2=%u usable=%u",hand?"left":"right",
-                    second.probeQueries[hand],second.probeRaw[hand],second.probePaired[hand],second.probeBody[hand],second.probeKind12[hand],second.probeUsable[hand]);
+            char a[900]{};PushStatsText(a,sizeof(a),st);
+            HandPushLine("second hand=%s notUsableHand=%u maxSpeedCmS=%.0f%s | %s",hand?"left":"right",
+                second.handInvalid[hand],second.maxSpeedCmS[hand],steps,a);
         }
         second={};second.start=now;
     };
@@ -3367,47 +3208,24 @@ void UpdateHandPush(float dt) {
             ++second.step[hand][motion[hand].why];
             if(moving)second.maxSpeedCmS[hand]=std::max(second.maxSpeedCmS[hand],std::sqrt(HandPush::Dot(velocity,velocity))*100.f/scale);
         }
-        PushStats seen{},atItem{};
-        int result=0;
-        if(!nudgeSearched[hand]){if(handPushLog)++second.noSearch[hand];}
-        else result=HandPushSeen(player,hand,points[hand],velocity,moving,scale,dt,pushed,count,seen);
-        if(result<0){handPushReady=false;for(auto& m:motion)m.Reset();}
-        if(bodyPushReady&&result>=0) {
-            ++second.probeQueries[hand];
-            if(!BodyStyleProbe(player,points[hand],scale,second.probeRaw[hand],second.probePaired[hand],second.probeBody[hand],second.probeKind12[hand],second.probeUsable[hand])) {
-                bodyPushReady=false;BodyPushLine("fault: hand probe turned off for this launch");
-            }
+        PushStats st{};
+        const int result=HandPushRaw(player,points[hand],velocity,moving,scale,dt,pushed,count,st);
+        if(result<0){
+            handPushReady=false;for(auto& m:motion)m.Reset();
+            if(handPushLog)HandPushLine("fault: hand pushing turned off for this launch");
+            break;
         }
-        if(handPushLog&&result>=0) {
-            second.tight[hand].Add(seen);
-            // Once a second: does a 15 cm search centred on a seen item find it?
-            if(nudgeSeenCount[hand]&&now>=lastAtItem[hand]+1000) {
-                lastAtItem[hand]=now;
-                unsigned best=0;float bestD=1e30f;
-                for(unsigned i=0;i<nudgeSeenCount[hand];i++) {
-                    float d[3]{};for(int j=0;j<3;j++)d[j]=nudgeSeen[hand][i].centre[j]-points[hand][j];
-                    const float dd=HandPush::Dot(d,d);if(dd<bestD){bestD=dd;best=i;}
-                }
-                const auto& item=nudgeSeen[hand][best];
-                uintptr_t none[4]{};unsigned noneCount{};const float still[3]{};
-                if(HandPushRaw(player,item.centre,still,scale,dt,.15f,false,none,noneCount,atItem)<0){handPushReady=false;result=-1;}
-                else {
-                    second.broad[hand].Add(atItem);
-                    HandPushLine("small-search-at-item hand=%s object=%p handToObjectCm=%.0f raw=%u usable=%u lastUsable=%p sameObject=%d",
-                        hand?"left":"right",reinterpret_cast<void*>(item.owner),std::sqrt(bestD)*100.f/scale,atItem.raw,atItem.usable,
-                        reinterpret_cast<void*>(atItem.lastOwner),int(atItem.lastOwner==item.owner));
-                }
-            }
-            if(seen.touching&&(seen.pushed||now>=lastEvent[hand]+200)) {
+        if(handPushLog) {
+            second.hands[hand].Add(st);
+            if(st.eligible&&(st.pushed||now>=lastEvent[hand]+200)) {
                 lastEvent[hand]=now;
-                char a[700]{};PushStatsText(a,sizeof(a),seen);
-                HandPushLine("hand=%s move=%s speedCmS=%.0f object=%p kind=%d mass=%.2f inwardCmS=%.1f force=%s magnitude=%.2f | seen: %s",
+                char a[900]{};PushStatsText(a,sizeof(a),st);
+                HandPushLine("hand=%s move=%s speedCmS=%.0f object=%p kind=%d mass=%.2f inwardCmS=%.1f force=%s magnitude=%.2f | %s",
                     hand?"left":"right",pushStepName[motion[hand].why],moving?std::sqrt(HandPush::Dot(velocity,velocity))*100.f/scale:0.f,
-                    reinterpret_cast<void*>(seen.lastOwner),seen.lastKind,seen.lastMass,seen.lastInwardCmS,
-                    seen.lastForce>=0?pushForceName[seen.lastForce]:"-",seen.lastMagnitude,a);
+                    reinterpret_cast<void*>(st.lastOwner),st.lastKind,st.lastMass,st.lastInwardCmS,
+                    st.lastForce>=0?pushForceName[st.lastForce]:"-",st.lastMagnitude,a);
             }
         }
-        if(result<0){if(handPushLog)HandPushLine("fault: hand pushing turned off for this launch");break;}
     }
     flush();
 }
@@ -3439,8 +3257,7 @@ void __fastcall SenseUpdateHook(void* self,void*,float dt) {
         interactionSample.scale=current.scale;interactionSample.source=unsigned(interactionAim.load());
     }
     const bool pushUpdate=!previous&&senseQueries;
-    // Hand nudges use what the pickup search (ForgivingBegin, above) met this update,
-    // so they run after it and before the game's update.
+    // Hand nudges search before the game's update, like the pickup search.
     if(pushUpdate&&handPush)UpdateHandPush(dt);
     originalSenseUpdate(self,dt);senseQueries=previous;
     if(forgivingDrive&&interactionTimingLog)timingAfterGame=TimingNow();

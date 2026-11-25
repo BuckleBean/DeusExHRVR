@@ -166,16 +166,18 @@ HandPointers=Off
 ; and only a real hit on your item counts. Walls still stop the line. It can also pass
 ; a closed door, since doors are usable items. 0 turns it off. Needs HandContactExact=1.
 ; Restart after editing.
-; Experimental physical nudges from empty hands; restart after changing.
-; Off by default until tested in the headset. No grip press needed.
+; Experimental hand nudges: an empty hand moving into a box, barrel or dumpster pushes
+; it, like walking into it does. No grip press needed. Off by default; restart after changing.
 HandPush=0
-; Diagnostic log DeusExHRVR-hand-push.log (at most 6000 lines: a summary each second, hand
-; lines while something is near, and whether pushed objects moved). While on, it also
-; runs a wider 15 cm search that never pushes. 0 (default) turns it off. Restart after editing.
+; Size of the search around each hand, in cm (3 to 20). Restart after editing.
+HandPushCm=8
+; Diagnostic log DeusExHRVR-hand-push.log (at most 6000 lines: a summary each second,
+; hand lines while touching something pushable, and whether pushed objects moved).
+; 0 (default) turns it off. Restart after editing.
 HandPushLog=0
-; Observation only: what the game's own walk-into-object push does (what it finds, how
-; hard it pushes), plus a test search at each hand set up like it. Writes
-; DeusExHRVR-body-push.log (at most 4000 lines). 0 (default) turns it off. Restart after editing.
+; Observation only: what the game's own walk-into-object push does (what it finds and
+; how hard it pushes). Writes DeusExHRVR-body-push.log (at most 4000 lines). Never pushes.
+; 0 (default) turns it off. Restart after editing.
 BodyPushLog=0
 HandContactInteract=1
 HandContactExact=1
