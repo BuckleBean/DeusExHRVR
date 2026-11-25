@@ -153,6 +153,14 @@ int main() {
         Check(!MirrorPose(palette.data(),223,uneven,left,atLeft,atRight)&&palette[104].m[12]==saved[104].m[12],"unpaired bones change nothing");
         Matrix bad=atLeft;bad.m[0]=std::nanf("");
         Check(!MirrorPose(palette.data(),223,right,left,bad,atRight)&&palette[133].m[12]==saved[133].m[12],"an invalid mirror changes nothing");
+        {   // Part way through a blend a bone is not exactly rigid: still mirrored. A reflection is refused.
+            auto blend=saved;
+            for(unsigned k=0;k<17;k++)for(int j:{0,1,2,4,5,6,8,9,10}){blend[129+k].m[j]*=.8f;blend[100+k].m[j]*=.8f;}
+            int why=-1;
+            Check(MirrorPose(blend.data(),223,right,left,atLeft,atRight,&why),"a hand part way through a blend is still mirrored");
+            auto flipped=saved;for(int j=0;j<3;j++)flipped[131].m[j]=-flipped[131].m[j];
+            Check(!MirrorPose(flipped.data(),223,right,left,atLeft,atRight,&why)&&why==4&&flipped[104].m[12]==saved[104].m[12],"a reflected bone is refused, with its reason");
+        }
         // The gun: its own plane, then the hand's plane -> a rigid move.
         {
             Matrix muzzle=YawAt(10,20,0,30),hand=YawAt(0,12,0,30),c{};   // muzzle row 0 = gun's right

@@ -2029,6 +2029,9 @@ bool handPush{},handPushLog{},handPushReady{},bodyPushLog{},bodyPushReady{};
 // [VR] LeftHanded=1 (default 0): left-handed mirror mode, stage 1 (hands). See
 // ModelHandAlignment::swapHands and MirrorPose.
 std::atomic<unsigned> leftHandedMirrored{},leftHandedMirrorFailed{};
+// Failure reasons, [0] not scoped, [1] immersive scope: 0 left hand not placed, 1 mirror
+// not built, 2-6 MirrorPose's reason 1-5.
+std::atomic<unsigned> leftHandedFail[2][7]{};
 bool leftHandedLog{}; // [VR] LeftHandedLog=1 (default 0)
 float handPushRadiusMetres=HandPush::DefaultRadiusMetres,handPushStrength=1.f;
 bool handPushShove=true;
@@ -4556,7 +4559,12 @@ void LeftHandedSummary() {
     if(!leftHandedLog)return;
     static uint64_t last{};const auto now=GetTickCount64();
     if(now<last+2000)return;
-    last=now;LeftHandedLine("summary mirroredHands=%u mirrorFailed=%u",leftHandedMirrored.load(),leftHandedMirrorFailed.load());
+    last=now;
+    auto f=[](int s,int r){return leftHandedFail[s][r].load();};
+    LeftHandedLine("summary mirroredHands=%u mirrorFailed=%u | unscoped noLeft=%u noMirror=%u badInput=%u unpaired=%u notFinite=%u reflection=%u noBones=%u"
+        " | scoped noLeft=%u noMirror=%u badInput=%u unpaired=%u notFinite=%u reflection=%u noBones=%u",
+        leftHandedMirrored.load(),leftHandedMirrorFailed.load(),f(0,0),f(0,1),f(0,2),f(0,3),f(0,4),f(0,5),f(0,6),
+        f(1,0),f(1,1),f(1,2),f(1,3),f(1,4),f(1,5),f(1,6));
 }
 bool TryModelHand(void* model,unsigned char* data,CameraMath::Matrix* palette,uint32_t n) {
     CameraMath::Matrix target{},leftTarget{};bool leftValid=false;uint32_t gripBits{};
@@ -4659,11 +4667,18 @@ bool TryModelHand(void* model,unsigned char* data,CameraMath::Matrix* palette,ui
     // mirror image of the other's pose, the gun hand at the left controller and the
     // support hand at the right one, or on the weapon (MirrorPose).
     if(leftHanded) {
-        CameraMath::Matrix atLeft{};
-        const bool mirroredPose=leftMoved&&ModelHandAlignment::MirrorAcross(target,atLeft)&&
-            ModelHandAlignment::MirrorPose(palette,n,plan->bones,plan->leftBones,atLeft,atLeft);
-        if(mirroredPose)++leftHandedMirrored;else ++leftHandedMirrorFailed;
+        CameraMath::Matrix atLeft{};int reason=0;
+        const bool built=leftMoved&&ModelHandAlignment::MirrorAcross(target,atLeft);
+        const bool mirroredPose=built&&ModelHandAlignment::MirrorPose(palette,n,plan->bones,plan->leftBones,atLeft,atLeft,&reason);
+        if(mirroredPose)++leftHandedMirrored;
+        else {
+            ++leftHandedMirrorFailed;
+            ++leftHandedFail[handsAsideForScope.load()?1:0][!leftMoved?0:!built?1:1+reason];
+        }
         LeftHandedSummary();
+        // With both hands placed, an unmirrored pose would show each hand on the wrong side
+        // (a copy across the gun); skip the frame instead (the caller hides the hands).
+        if(leftMoved&&!mirroredPose){if(DiagnosticOptions::hands)++modelHandBadTransform;return false;}
     }
     HandOnlyGeometry::Activate(uintptr_t(data),frameId.load(),plan,palette[130].m,leftMoved);
 

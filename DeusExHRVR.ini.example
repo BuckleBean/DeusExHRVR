@@ -286,7 +286,7 @@ TwoHandedWeaponsLog=0
 ; Interact and sprint). Not yet mirrored: the wrist HUD sides. For firing with the left
 ; trigger, add to [Buttons]: LeftTrigger=RT and RightTrigger=LT. 0 (default) turns it off.
 LeftHanded=0
-; Diagnostic log DeusExHRVR-left-handed.log (mirrored/failed hand poses every 2 s, at
+; Diagnostic log DeusExHRVR-left-handed.log (mirrored/failed hand poses and why, every 2 s, at
 ; most 400 lines). 0 (default) turns it off.
 LeftHandedLog=0
 ; EXPERIMENTAL first-person takedowns, off by default. Set FirstPersonTakedowns=1 to try

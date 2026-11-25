@@ -198,31 +198,37 @@ inline bool MirrorGun(const Matrix& muzzle,const Matrix& handTarget,Matrix& resu
 // right bone 129+k pairs with left bone 100+k (same parent structure). For a right skin
 // matrix S (bind -> placed), the left bone gets B*S*R: B mirrors bind space (x -> -x),
 // R mirrors placed space across the controller's plane (MirrorAcross). det(B)det(R)=+1,
-// so the result is rigid and draws normally. Each destination keeps its own w-column
-// (slots 3/7/11/15), as RestLeft does. Both hands are computed before either is written.
+// so the result keeps the source's handedness and draws normally. A bone part way through
+// a blend (the two-handed grab, curls) is briefly not exactly rigid; that is drawn as it is
+// in right-handed play, so only a reflection (determinant <= 0) is refused. Each
+// destination keeps its own w-column (slots 3/7/11/15), as RestLeft does. Both hands are
+// computed before either is written. reason: 1 bad input, 2 unpaired bones, 3 a bone not
+// finite, 4 a reflection, 5 no bones.
 inline bool MirrorPose(Matrix* palette,unsigned count,const std::array<bool,223>& rightBones,
-                       const std::array<bool,223>& leftBones,const Matrix& atLeft,const Matrix& atRight) {
-    if(!palette||(count!=223 && count!=162)||!Finite(atLeft)||!Finite(atRight))return false;
+                       const std::array<bool,223>& leftBones,const Matrix& atLeft,const Matrix& atRight,int* reason=nullptr) {
+    auto fail=[&](int r){if(reason)*reason=r;return false;};
+    if(!palette||(count!=223 && count!=162)||!Finite(atLeft)||!Finite(atRight))return fail(1);
     std::array<Matrix,17> newLeft{},newRight{};
     auto mirrored=[](const Matrix& skin,const Matrix& reflection,const Matrix& keep,Matrix& out) {
-        if(!Finite(skin))return false;
+        if(!Finite(skin))return 3;
         Matrix affine=skin;affine.m[3]=affine.m[7]=affine.m[11]=0;affine.m[15]=1;
         for(int j=0;j<3;j++)affine.m[j]=-affine.m[j];   // B*S: bind-space x -> -x
         out=CameraMath::Multiply(affine,reflection);
         for(int j:{3,7,11,15})out.m[j]=keep.m[j];
-        if(!Finite(out))return false;
+        if(!Finite(out))return 3;
         V x{out.m[0],out.m[1],out.m[2]},y{out.m[4],out.m[5],out.m[6]},z{out.m[8],out.m[9],out.m[10]};
-        return Dot(Cross(x,y),z)>.98;   // rigid, not a reflection
+        return Dot(Cross(x,y),z)>.05?0:4;   // not a reflection (nor collapsed)
     };
     bool any=false;
     for(unsigned k=0;k<17;k++) {
         const unsigned r=129+k,l=100+k;
-        if(rightBones[r]!=leftBones[l])return false;
+        if(rightBones[r]!=leftBones[l])return fail(2);
         if(!rightBones[r])continue;
-        if(!mirrored(palette[r],atLeft,palette[l],newLeft[k])||!mirrored(palette[l],atRight,palette[r],newRight[k]))return false;
+        if(const int a=mirrored(palette[r],atLeft,palette[l],newLeft[k]))return fail(a);
+        if(const int b=mirrored(palette[l],atRight,palette[r],newRight[k]))return fail(b);
         any=true;
     }
-    if(!any)return false;
+    if(!any)return fail(5);
     for(unsigned k=0;k<17;k++)if(rightBones[129+k]){palette[100+k]=newLeft[k];palette[129+k]=newRight[k];}
     return true;
 }
