@@ -34,7 +34,7 @@ int main(){
         HandPush::Motion s;float q[3]{},w[3]{};
         s.Step(q,300,1000,w);q[0]=9.f;
         check(s.Step(q,300,1010,w)&&std::abs(w[0]-900.f)<.01f,"a 3 m/s swipe counts at its full speed");
-        q[0]=9.f+60.f;check(!s.Step(q,300,1020,w)&&s.why==HandPush::StepJump,"a 20 cm tracking jump is still refused");
+        q[0]=9.f+130.f;check(!s.Step(q,300,1020,w)&&s.why==HandPush::StepJump,"a 43 cm tracking jump is still refused");
         float pa[3]{},ce[3]{30,0,0},hv[3]{900,0,0},bv[3]{},fo[4]{},mg1=0,mg2=0;
         HandPush::HorizontalForce(pa,ce,hv,bv,75,300,.01f,fo,nullptr,&mg1,1.f);
         HandPush::HorizontalForce(pa,ce,hv,bv,75,300,.01f,fo,nullptr,&mg2,2.f);
@@ -54,6 +54,24 @@ int main(){
         const float up[3]{0,0,300};
         check(!HandPush::Shove(up,still,75,1,out),"straight up or down gives no shove");
         check(!HandPush::Shove(hv,still,0,1,out),"zero mass gives no shove");
+    }
+    // Fast swipes: the whole path counts, judged by the approach; strength stays capped.
+    {
+        HandPush::Motion m2;float q[3]{},w[3]{};
+        m2.Step(q,300,1000,w);q[0]=90.f;
+        check(m2.Step(q,300,1030,w)&&m2.pathStart[0]==0.f,"a 30 cm step in one sample is a fast swipe, with its start kept");
+        q[0]=90.f+130.f;check(!m2.Step(q,300,1060,w)&&m2.why==HandPush::StepJump,"a 43 cm step is still a tracking jump");
+        const float a3[3]{0,0,0},b3[3]{90,0,0},c3[3]{45,20,0};float n3[3]{};
+        HandPush::Nearest(a3,b3,c3,n3);check(std::abs(n3[0]-45.f)<.01f&&n3[1]==0,"the contact is where the path passed nearest the object");
+        const float behind[3]{-40,0,0};HandPush::Nearest(a3,b3,behind,n3);check(n3[0]==0.f,"an object behind the path's start meets it at the start");
+        // A swipe from x=0 to x=90 past an object at x=45, 20 cm to the side (y=60 units).
+        const float centre[3]{45,60,0},v[3]{5625,0,0},bv[3]{};float fo[4]{};
+        check(HandPush::HorizontalForce(a3,centre,v,bv,75,300,.016f,fo)==HandPush::ForceOk,"a glancing swipe is judged by its approach and pushes");
+        const float past[3]{60,0,0};
+        check(HandPush::HorizontalForce(past,centre,v,bv,75,300,.016f,fo)==HandPush::ForceNotInward,"judged from a point already past the object, it would not");
+        float pv[3]{};HandPush::PushVelocity(v,300,pv);
+        check(std::abs(pv[0]-2400.f)<.01f,"pushing uses at most 8 m/s however fast the swipe");
+        const float slow[3]{150,0,0};HandPush::PushVelocity(slow,300,pv);check(pv[0]==150.f,"slower hands push at their real speed");
     }
     return fail?1:0;
 }

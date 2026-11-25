@@ -3100,12 +3100,29 @@ bool ShoveNewContact(uintptr_t body,uint64_t now) {
 // the pickup search uses excludes these objects. This searches a sphere at the hand the
 // same way and pushes what the walk push would: physics bodies of kind 1 or 2, kind 2
 // only with the augmentation the game checks. Returns pushes, or -1 on a fault.
-int HandPushRaw(void* player,const float* palm,const float* velocity,bool moving,float scale,float dt,
+// from: the hand's previous sample, or null. With it, the search is a capsule along the
+// path from there to palm, and each contact is judged where the path came nearest the
+// object, along the direction the hand was moving.
+int HandPushRaw(void* player,const float* palm,const float* from,const float* velocity,bool moving,float scale,float dt,
                 uintptr_t* pushed,unsigned& pushedCount,PushStats& st) {
     uintptr_t world{},savedFilter{};void* shape{};bool filterSet{};
     alignas(16) unsigned char hits[0x80*32]{};
     alignas(16) float position[4]{palm[0],palm[1],palm[2],1};
     alignas(16) float rotation[4]{0,0,0,1};
+    alignas(16) const float identity[4]{0,0,0,1};
+    alignas(16) const float axis[4]{0,0,1.f,0};
+    float length=.001f*scale;
+    const float* start=palm;
+    if(from) {
+        alignas(16) float toward[4]{palm[0]-from[0],palm[1]-from[1],palm[2]-from[2],0};
+        const float travelled=std::sqrt(HandPush::Dot(toward,toward));
+        if(std::isfinite(travelled)&&travelled>.01f*scale) {
+            for(int j=0;j<3;j++){toward[j]/=travelled;position[j]=(from[j]+palm[j])*.5f;}
+            length=travelled;start=from;
+            __try{reinterpret_cast<void*(__thiscall*)(float*,const float*,const float*)>(VA(0x4cf900))(rotation,axis,toward);}
+            __except(EXCEPTION_EXECUTE_HANDLER){return -1;}
+        }
+    }
     alignas(16) uintptr_t ignore[4]{reinterpret_cast<uintptr_t>(player),0,0,0};
     int result=0;
     __try {
@@ -3116,7 +3133,7 @@ int HandPushRaw(void* player,const float* palm,const float* velocity,bool moving
         reinterpret_cast<void(__thiscall*)(void*,int)>(VA(0x4fb620))(shape,0x08);
         reinterpret_cast<void(__thiscall*)(void*,void*)>(VA(0x4fb5e0))(shape,ignore);
         reinterpret_cast<void(__thiscall*)(void*,float,float,const float*,const float*)>(VA(0x4fcd50))(
-            shape,handPushRadiusMetres*scale,.001f*scale,position,rotation);
+            shape,handPushRadiusMetres*scale,length,position,identity);
         reinterpret_cast<void(__thiscall*)(void*,int)>(VA(0x4fb550))(shape,0x2b);
         reinterpret_cast<void(__thiscall*)(void*,const float*)>(VA(0x4fd100))(shape,position);
         reinterpret_cast<void(__thiscall*)(void*,const float*)>(VA(0x4fd140))(shape,rotation);
@@ -3154,18 +3171,22 @@ int HandPushRaw(void* player,const float* palm,const float* velocity,bool moving
             if(!moving){++st.reject[RejNotMoving];continue;}
             const float* centre=reinterpret_cast<const float*>(body+0x80);
             if(!HandPush::Finite(centre)){++st.reject[RejCentre];continue;}
+            // Where along the path the hand met this object (the push lands there). Whether the
+            // hand was moving toward it is judged from where this stretch of path began: at the
+            // nearest point itself the object is always to the side.
+            float contact[3]{};HandPush::Nearest(start,palm,centre,contact);
             alignas(16) float point[4]{centre[0],centre[1],centre[2],1},bodyVelocity[4]{},force[4]{};
             reinterpret_cast<void*(__thiscall*)(void*,float*)>(VA(0x4f8aa0))(body,bodyVelocity);
             // The velocity field is not in world units per second (see VelocityFieldFactor).
             alignas(16) float field[4]{bodyVelocity[0],bodyVelocity[1],bodyVelocity[2],bodyVelocity[3]};
             for(int j=0;j<3;j++)bodyVelocity[j]*=HandPush::VelocityFieldFactor;
             float inward=NAN,magnitude=NAN;
-            const int why=HandPush::HorizontalForce(palm,point,velocity,bodyVelocity,mass,scale,dt,force,&inward,&magnitude,handPushStrength);
+            const int why=HandPush::HorizontalForce(start,point,velocity,bodyVelocity,mass,scale,dt,force,&inward,&magnitude,handPushStrength);
             // Push where the hand is, as the walk push pushes off-centre: a hand high on
             // a barrel tips it. Falls back to the centre if the hand is implausibly far.
             {
-                float lever[3]{};for(int j=0;j<3;j++)lever[j]=palm[j]-centre[j];
-                if(std::sqrt(HandPush::Dot(lever,lever))<=HandPush::MaxLeverMetres*scale){point[0]=palm[0];point[1]=palm[1];point[2]=palm[2];}
+                float lever[3]{};for(int j=0;j<3;j++)lever[j]=contact[j]-centre[j];
+                if(std::sqrt(HandPush::Dot(lever,lever))<=HandPush::MaxLeverMetres*scale){point[0]=contact[0];point[1]=contact[1];point[2]=contact[2];}
                 else ++st.centreFallback;
             }
             ++st.force[why];st.lastForce=why;st.lastInwardCmS=inward*100.f/scale;st.lastMagnitude=magnitude;
@@ -3249,9 +3270,9 @@ void UpdateHandPush(float dt) {
         }
     }
     if(handPushLog&&handPushLogLines==0)
-        HandPushLine("startup enabled=%d signatures=%d search=bodyStyle radiusCm=%.1f strength=%.2f maxForce=%.0f maxPerMass=%.1f pushPoint=hand maxSpeedCmS=%.0f shove=%d lightMass=%.0f velocityFactor=%.1f bodyPushLog=%d",
-            int(handPush),int(handPushReady),handPushRadiusMetres*100.f,handPushStrength,HandPush::NativeMaxForce*handPushStrength,HandPush::NativeMaxPerMass*handPushStrength,HandPush::MaxSpeedMetres*100.f,
-            int(handPushShove),HandPush::LightMass,HandPush::VelocityFieldFactor,int(bodyPushReady));
+        HandPushLine("startup enabled=%d signatures=%d search=bodyStyle+path radiusCm=%.1f strength=%.2f maxForce=%.0f maxPerMass=%.1f pushPoint=contact jumpCm=%.0f pushSpeedCmS=%.0f maxSpeedCmS=%.0f shove=%d lightMass=%.0f velocityFactor=%.1f bodyPushLog=%d",
+            int(handPush),int(handPushReady),handPushRadiusMetres*100.f,handPushStrength,HandPush::NativeMaxForce*handPushStrength,HandPush::NativeMaxPerMass*handPushStrength,
+            HandPush::JumpMetres*100.f,HandPush::PushSpeedMetres*100.f,HandPush::MaxSpeedMetres*100.f,int(handPushShove),HandPush::LightMass,HandPush::VelocityFieldFactor,int(bodyPushReady));
     if(handPushLog) {
         // About 0.3 s after a push: did the object's centre move?
         for(auto& t:pushTracked) {
@@ -3305,7 +3326,9 @@ void UpdateHandPush(float dt) {
             if(moving)second.maxSpeedCmS[hand]=std::max(second.maxSpeedCmS[hand],std::sqrt(HandPush::Dot(velocity,velocity))*100.f/scale);
         }
         PushStats st{};
-        const int result=HandPushRaw(player,points[hand],velocity,moving,scale,dt,pushed,count,st);
+        // Detection uses the real path; pushing uses the speed capped as accepted.
+        float pushVelocity[3]{};HandPush::PushVelocity(velocity,scale,pushVelocity);
+        const int result=HandPushRaw(player,points[hand],moving?motion[hand].pathStart:nullptr,pushVelocity,moving,scale,dt,pushed,count,st);
         if(result<0){
             handPushReady=false;for(auto& m:motion)m.Reset();
             if(handPushLog)HandPushLine("fault: hand pushing turned off for this launch");

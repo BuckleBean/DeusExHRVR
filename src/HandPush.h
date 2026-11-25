@@ -11,7 +11,13 @@ namespace HandPush {
 constexpr float NativeMaxForce=1200.f,NativeMaxPerMass=4.f,NativeScale=300.f;
 // Radius of the search around the hand ([VR] HandPushCm, 3 to 20).
 constexpr float DefaultRadiusMetres=.08f;
-constexpr float MaxSpeedMetres=8.f;
+// Detection limits (November 25: fast swipes could pass an object between tracking
+// samples, or were discarded). A sample may move up to JumpMetres and MaxSpeedMetres;
+// beyond that it is treated as a tracking jump. The search covers the whole path since
+// the previous sample. Shove and force strength use the hand speed capped at
+// PushSpeedMetres (the accepted 9f02c30 behaviour), so catching more contacts does not
+// make pushes stronger.
+constexpr float MaxSpeedMetres=15.f,JumpMetres=.35f,PushSpeedMetres=8.f;
 // Lever for the push point (the hand) beyond which it falls back to the object's centre.
 constexpr float MaxLeverMetres=1.5f;
 inline bool Finite(const float* p){return std::isfinite(p[0])&&std::isfinite(p[1])&&std::isfinite(p[2]);}
@@ -19,16 +25,16 @@ inline float Dot(const float* a,const float* b){return a[0]*b[0]+a[1]*b[1]+a[2]*
 // Why Step gave no velocity, for the optional log (HandPushLog=1).
 enum StepWhy:int{StepOk=0,StepInvalid,StepSameSample,StepNoHistory,StepTooSoon,StepJump,StepTooFast,StepTooSlow,StepWhyCount};
 struct Motion {
-    float last[3]{},scale{};uint64_t tick{};int why{};
+    float last[3]{},pathStart[3]{},scale{};uint64_t tick{};int why{};
     void Reset(){*this={};}
     bool Step(const float* point,float units,uint64_t time,float* velocity) {
         if(!Finite(point)||!std::isfinite(units)||units<=0){Reset();why=StepInvalid;return false;}
         if(time==tick){why=StepSameSample;return false;}
         const bool previous=tick&&time>tick&&time-tick<=80&&scale==units;
         const float seconds=previous?float(time-tick)*.001f:0;
-        float d[3]{};for(int i=0;i<3;i++){d[i]=point[i]-last[i];last[i]=point[i];}
+        float d[3]{};for(int i=0;i<3;i++){d[i]=point[i]-last[i];pathStart[i]=last[i];last[i]=point[i];}
         tick=time;scale=units;
-        if(!previous||seconds<.004f||Dot(d,d)>.15f*.15f*units*units) {
+        if(!previous||seconds<.004f||Dot(d,d)>JumpMetres*JumpMetres*units*units) {
             why=!previous?StepNoHistory:seconds<.004f?StepTooSoon:StepJump;return false;
         }
         for(int i=0;i<3;i++)velocity[i]=d[i]/seconds;
@@ -63,6 +69,21 @@ inline bool Shove(const float* handVelocity,const float* field,float mass,float 
     for(int i=0;i<4;i++)out[i]=field[i];
     out[0]+=d[0]*(target-along);out[1]+=d[1]*(target-along);
     return std::isfinite(out[0])&&std::isfinite(out[1]);
+}
+// The hand speed used for pushing, capped at PushSpeedMetres.
+inline void PushVelocity(const float* velocity,float scale,float* out) {
+    const float speed=std::sqrt(Dot(velocity,velocity));
+    const float cap=PushSpeedMetres*scale;
+    const float k=std::isfinite(speed)&&speed>cap?cap/speed:1.f;
+    for(int i=0;i<3;i++)out[i]=velocity[i]*k;
+}
+// The point on the hand's path from a to b nearest p: where the hand met the object.
+inline void Nearest(const float* a,const float* b,const float* p,float* out) {
+    float ab[3]{},ap[3]{};for(int i=0;i<3;i++){ab[i]=b[i]-a[i];ap[i]=p[i]-a[i];}
+    const float len=Dot(ab,ab);
+    float t=len>0?Dot(ap,ab)/len:1.f;
+    t=!std::isfinite(t)?1.f:t<0?0.f:t>1?1.f:t;
+    for(int i=0;i<3;i++)out[i]=a[i]+ab[i]*t;
 }
 // Why HorizontalForce refused, for the optional log.
 enum ForceWhy:int{ForceOk=0,ForceInput,ForceNotInward,ForceReceding,ForceMagnitude,ForceWhyCount};
