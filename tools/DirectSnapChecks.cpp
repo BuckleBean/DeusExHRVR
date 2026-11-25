@@ -30,7 +30,7 @@ int QuickBarAutoHide(bool){assert(false);return 0;}unsigned QuickBarSetting(){re
 bool ImmersiveScopeButton(){return false;}void ArmHandCalibration(){}void Recenter(){}
 bool sprintBlocked{},nearWeapon{},weaponHeld{};
 bool TwoHandSprintBlocked(){return sprintBlocked;}
-bool ThrowMarkerEnabled(){return false;}void SetThrowAiming(bool){}void NoteThrowRelease(uint64_t){}bool LeftHandOwnsPrompt(){return false;}bool LeftHandCarrying(){return false;}bool LeftHandNearWeapon(){return nearWeapon;}void SetLeftHandOnWeapon(bool v){weaponHeld=v;}void SetGameSprintHeld(bool){}bool DetonateReady(){return false;}void NoteDetonatePress(uint64_t){}
+bool ThrowMarkerEnabled(){return false;}void SetThrowAiming(bool){}void NoteThrowRelease(uint64_t){}bool LeftHandOwnsPrompt(){return false;}bool LeftHandCarrying(){return false;}bool LeftHandNearWeapon(){return nearWeapon;}void SetLeftHandOnWeapon(bool v){weaponHeld=v;}bool LeftHanded(){return false;}void SetGameSprintHeld(bool){}bool DetonateReady(){return false;}void NoteDetonatePress(uint64_t){}
 }
 int main(){
     DirectSnap::Request q;

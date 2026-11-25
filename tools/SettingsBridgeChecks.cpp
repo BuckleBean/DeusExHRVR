@@ -46,6 +46,7 @@ bool leftOwns{};bool LeftHandOwnsPrompt(){return leftOwns;}
 bool leftCarry{};bool LeftHandCarrying(){return leftCarry;}
 bool leftNear{},leftOnWeapon{};bool LeftHandNearWeapon(){return leftNear;}void SetLeftHandOnWeapon(bool v){leftOnWeapon=v;}bool gameSprint{};void SetGameSprintHeld(bool v){gameSprint=v;}
 bool TwoHandSprintBlocked(){return gameSprint;}
+bool leftHanded{};bool LeftHanded(){return leftHanded;}
 bool DetonateReady(){return detonate;}void NoteDetonatePress(uint64_t ms){detonateHeld=ms;}
 unsigned CurrentScreenReasons(){return reasons;}
 bool SnapTurnView(float&){return reasons==0;}
@@ -255,6 +256,29 @@ int wmain(int argc,wchar_t** argv) {
         GamepadBridge::remapActive=false;EngineCamera::leftOwns=true;assert(grip(true)==X);assert(grip(false)==0); // default layout
         EngineCamera::leftOwns=false;assert(grip(true)==LB);assert(grip(false)==0);
         GamepadBridge::remapActive=true;
+        // Left-handed mode: the right grip holds the weapon, the left grip keeps Interact only.
+        {
+            const WORD RB=XINPUT_GAMEPAD_RIGHT_SHOULDER,B=XINPUT_GAMEPAD_B;
+            GamepadBridge::buttonTarget[5]=B;EngineCamera::leftHanded=true;
+            auto rgrip=[&](bool down){XINPUT_GAMEPAD p{};if(down)p.wButtons=RB;GamepadBridge::ApplyButtons(p);return p.wButtons;};
+            EngineCamera::leftNear=true;assert(grip(true)==Y&&!EngineCamera::leftOnWeapon);assert(grip(false)==0); // left grip: no weapon hold
+            EngineCamera::leftOwns=true;assert(grip(true)==X);assert(grip(false)==0);EngineCamera::leftOwns=false; // still Interact
+            assert(rgrip(true)==0&&EngineCamera::leftOnWeapon);                                  // right grip near: holds it
+            EngineCamera::leftNear=false;assert(rgrip(true)==0&&EngineCamera::leftOnWeapon);     // kept until release
+            assert(rgrip(false)==0&&!EngineCamera::leftOnWeapon);
+            assert(rgrip(true)==B);assert(rgrip(false)==0);                                      // not near: its own button
+            EngineCamera::leftOwns=true;assert(rgrip(true)==B);assert(rgrip(false)==0);EngineCamera::leftOwns=false; // never Interact
+            EngineCamera::leftNear=true;assert(rgrip(true)==0&&EngineCamera::leftOnWeapon);
+            EngineCamera::gameSprint=true;assert(rgrip(true)==0&&!EngineCamera::leftOnWeapon);  // sprint lets go
+            EngineCamera::gameSprint=false;assert(rgrip(true)==0);assert(rgrip(false)==0);       // swallowed until release
+            assert(rgrip(true)==0&&EngineCamera::leftOnWeapon);
+            EngineCamera::reasons=1;rgrip(true);assert(!EngineCamera::leftOnWeapon);              // a screen lets go
+            EngineCamera::reasons=0;EngineCamera::leftNear=false;assert(rgrip(true)==0);assert(rgrip(false)==0);
+            GamepadBridge::remapActive=false;EngineCamera::leftNear=true;
+            assert(rgrip(true)==0&&EngineCamera::leftOnWeapon);assert(rgrip(false)==0&&!EngineCamera::leftOnWeapon); // default layout
+            EngineCamera::leftNear=false;assert(rgrip(true)==RB);assert(rgrip(false)==0);
+            GamepadBridge::remapActive=true;EngineCamera::leftHanded=false;GamepadBridge::buttonTarget[5]=0;
+        }
         // A left-hand Interact counts as held but must not curl the right hand's fingers.
         EngineCamera::leftOwns=true;t={};t.tick=GetTickCount64();t.gamepad.valid=1;t.gamepad.buttons=LB;Transport::WriteTracking(&h,t);
         visualPad={};GamepadBridge::Read(visualPad);

@@ -2722,9 +2722,7 @@ void InstallInteractionProbes(){
     leftHanded=GetPrivateProfileIntW(L"VR",L"LeftHanded",0,diagConfig)!=0;
     leftHandedLog=leftHanded&&GetPrivateProfileIntW(L"VR",L"LeftHandedLog",0,diagConfig)!=0;
     if(leftHanded) {
-        ModelHandAlignment::swapHands=true;
-        // Stage 1: the two-handed hold assumes the support hand is the left one.
-        twoHandedWeapons=false;twoHandedAim=false;
+        ModelHandAlignment::swapHands=true; // two-handed weapons work in its mirror world
         FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")){fprintf(f,"leftHanded active=1 method=poseMirror\n");fclose(f);}
     }
     float forgivingDegrees=15.f;
@@ -4610,7 +4608,8 @@ bool TryModelHand(void* model,unsigned char* data,CameraMath::Matrix* palette,ui
     bool leftMoved=leftValid && LeftModelFrame(model,plan,leftFrame,unused,&leftCurl) &&
         ModelHandAlignment::RestLeft(palette,n,plan->leftBones,leftFrame,leftTarget);
     const float onWeapon=twoHandedWeapons?TwoHandStep(palette,plan->leftBones,leftFrame,leftMoved,nativeLeft,haveNativeLeft,
-        twoHandDelta,twoHandPaired,leftTarget,pose.gripTarget,handDrawScale,pose.weapon,pose.muzzle,Transport::LeftGrip(gripBits),pose.holder,pose.active):0.f;
+        twoHandDelta,twoHandPaired,leftTarget,pose.gripTarget,handDrawScale,pose.weapon,pose.muzzle,
+        leftHanded?Transport::RightGrip(gripBits):Transport::LeftGrip(gripBits),pose.holder,pose.active):0.f;
     if(controllerHandsInteractCurl){
         // Holstered is state 4 or 6 (InteractionCurl::Holstered); do not infer empty from a missing muzzle.
         // Validate the current holder association, not just a cached weapon address.
@@ -4643,14 +4642,14 @@ bool TryModelHand(void* model,unsigned char* data,CameraMath::Matrix* palette,ui
             if(amount>0)InteractionCurl::Apply(palette,n,curl,amount);
         }
     }
-    // Left-handed mode: each model hand takes the mirror image of the other's placed pose,
-    // so the model's left hand holds at the left controller and its right hand rests at
-    // the right one (MirrorPose). Without both hands placed, the plain swap is drawn.
+    // Left-handed mode: both hands were placed in the mirror world (GripTarget), so one
+    // reflection across the left grip's plane brings them back: each model hand takes the
+    // mirror image of the other's pose, the gun hand at the left controller and the
+    // support hand at the right one, or on the weapon (MirrorPose).
     if(leftHanded) {
-        CameraMath::Matrix atLeft{},atRight{};
+        CameraMath::Matrix atLeft{};
         const bool mirroredPose=leftMoved&&ModelHandAlignment::MirrorAcross(target,atLeft)&&
-            ModelHandAlignment::MirrorAcross(leftTarget,atRight)&&
-            ModelHandAlignment::MirrorPose(palette,n,plan->bones,plan->leftBones,atLeft,atRight);
+            ModelHandAlignment::MirrorPose(palette,n,plan->bones,plan->leftBones,atLeft,atLeft);
         if(mirroredPose)++leftHandedMirrored;else ++leftHandedMirrorFailed;
         LeftHandedSummary();
     }
@@ -7482,6 +7481,7 @@ bool DetonateReady(){return detonateReady.load();}
 bool LeftHandCarrying(){return leftCarryThrow&&grabActive.load()&&grabLeft.load();}
 bool LeftHandNearWeapon(){const auto tick=leftNearWeaponTick.load(std::memory_order_relaxed);const auto now=GetTickCount64();return twoHandedWeapons&&!SprintBlocksTwoHand()&&tick&&now>=tick&&now-tick<250;}
 void SetLeftHandOnWeapon(bool on){leftOnWeapon=on;}
+bool LeftHanded(){return leftHanded;}
 void SetGameSprintHeld(bool on){const bool was=gameSprintHeld.exchange(on);if(on&&!was)CancelTwoHandForSprint();}
 bool TwoHandSprintBlocked(){return twoHandedWeapons&&SprintBlocksTwoHand();}
 bool LeftHandOwnsPrompt(){const auto tick=leftPromptTick.load(std::memory_order_relaxed);const auto now=GetTickCount64();return forgivingAimEnabled&&leftHandInteract&&tick&&now>=tick&&now-tick<250;}

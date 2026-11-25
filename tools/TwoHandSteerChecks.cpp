@@ -67,6 +67,40 @@ int main() {
             Transport::Pose turnedPose{CameraMath::Multiply(real.orientation,axisTurn(1,0,0,deg)),real.position};Matrix F{};HudShift s;
             Check(place(turnedPose,F)&&MakeShift(F,T,300,1,s)&&place(ApplyShift(real,s),placed)&&same(placed,F,.003f),"large hand turns convert correctly");
         }
+        // Left-handed mode: the support hand is placed in the gun hand's mirror world.
+        {
+            Transport::Tracking t{};t.valid=1;t.tick=1000;t.leftGrip.valid=1;t.rightGrip.valid=1;
+            t.leftGrip.pose=hand;t.rightGrip.pose=real;
+            Matrix gunHand{},support{},physicalRight{},physicalLeft{},mirror{};
+            ModelHandAlignment::swapHands=true;
+            const bool placedBoth=ModelHandAlignment::GripTarget(t,1000,game,reference,300,gunHand)&&
+                ModelHandAlignment::GripTarget(t,1000,game,reference,300,support,true);
+            ModelHandAlignment::swapHands=false;
+            Check(placedBoth&&ModelHandAlignment::GripTarget(t,1000,game,reference,300,physicalRight)&&
+                  ModelHandAlignment::GripTarget(t,1000,game,reference,300,physicalLeft,true),"left-handed: both hands place");
+            Check(same(gunHand,physicalLeft,.0001f),"left-handed: the gun hand is placed at the left controller");
+            const auto& v=support;
+            const float det=v.m[0]*(v.m[5]*v.m[10]-v.m[6]*v.m[9])-v.m[1]*(v.m[4]*v.m[10]-v.m[6]*v.m[8])+v.m[2]*(v.m[4]*v.m[9]-v.m[5]*v.m[8]);
+            Check(Near(det,1,.001f),"left-handed: the support hand's frame is an ordinary rotation");
+            Check(Near(ModelHandAlignment::Dot(ModelHandAlignment::V{gunHand.m[12]-v.m[12],gunHand.m[13]-v.m[13],gunHand.m[14]-v.m[14]},
+                                               ModelHandAlignment::V{gunHand.m[12]-v.m[12],gunHand.m[13]-v.m[13],gunHand.m[14]-v.m[14]}),
+                       ModelHandAlignment::Dot(ModelHandAlignment::V{physicalLeft.m[12]-physicalRight.m[12],physicalLeft.m[13]-physicalRight.m[13],physicalLeft.m[14]-physicalRight.m[14]},
+                                               ModelHandAlignment::V{physicalLeft.m[12]-physicalRight.m[12],physicalLeft.m[13]-physicalRight.m[13],physicalLeft.m[14]-physicalRight.m[14]}),1.f),
+                  "left-handed: the hands are as far apart as the controllers");
+            // The final mirror across the left grip brings the support hand back to the right
+            // controller (its side axis reversed, as for every mirrored hand).
+            Check(ModelHandAlignment::MirrorAcross(physicalLeft,mirror),"left-handed: gun hand mirror built");
+            auto back=CameraMath::Multiply(support,mirror);for(int j=0;j<3;j++)back.m[j]=-back.m[j];
+            Check(same(back,physicalRight,.0005f),"left-handed: mirrored back, the support hand is at the right controller");
+            // Same result as mirroring the support hand across its own controller (stage 1).
+            Matrix own{};ModelHandAlignment::MirrorAcross(physicalRight,own);
+            auto stage1=CameraMath::Multiply(physicalRight,own);auto now=CameraMath::Multiply(support,mirror);
+            Check(same(stage1,now,.0005f),"left-handed: with no gun held the support hand is drawn as before");
+            Transport::Tracking lost=t;lost.leftGrip.valid=0;Matrix none{};
+            ModelHandAlignment::swapHands=true;
+            Check(!ModelHandAlignment::GripTarget(lost,1000,game,reference,300,none,true),"left-handed: no left controller, no support hand target");
+            ModelHandAlignment::swapHands=false;
+        }
     }
     // Left-handed mirror mode: reflection across a grip's side-to-side axis.
     {

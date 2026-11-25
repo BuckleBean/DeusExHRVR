@@ -82,14 +82,32 @@ inline bool BuildLeftFrame(const std::array<Segment,223>& segments,Matrix& resul
     for(int j=0;j<3;j++){f.m[j]=float(x[j]);f.m[4+j]=float(y[j]);f.m[8+j]=float(z[j]);f.m[12+j]=float(center[j]);}
     f.m[15]=1;result=f;return true;
 }
-// Left-handed mirror mode ([VR] LeftHanded=1): the gun hand (the model's right hand)
-// is first placed at the LEFT controller and the model's left hand at the RIGHT one;
-// MirrorPose then gives each model hand the mirror image of the other's pose, so the
-// model's real left hand holds at the left controller. Only hand/gun placement calls this.
+// Left-handed mirror mode ([VR] LeftHanded=1). Hand and gun placement work in a mirror
+// world: the gun hand (the model's right hand) is placed at the LEFT controller, and the
+// support hand (the model's left hand) at the RIGHT controller reflected across the left
+// grip's plane (S*T_R*M_L, see MirrorAcross; S negates the side axis, so the frame stays
+// rigid). Two-handed grabbing and steering then work exactly as in right-handed play.
+// MirrorPose finally reflects both hands back across the left grip's plane, which puts
+// the support hand at the right controller and gives each model hand the mirror image of
+// the other's pose. Only hand/gun placement calls GripTarget.
 inline bool swapHands=false;
+inline bool PhysicalGripTarget(const Transport::Tracking& t,uint64_t now,const Matrix& base,
+                               const Transport::Pose& reference,float scale,Matrix& result,bool useLeft);
+inline bool MirrorAcross(const Matrix& target,Matrix& result);
 inline bool GripTarget(const Transport::Tracking& t,uint64_t now,const Matrix& base,
                        const Transport::Pose& reference,float scale,Matrix& result,bool left=false){
-    const bool useLeft=left!=swapHands;
+    if(!swapHands)return PhysicalGripTarget(t,now,base,reference,scale,result,left);
+    if(!left)return PhysicalGripTarget(t,now,base,reference,scale,result,true);
+    Matrix gunHand{},support{},mirror{};
+    if(!PhysicalGripTarget(t,now,base,reference,scale,gunHand,true)||
+       !PhysicalGripTarget(t,now,base,reference,scale,support,false)||!MirrorAcross(gunHand,mirror))return false;
+    auto virtualSupport=CameraMath::Multiply(support,mirror);
+    for(int j=0;j<3;j++)virtualSupport.m[j]=-virtualSupport.m[j];
+    if(!Finite(virtualSupport))return false;
+    result=virtualSupport;return true;
+}
+inline bool PhysicalGripTarget(const Transport::Tracking& t,uint64_t now,const Matrix& base,
+                               const Transport::Pose& reference,float scale,Matrix& result,bool useLeft){
     if(!t.valid||!(useLeft?t.leftGrip.valid:t.rightGrip.valid)||!t.tick||now<t.tick||now-t.tick>=250||!std::isfinite(scale)||scale<=0||!Finite(base))return false;
     auto grip=useLeft?t.leftGrip.pose:t.rightGrip.pose;
     auto validPose=[](const Transport::Pose& p){

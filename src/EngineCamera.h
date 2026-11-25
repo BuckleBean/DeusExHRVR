@@ -48,6 +48,9 @@ bool LeftHandCarrying();
 // press that is holding it there.
 bool LeftHandNearWeapon();
 void SetLeftHandOnWeapon(bool on);
+// [VR] LeftHanded=1: the gun is in the left hand, so the right grip holds the weapon
+// (two-handed) and the left grip keeps only its Interact role.
+bool LeftHanded();
 // LB as actually sent to the game after the button layout (sprint).
 void SetGameSprintHeld(bool on);
 bool TwoHandSprintBlocked();

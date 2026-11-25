@@ -33,6 +33,28 @@ enum class LeftGrip {Normal,Interact,Swallow};
 bool leftGripInteract{},leftGripWeapon{},leftGripWait{},leftGripPrevious{};
 LeftCarry::TriggerSwap carryTriggers;
 std::atomic<bool> lastInteractLeft{};bool interactPrevious{};
+// Left-handed mode: the support hand is the right one, so the right grip (RB) gets the
+// weapon hold and the left grip keeps only Interact. Same rules, its own state.
+bool supportGripWeapon{},supportGripWait{},supportGripPrevious{};
+LeftGrip SupportGripStep(bool on,bool wheel) {
+    if(supportGripWeapon&&EngineCamera::TwoHandSprintBlocked()) {
+        supportGripWeapon=false;supportGripWait=on;
+        EngineCamera::SetLeftHandOnWeapon(false);
+    }
+    if(supportGripWait){if(!on)supportGripWait=false;supportGripPrevious=on;return LeftGrip::Swallow;}
+    if(on&&!supportGripPrevious&&!wheel) {
+        supportGripWeapon=!EngineCamera::TwoHandSprintBlocked()&&EngineCamera::LeftHandNearWeapon();
+        if(supportGripWeapon)EngineCamera::SetLeftHandOnWeapon(true);
+    }
+    supportGripPrevious=on;
+    if(!on) {
+        const bool was=supportGripWeapon;
+        if(supportGripWeapon)EngineCamera::SetLeftHandOnWeapon(false);
+        supportGripWeapon=false;
+        return was?LeftGrip::Swallow:LeftGrip::Normal;
+    }
+    return supportGripWeapon?LeftGrip::Swallow:LeftGrip::Normal;
+}
 LeftGrip LeftGripStep(bool on,bool wheel) {
     if(leftGripWeapon&&EngineCamera::TwoHandSprintBlocked()) {
         leftGripWeapon=false;leftGripWait=on;
@@ -42,7 +64,7 @@ LeftGrip LeftGripStep(bool on,bool wheel) {
     if(on&&!leftGripPrevious&&!wheel) {
         // A prompt comes first, so holding the weapon never makes interaction harder.
         leftGripInteract=EngineCamera::LeftHandOwnsPrompt();
-        leftGripWeapon=!leftGripInteract&&!EngineCamera::TwoHandSprintBlocked()&&EngineCamera::LeftHandNearWeapon();
+        leftGripWeapon=!leftGripInteract&&!EngineCamera::LeftHanded()&&!EngineCamera::TwoHandSprintBlocked()&&EngineCamera::LeftHandNearWeapon();
         if(leftGripWeapon)EngineCamera::SetLeftHandOnWeapon(true);
     }
     leftGripPrevious=on;
@@ -63,6 +85,13 @@ void LeftGripOnScreen(XINPUT_GAMEPAD& pad) {
         else leftGripWait=false;
     }
     leftGripPrevious=on;
+    const bool right=(pad.wButtons&XINPUT_GAMEPAD_RIGHT_SHOULDER)!=0;
+    if(supportGripWeapon){supportGripWeapon=false;supportGripWait=true;EngineCamera::SetLeftHandOnWeapon(false);}
+    if(supportGripWait) {
+        if(right)pad.wButtons&=~XINPUT_GAMEPAD_RIGHT_SHOULDER;
+        else supportGripWait=false;
+    }
+    supportGripPrevious=right;
 }
 Transport::Header* channel{};
 Transport::Tracking latest{};
@@ -230,6 +259,8 @@ void ApplyButtons(XINPUT_GAMEPAD& pad) {
         const auto grip=LeftGripStep((pad.wButtons&XINPUT_GAMEPAD_LEFT_SHOULDER)!=0,(allReasons&128)!=0);
         if(grip!=LeftGrip::Normal)pad.wButtons&=~XINPUT_GAMEPAD_LEFT_SHOULDER;
         if(grip==LeftGrip::Interact)pad.wButtons|=XINPUT_GAMEPAD_X;
+        if(EngineCamera::LeftHanded()&&SupportGripStep((pad.wButtons&XINPUT_GAMEPAD_RIGHT_SHOULDER)!=0,(allReasons&128)!=0)!=LeftGrip::Normal)
+            pad.wButtons&=~XINPUT_GAMEPAD_RIGHT_SHOULDER;
         carryTriggers.Apply(EngineCamera::LeftHandCarrying()&&!(allReasons&128),pad.bLeftTrigger,pad.bRightTrigger);
         return;
     }
@@ -249,6 +280,11 @@ void ApplyButtons(XINPUT_GAMEPAD& pad) {
                 buttonWasDown[i]=on;buttonTapUntil[i]=0;plainPress[i]=false;
                 continue;
             }
+        }
+        if(buttonSources[i].bit==XINPUT_GAMEPAD_RIGHT_SHOULDER&&EngineCamera::LeftHanded()&&
+           SupportGripStep(on,wheel)!=LeftGrip::Normal) {
+            buttonWasDown[i]=on;buttonTapUntil[i]=0;plainPress[i]=false;
+            continue;
         }
         if(on && !buttonWasDown[i])plainPress[i]=EngineCamera::DetonateReady();
         if(!wheel && ThrowInput(i) && plainPress[i]) {
