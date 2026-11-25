@@ -179,7 +179,8 @@ HandPushStrength=1
 ; 0 (default) turns it off. Restart after editing.
 HandPushLog=0
 ; Observation only: what the game's own walk-into-object push does (what it finds and
-; how hard it pushes). Writes DeusExHRVR-body-push.log (at most 4000 lines). Never pushes.
+; how hard it pushes, and each walked-into object's speed frame by frame for 0.6 s).
+; Writes DeusExHRVR-body-push.log (at most 4000 lines). Never pushes.
 ; 0 (default) turns it off. Restart after editing.
 BodyPushLog=0
 HandContactInteract=1

@@ -2180,9 +2180,69 @@ void BodySearchNote(uintptr_t self,void* hits,int found,void* shape) {
         BodyPushLine("%s",text);
     } __except(EXCEPTION_EXECUTE_HANDLER) {}
 }
+// Frame-by-frame record of an object the body walks into (BodyPushLog): its speed and
+// how far its centre has moved, every movement update for 0.6 s from first contact,
+// with the walk push applied that frame and whether a hand pushed it too. Shows whether
+// walking gives an object an instant jump in speed (a collision) or a build-up (the push).
+struct BodyTrack{uintptr_t body{},owner{};uint64_t start{};float mass{};float centre[3]{};float forceThisFrame{};
+    unsigned frames{};int kind{-99};int used{};char text[3600]{};};
+BodyTrack bodyTracks[2]{};
+struct BodyRecent{uintptr_t body{};uint64_t tick{};};
+BodyRecent bodyRecent[16]{};
+std::atomic<uintptr_t> handPushLastBody{};std::atomic<uint64_t> handPushLastTick{};
+void BodyTrackForce(void* body,const float* force,uint64_t now) {
+    __try {
+        const uintptr_t b=reinterpret_cast<uintptr_t>(body);
+        const float mag=std::sqrt(force[0]*force[0]+force[1]*force[1]+force[2]*force[2]);
+        for(auto& t:bodyTracks)if(t.body==b){t.forceThisFrame+=mag;return;}
+        // A new contact: this body was not pushed by the walk push in the last 0.5 s.
+        BodyRecent* same=nullptr;BodyRecent* oldest=&bodyRecent[0];
+        for(auto& r:bodyRecent){if(r.body==b)same=&r;if(r.tick<oldest->tick)oldest=&r;}
+        const bool recent=same&&now>=same->tick&&now-same->tick<500;
+        BodyRecent* slot=same?same:oldest;
+        slot->body=b;slot->tick=now;
+        if(recent)return;
+        for(auto& t:bodyTracks)if(!t.body) {
+            t={};t.body=b;t.start=now;t.forceThisFrame=mag;
+            t.mass=reinterpret_cast<float(__thiscall*)(void*)>(VA(0x4f8960))(body);
+            void* bo=reinterpret_cast<void*(__thiscall*)(void*)>(VA(0x4f8880))(body);
+            t.owner=reinterpret_cast<uintptr_t>(bo);
+            if(bo)t.kind=reinterpret_cast<int(__cdecl*)(void*)>(VA(0x6f42d0))(bo);
+            const float* c=reinterpret_cast<const float*>(static_cast<unsigned char*>(body)+0x80);
+            for(int j=0;j<3;j++)t.centre[j]=c[j];
+            return;
+        }
+    } __except(EXCEPTION_EXECUTE_HANDLER) {}
+}
+void BodyTrackFrame(uint64_t now) {
+    for(auto& t:bodyTracks) {
+        if(!t.body)continue;
+        const float scale=bodyPushScale.load();const float cm=scale>0?100.f/scale:1.f;
+        bool ok=true;float speed=NAN,moved=NAN;
+        __try {
+            alignas(16) float v[4]{};
+            reinterpret_cast<void*(__thiscall*)(void*,float*)>(VA(0x4f8aa0))(reinterpret_cast<void*>(t.body),v);
+            const float* c=reinterpret_cast<const float*>(t.body+0x80);
+            float d[3]{};for(int j=0;j<3;j++)d[j]=c[j]-t.centre[j];
+            speed=std::sqrt(HandPush::Dot(v,v))*cm;moved=std::sqrt(HandPush::Dot(d,d))*cm;
+        } __except(EXCEPTION_EXECUTE_HANDLER) {ok=false;}
+        const bool hand=handPushLastBody.load()==t.body&&now>=handPushLastTick.load()&&now-handPushLastTick.load()<50;
+        if(ok&&t.used>=0&&size_t(t.used)<sizeof(t.text)-48)
+            t.used+=sprintf_s(t.text+t.used,sizeof(t.text)-t.used," %llu:%.0f/%.1f/%.0f%s",now-t.start,speed,moved,t.forceThisFrame,hand?"H":"");
+        t.forceThisFrame=0;++t.frames;
+        if(!ok||now>=t.start+600) {
+            BodyPushLine("walk-contact owner=%08X kind=%d mass=%.1f frames=%u (ms:speedCmS/movedCm/walkForce, H=hand pushed too)%s%s",
+                unsigned(t.owner),t.kind,t.mass,t.frames,t.text,ok?"":" [unreadable]");
+            t={};
+        }
+    }
+}
 int __fastcall BodyOverlapHook(uintptr_t self,void*,void* hits,int max,void* shape,int flag) {
     const int found=originalBodyOverlap(self,hits,max,shape,flag);
-    if(bodyPushLog&&reinterpret_cast<uintptr_t>(_ReturnAddress())==VA(0x4c53b8))BodySearchNote(self,hits,found,shape);
+    if(bodyPushLog&&reinterpret_cast<uintptr_t>(_ReturnAddress())==VA(0x4c53b8)) {
+        BodySearchNote(self,hits,found,shape);
+        BodyTrackFrame(GetTickCount64());
+    }
     return found;
 }
 void BodyForceNote(void* body,const float* force,const float* point,const float* before,const float* after) {
@@ -2217,6 +2277,7 @@ void __fastcall BodyForceHook(void* body,void*,const float* force,const float* p
     if(mine) {
         ReadSprintMemory(reinterpret_cast<uintptr_t>(body)+0xe0,after,sizeof(after));
         BodyForceNote(body,force,point,before,after);
+        BodyTrackForce(body,force,GetTickCount64());
     }
 }
 std::atomic<uintptr_t> grabManager{},forgivingPlayer{};
@@ -3100,6 +3161,7 @@ int HandPushRaw(void* player,const float* palm,const float* velocity,bool moving
             memcpy(after,body+0xe0,sizeof(after));
             if(memcmp(before,after,sizeof(before)))++st.forceAdded;else ++st.forceNotAdded;
             pushed[pushedCount++]=reinterpret_cast<uintptr_t>(body);++result;++st.pushed;
+            handPushLastBody=reinterpret_cast<uintptr_t>(body);handPushLastTick=GetTickCount64();
             if(handPushLog) {
                 auto& t=pushTracked[pushTrackedNext++%8];
                 t.body=reinterpret_cast<uintptr_t>(body);t.owner=reinterpret_cast<uintptr_t>(bodyOwner);t.tick=GetTickCount64();t.scale=scale;
