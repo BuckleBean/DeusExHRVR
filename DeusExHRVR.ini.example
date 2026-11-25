@@ -285,6 +285,9 @@ TwoHandedWeaponsLog=0
 ; weapons are off while it is on. For firing with the left trigger, add to [Buttons]:
 ; LeftTrigger=RT and RightTrigger=LT. 0 (default) turns it off. Restart after editing.
 LeftHanded=0
+; Diagnostic log DeusExHRVR-left-handed.log (cull values of mirrored hand draws,
+; at most 400 lines). 0 (default) turns it off.
+LeftHandedLog=0
 ; EXPERIMENTAL first-person takedowns, off by default. Set FirstPersonTakedowns=1 to try
 ; them. The game's animation still runs. Your view rides along with Jensen's eyes and turns
 ; with his body, and only his arms are shown. It can cause motion sickness, the view can

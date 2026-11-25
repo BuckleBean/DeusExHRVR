@@ -2026,6 +2026,7 @@ bool handPush{},handPushLog{},handPushReady{},bodyPushLog{},bodyPushReady{};
 bool leftHanded{},leftHandedCull{};
 std::atomic<unsigned> leftHandedMirrored{},leftHandedMirrorFailed{};
 void LeftHandedCullFlip(void* state,bool begin);
+bool leftHandedLog{}; // [VR] LeftHandedLog=1 (default 0)
 float handPushRadiusMetres=HandPush::DefaultRadiusMetres,handPushStrength=1.f;
 bool handPushShove=true;
 std::atomic<float> bodyPushScale{};
@@ -2715,6 +2716,7 @@ void InstallInteractionProbes(){
     twoHandedLog=twoHandedWeapons&&GetPrivateProfileIntW(L"VR",L"TwoHandedWeaponsLog",0,diagConfig)!=0;
     twoHandedAim=twoHandedWeapons&&GetPrivateProfileIntW(L"VR",L"TwoHandedAim",1,diagConfig)!=0;
     leftHanded=GetPrivateProfileIntW(L"VR",L"LeftHanded",0,diagConfig)!=0;
+    leftHandedLog=leftHanded&&GetPrivateProfileIntW(L"VR",L"LeftHandedLog",0,diagConfig)!=0;
     if(leftHanded) {
         // The game's cull setter, used to draw mirrored hands right side out.
         static const unsigned char cullBytes[]={0x8b,0x44,0x24,0x04,0x33,0xd2,0x53,0x8a,0x5c,0x24,0x0c,0x84,0xdb,0x0f,0x95,0xc2};
@@ -4522,22 +4524,52 @@ float TwoHandStep(CameraMath::Matrix* palette,const std::array<bool,223>& select
     }
     return amount;
 }
-// Flips the game's cull mode for one mirrored hand draw (0x54FC10: mode 1 culls back
-// faces, 2 front faces, 0 none; +0x43C holds mode*2+flag), then restores it.
-thread_local int leftHandedCullSaved=-1;
+// Flips the game's cull mode for one mirrored hand draw, then restores it. The draw
+// state's +0x24 holds the D3D cull value the commit uses (1 none, 2 front, 3 back);
+// +0x28 the setter's flag; +0x43C only caches the setter's last request, which can be
+// stale (stage 1 read it, and the hands drew inside out), so it is not trusted here.
+// The setter 0x54FC10 maps mode 0/1/2 to cull 1/3/2 and marks the state dirty; +0x43C
+// is cleared first so its cache cannot skip the write.
+// [VR] LeftHandedLog=1 (default 0): DeusExHRVR-left-handed.log, the first 40 mirrored
+// draws' values before/after and a count every 2 s, at most 400 lines.
+thread_local int leftHandedCullSaved=-1,leftHandedFlagSaved{};
+unsigned leftHandedLogLines{};
+std::atomic<unsigned> leftHandedFlips{},leftHandedNoCull{},leftHandedFaults{};
+void LeftHandedLine(const char* format,...) {
+    if(!leftHandedLog||leftHandedLogLines>=400)return;
+    FILE* f{};if(fopen_s(&f,"DeusExHRVR-left-handed.log",leftHandedLogLines?"a":"w"))return;
+    ++leftHandedLogLines;fprintf(f,"%llu ",GetTickCount64());
+    va_list args;va_start(args,format);vfprintf(f,format,args);va_end(args);fputc('\n',f);fclose(f);
+}
 void LeftHandedCullFlip(void* state,bool begin) {
     using SetCull=void(__thiscall*)(void*,int,int);
+    auto* s=static_cast<unsigned char*>(state);
+    int before=-1,flag=-1,cache=-1,after=-1;
     __try {
         auto set=reinterpret_cast<SetCull>(base+0x54fc10-0x400000);
+        before=*reinterpret_cast<const int*>(s+0x24);flag=*reinterpret_cast<const int*>(s+0x28);cache=*reinterpret_cast<const int*>(s+0x43c);
         if(begin) {
-            const int v=*reinterpret_cast<const int*>(static_cast<unsigned char*>(state)+0x43c);
-            leftHandedCullSaved=v;
-            const int mode=v>>1,flag=v&1;
-            if(mode==1)set(state,2,flag);else if(mode==2)set(state,1,flag);
-        } else if(leftHandedCullSaved>=0) {
-            set(state,leftHandedCullSaved>>1,leftHandedCullSaved&1);leftHandedCullSaved=-1;
+            leftHandedCullSaved=before;leftHandedFlagSaved=flag;
+            if(before==3||before==2) {
+                *reinterpret_cast<int*>(s+0x43c)=-1;
+                set(state,before==3?2:1,flag!=0);
+                ++leftHandedFlips;
+            } else ++leftHandedNoCull;
+        } else if(leftHandedCullSaved==3||leftHandedCullSaved==2||leftHandedCullSaved==1) {
+            *reinterpret_cast<int*>(s+0x43c)=-1;
+            set(state,leftHandedCullSaved==3?1:leftHandedCullSaved==2?2:0,leftHandedFlagSaved!=0);
+            leftHandedCullSaved=-1;
         }
-    } __except(EXCEPTION_EXECUTE_HANDLER){leftHandedCullSaved=-1;}
+        after=*reinterpret_cast<const int*>(s+0x24);
+    } __except(EXCEPTION_EXECUTE_HANDLER){leftHandedCullSaved=-1;++leftHandedFaults;}
+    if(leftHandedLog) {
+        static std::atomic<unsigned> detailed{};
+        if(detailed.load()<40){++detailed;LeftHandedLine("%s cull=%d flag=%d cache=%d -> cull=%d",begin?"flip":"restore",before,flag,cache,after);}
+        static std::atomic<uint64_t> last{};const auto now=GetTickCount64();auto l=last.load();
+        if(now>=l+2000&&last.compare_exchange_strong(l,now))
+            LeftHandedLine("summary flips=%u noCull=%u faults=%u mirroredHands=%u mirrorFailed=%u",
+                leftHandedFlips.load(),leftHandedNoCull.load(),leftHandedFaults.load(),leftHandedMirrored.load(),leftHandedMirrorFailed.load());
+    }
 }
 bool TryModelHand(void* model,unsigned char* data,CameraMath::Matrix* palette,uint32_t n) {
     CameraMath::Matrix target{},leftTarget{};bool leftValid=false;uint32_t gripBits{};
