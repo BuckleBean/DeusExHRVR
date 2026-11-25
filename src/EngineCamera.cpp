@@ -28,6 +28,8 @@
 #include "ThrowAim.h"
 #include "CarriedThrowAim.h"
 #include "CarriedHand.h"
+#include "CarryAttachment.h"
+#include "CarryAttachmentNative.h"
 #include "InteractionTiming.h"
 #include "ProjectileAim.h"
 #include "NativeBounds.h"
@@ -2553,6 +2555,8 @@ bool CarriedRotateRaw(const float* rotation,const float* vector,float* out,bool 
         return true;
     } __except(EXCEPTION_EXECUTE_HANDLER) {return false;}
 }
+#include "CarryAttachmentRuntime.inl"
+
 bool CarriedGeometryRaw(uintptr_t manager,uintptr_t caller,const float* native,float scale,
                         float* contact,float* anchor) {
     __try {
@@ -2585,6 +2589,10 @@ bool CarriedGeometryRaw(uintptr_t manager,uintptr_t caller,const float* native,f
     } __except(EXCEPTION_EXECUTE_HANDLER) {return false;}
 }
 bool CarriedHandTarget(uintptr_t manager,int state,uintptr_t caller,bool left,const float* native,float* out) {
+    if(carriedAttachmentReady&&CarriedHand::BoxState(state)&&caller==CarriedHand::PullReturn) {
+        CameraMath::Matrix target{};alignas(16) float q[4]{};
+        if(AttachmentPose(manager,target,q)&&AttachmentPullRaw(manager,target,q,native,out))return true;
+    }
     float palm[3]{},direction[3]{},scale{};
     if(!HandPosition(left,palm))return false;
     {
@@ -2618,6 +2626,8 @@ bool CarriedHandTarget(uintptr_t manager,int state,uintptr_t caller,bool left,co
 }
 void* __fastcall CarriedPositionHook(void* self,void*,const float* position) {
     const auto caller=reinterpret_cast<uintptr_t>(_ReturnAddress())-base+0x400000;
+    if(caller==CarriedHand::HoldReturn&&attachmentTargetApplied&&attachmentUpdate&&
+       reinterpret_cast<uintptr_t>(self)==attachmentBody)return originalCarriedSetPosition(self,position);
     if(carriedItemAtHand&&position&&CarriedHand::Site(caller)&&grabActive.load()) {
         const auto manager=grabManager.load();
         int state=-1;uintptr_t body{};
@@ -2771,6 +2781,7 @@ void InstallInteractionProbes(){
             if(interactionTimingLog)TimingLine(carriedItemAtHand?"carried item at hand ready":"carried item at hand unavailable");
         }
     }
+    InstallCarryAttachment(diagConfig);
     if(forgivingAimLog){FILE* aimLog{};if(!fopen_s(&aimLog,"DeusExHRVR-camera.log","a")){
         fprintf(aimLog,"forgiving aim enabled=%d degrees=%g layoutMatch=%d\n",int(forgivingAimEnabled),double(forgivingDegrees),int(match));fclose(aimLog);
     }}

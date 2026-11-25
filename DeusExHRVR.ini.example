@@ -210,6 +210,10 @@ CarriedThrowAim=1
 ; object's surface gap; it does not offset body dragging. Missing surface data
 ; uses a fixed palm offset. CarriedItemAtHand=0 disables both. Restart to apply.
 CarriedItemAtHand=1
+; Experimental; 0 keeps existing placement, 1 attaches surface and wrist rotation.
+CarriedAttachment=0
+; Suppress the native held-object fade only in attachment mode; 0 keeps it.
+CarriedOpaque=1
 CarriedItemHandCm=3
 ; Which camera modes the hands step aside for, as a bit mask over the game's
 ; modes. 342 = cover, ladders, the animation-bone camera, lying down, orbit.
