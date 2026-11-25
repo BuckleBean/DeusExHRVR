@@ -2021,6 +2021,11 @@ std::atomic<uint64_t> interactionNextSample{};
 std::atomic<unsigned> interactionSampleCount{};
 bool interactionProbesReady{};
 bool handPush{},handPushLog{},handPushReady{},bodyPushLog{},bodyPushReady{};
+// [VR] LeftHanded=1 (default 0): left-handed mirror mode, stage 1 (hands). See
+// ModelHandAlignment::swapHands/MirrorAcross and HandOnlyGeometry::cullFlip.
+bool leftHanded{},leftHandedCull{};
+std::atomic<unsigned> leftHandedMirrored{},leftHandedMirrorFailed{};
+void LeftHandedCullFlip(void* state,bool begin);
 float handPushRadiusMetres=HandPush::DefaultRadiusMetres,handPushStrength=1.f;
 bool handPushShove=true;
 std::atomic<float> bodyPushScale{};
@@ -2709,6 +2714,19 @@ void InstallInteractionProbes(){
     twoHandedWeapons=GetPrivateProfileIntW(L"VR",L"TwoHandedWeapons",1,diagConfig)!=0;
     twoHandedLog=twoHandedWeapons&&GetPrivateProfileIntW(L"VR",L"TwoHandedWeaponsLog",0,diagConfig)!=0;
     twoHandedAim=twoHandedWeapons&&GetPrivateProfileIntW(L"VR",L"TwoHandedAim",1,diagConfig)!=0;
+    leftHanded=GetPrivateProfileIntW(L"VR",L"LeftHanded",0,diagConfig)!=0;
+    if(leftHanded) {
+        // The game's cull setter, used to draw mirrored hands right side out.
+        static const unsigned char cullBytes[]={0x8b,0x44,0x24,0x04,0x33,0xd2,0x53,0x8a,0x5c,0x24,0x0c,0x84,0xdb,0x0f,0x95,0xc2};
+        leftHandedCull=!memcmp(reinterpret_cast<void*>(base+0x54fc10-0x400000),cullBytes,sizeof(cullBytes));
+        if(leftHandedCull) {
+            ModelHandAlignment::swapHands=true;
+            HandOnlyGeometry::cullFlip=&LeftHandedCullFlip;
+            // Stage 1: the two-handed hold assumes the support hand is the left one.
+            twoHandedWeapons=false;twoHandedAim=false;
+        } else leftHanded=false;
+        FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")){fprintf(f,"leftHanded requested=1 active=%d cullSetter=%d\n",int(leftHanded),int(leftHandedCull));fclose(f);}
+    }
     float forgivingDegrees=15.f;
     {
         wchar_t degreesText[32]{};GetPrivateProfileStringW(L"VR",L"ForgivingAimDegrees",L"15",degreesText,32,diagConfig);
@@ -4504,6 +4522,23 @@ float TwoHandStep(CameraMath::Matrix* palette,const std::array<bool,223>& select
     }
     return amount;
 }
+// Flips the game's cull mode for one mirrored hand draw (0x54FC10: mode 1 culls back
+// faces, 2 front faces, 0 none; +0x43C holds mode*2+flag), then restores it.
+thread_local int leftHandedCullSaved=-1;
+void LeftHandedCullFlip(void* state,bool begin) {
+    using SetCull=void(__thiscall*)(void*,int,int);
+    __try {
+        auto set=reinterpret_cast<SetCull>(base+0x54fc10-0x400000);
+        if(begin) {
+            const int v=*reinterpret_cast<const int*>(static_cast<unsigned char*>(state)+0x43c);
+            leftHandedCullSaved=v;
+            const int mode=v>>1,flag=v&1;
+            if(mode==1)set(state,2,flag);else if(mode==2)set(state,1,flag);
+        } else if(leftHandedCullSaved>=0) {
+            set(state,leftHandedCullSaved>>1,leftHandedCullSaved&1);leftHandedCullSaved=-1;
+        }
+    } __except(EXCEPTION_EXECUTE_HANDLER){leftHandedCullSaved=-1;}
+}
 bool TryModelHand(void* model,unsigned char* data,CameraMath::Matrix* palette,uint32_t n) {
     CameraMath::Matrix target{},leftTarget{};bool leftValid=false;uint32_t gripBits{};
     {
@@ -4595,7 +4630,19 @@ bool TryModelHand(void* model,unsigned char* data,CameraMath::Matrix* palette,ui
             if(amount>0)InteractionCurl::Apply(palette,n,curl,amount);
         }
     }
-    HandOnlyGeometry::Activate(uintptr_t(data),frameId.load(),plan,palette[130].m,leftMoved);
+    // Left-handed mode: reflect each placed hand across its own grip's side-to-side
+    // axis, so the model's right hand (at the left controller) appears as a left hand
+    // and its left hand (at the right controller) as a right hand. Gun: stage 2.
+    bool mirrored=false;
+    if(leftHanded) {
+        CameraMath::Matrix gunHand{},otherHand{};
+        mirrored=ModelHandAlignment::MirrorAcross(target,gunHand)&&
+            ModelHandAlignment::Mirror(palette,n,plan->bones,gunHand,129,145);
+        if(mirrored&&leftMoved&&!(ModelHandAlignment::MirrorAcross(leftTarget,otherHand)&&
+            ModelHandAlignment::Mirror(palette,n,plan->leftBones,otherHand,100,116)))leftMoved=false;
+        if(mirrored)++leftHandedMirrored;else ++leftHandedMirrorFailed;
+    }
+    HandOnlyGeometry::Activate(uintptr_t(data),frameId.load(),plan,palette[130].m,leftMoved,false,mirrored);
 
     if(DiagnosticOptions::hands)++modelHandApplied;return true;
 }

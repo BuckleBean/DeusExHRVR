@@ -68,5 +68,35 @@ int main() {
             Check(place(turnedPose,F)&&MakeShift(F,T,300,1,s)&&place(ApplyShift(real,s),placed)&&same(placed,F,.003f),"large hand turns convert correctly");
         }
     }
+    // Left-handed mirror mode: reflection across a grip's side-to-side axis.
+    {
+        using namespace ModelHandAlignment;
+        Matrix grip=YawAt(90,10,5,3),r{};   // first axis now points along world z
+        Check(MirrorAcross(grip,r),"mirror built from a valid grip");
+        const float p[4]{12,7,8,1};float q[4]{};
+        for(int j=0;j<4;j++){q[j]=0;for(int k=0;k<4;k++)q[j]+=p[k]*r.m[k*4+j];}
+        V n{grip.m[0],grip.m[1],grip.m[2]};Normalize(n);
+        const double before=(p[0]-10)*n[0]+(p[1]-5)*n[1]+(p[2]-3)*n[2];
+        const double after=(q[0]-10)*n[0]+(q[1]-5)*n[1]+(q[2]-3)*n[2];
+        Check(Near(float(after),float(-before)),"a point ends up the same distance on the other side of the hand's plane");
+        Check(Near(q[0]-10,p[0]-10-float(2*before*n[0]))&&Near(q[1],p[1])&&Near(q[3],1),"movement along the plane is unchanged");
+        const float det=r.m[0]*(r.m[5]*r.m[10]-r.m[6]*r.m[9])-r.m[1]*(r.m[4]*r.m[10]-r.m[6]*r.m[8])+r.m[2]*(r.m[4]*r.m[9]-r.m[5]*r.m[8]);
+        Check(Near(det,-1),"it is a true mirror (determinant -1)");
+        Matrix twice=CameraMath::Multiply(r,r);bool identity=true;
+        for(int i=0;i<16;i++)identity=identity&&Near(twice.m[i],(i%5==0)?1.f:0.f);
+        Check(identity,"mirroring twice gives back the original");
+        std::array<Matrix,223> palette{};std::array<bool,223> sel{};
+        for(auto& m:palette){m=At(1,2,3);m.m[3]=.25f;m.m[7]=.5f;m.m[11]=.75f;}
+        for(unsigned i=129;i<=145;i++)sel[i]=true;
+        Check(Mirror(palette.data(),223,sel,r,129,145),"mirror applies to the hand bones");
+        Check(palette[130].m[3]==.25f&&palette[130].m[7]==.5f&&palette[130].m[11]==.75f,"the shader's w-column slots survive");
+        Check(palette[100].m[12]==1&&palette[100].m[13]==2,"bones outside the hand are untouched");
+        Check(!MoveWithDelta(palette.data(),223,sel,r),"the normal hand mover still refuses a mirror");
+        Matrix bad=r;bad.m[0]=std::nanf("");
+        auto saved=palette[131];
+        Check(!Mirror(palette.data(),223,sel,bad,129,145)&&palette[131].m[12]==saved.m[12],"an invalid mirror changes nothing");
+        std::array<bool,223> none{};Check(!Mirror(palette.data(),223,none,r,129,145),"no selected bones means no mirror");
+        Matrix nan=grip;nan.m[0]=nan.m[1]=nan.m[2]=0;Check(!MirrorAcross(nan,r),"a grip without a side axis gives no mirror");
+    }
     return failures?1:0;
 }

@@ -242,7 +242,7 @@ inline std::shared_ptr<const Plan> Prepare(void* model) {
     PrepareRideArms(*p,h);
     std::shared_ptr<const Plan> result=p;cached.store(result);retryAfter=0;rejectionStage=0;return result;
 }
-struct Tag {bool left{},hidden{},arms{};uintptr_t render{};unsigned witnessBone=130;uintptr_t pose{};uint64_t frame{};std::shared_ptr<const Plan> plan;std::array<unsigned char,64> wrist{};};
+struct Tag {bool left{},hidden{},arms{},mirrored{};uintptr_t render{};unsigned witnessBone=130;uintptr_t pose{};uint64_t frame{};std::shared_ptr<const Plan> plan;std::array<unsigned char,64> wrist{};};
 inline std::mutex tagMutex;
 inline std::array<Tag,64> tags{};
 inline unsigned cursor{};
@@ -250,11 +250,15 @@ inline void Invalidate(uintptr_t pose) {
     std::lock_guard lock(tagMutex);
     for(auto& t:tags)if(t.pose==pose){t.pose=0;t.plan.reset();}
 }
-inline void Activate(uintptr_t pose,uint64_t frame,std::shared_ptr<const Plan> plan,const void* wrist,bool left=false,bool arms=false) {
+// Left-handed mode: mirrored hand runs are drawn with the game's cull flipped, since a
+// reflected mesh's triangles wind the other way. Set by EngineCamera; begin=true flips,
+// false restores. Null means no flip is available.
+inline void(*cullFlip)(void* state,bool begin)=nullptr;
+inline void Activate(uintptr_t pose,uint64_t frame,std::shared_ptr<const Plan> plan,const void* wrist,bool left=false,bool arms=false,bool mirrored=false) {
     std::lock_guard lock(tagMutex);
     for(auto& old:tags)if(old.pose==pose){old.pose=0;old.plan.reset();}
     auto& t=tags[cursor++%tags.size()];
-    t.arms=arms;t.hidden=false;t.witnessBone=130;t.render=plan->render;t.left=left;t.pose=pose;t.frame=frame;t.plan=std::move(plan);std::memcpy(t.wrist.data(),wrist,64);if(DiagnosticOptions::hands)++posesMoved;
+    t.arms=arms;t.mirrored=mirrored;t.hidden=false;t.witnessBone=130;t.render=plan->render;t.left=left;t.pose=pose;t.frame=frame;t.plan=std::move(plan);std::memcpy(t.wrist.data(),wrist,64);if(DiagnosticOptions::hands)++posesMoved;
     if(left)if(DiagnosticOptions::hands)++leftPoses;
 }
 // Suppress only this VR-generated player palette; native third-person draws
@@ -275,11 +279,11 @@ inline bool Hidden(uintptr_t pose,uint64_t frame,uintptr_t render) {
     }
     return false;
 }
-inline std::shared_ptr<const Plan> Match(uintptr_t pose,uint64_t frame,bool* left=nullptr,bool* arms=nullptr) {
+inline std::shared_ptr<const Plan> Match(uintptr_t pose,uint64_t frame,bool* left=nullptr,bool* arms=nullptr,bool* mirrored=nullptr) {
     std::lock_guard lock(tagMutex);
     for(const auto& t:tags)if(t.pose==pose && t.plan && frame>=t.frame && frame-t.frame<=1) {
         std::array<unsigned char,64> now{};
-        if(HandMeshDiagnostic::Read(pose+16+130*64,now.data(),64) && now==t.wrist){if(left)*left=t.left;if(arms)*arms=t.arms;return t.plan;}
+        if(HandMeshDiagnostic::Read(pose+16+130*64,now.data(),64) && now==t.wrist){if(left)*left=t.left;if(arms)*arms=t.arms;if(mirrored)*mirrored=t.mirrored;return t.plan;}
     }
     return {};
 }
@@ -289,7 +293,7 @@ template<class Draw> inline bool DrawSelected(void* drawable,void* device,void* 
     if(!stream)return false;
     // Match the tagged plan, not the diagnostic capture (which stops after four models).
     if(!cached.load())return false;
-    bool left=false,arms=false;auto p=Match(words[8],frame,&left,&arms);
+    bool left=false,arms=false,mirrored=false;auto p=Match(words[8],frame,&left,&arms,&mirrored);
     if(!p || words[3]!=p->render){if(DiagnosticOptions::hands)++bypassed;return false;}
     auto gp=uintptr_t(words[6]);
     if(gp<p->groups || (gp-p->groups)%64)return false;
@@ -319,7 +323,10 @@ template<class Draw> inline bool DrawSelected(void* drawable,void* device,void* 
         original(localDrawable,device,state,stream,twice);
     }
     };
+    const bool flip=mirrored&&cullFlip;
+    if(flip)cullFlip(state,true);
     drawRuns(p->runs[slot]);if(left){drawRuns(p->leftRuns[slot]);if(DiagnosticOptions::hands)++leftDraws;}
+    if(flip)cullFlip(state,false);
     if(DiagnosticOptions::hands)++filtered;return true;
 }
 inline void Flush() {
