@@ -2020,6 +2020,7 @@ std::atomic<unsigned> interactionSampleCount{};
 bool interactionProbesReady{};
 bool handPush{},handPushLog{},handPushReady{},bodyPushLog{},bodyPushReady{};
 float handPushRadiusMetres=HandPush::DefaultRadiusMetres,handPushStrength=1.f;
+bool handPushShove=true;
 std::atomic<float> bodyPushScale{};
 unsigned handPushLogLines{};
 // Forgiving aim (November 21): see ForgivingAim.h. [VR] ForgivingAim=0 turns it
@@ -2668,6 +2669,7 @@ void InstallInteractionProbes(){
         wchar_t strengthText[32]{};GetPrivateProfileStringW(L"VR",L"HandPushStrength",L"1",strengthText,32,diagConfig);
         const float strength=float(_wtof(strengthText));
         if(std::isfinite(strength)&&strength>=.25f&&strength<=4.f)handPushStrength=strength;
+        handPushShove=GetPrivateProfileIntW(L"VR",L"HandPushShove",1,diagConfig)!=0;
     }
     bodyPushLog=GetPrivateProfileIntW(L"VR",L"BodyPushLog",0,diagConfig)!=0;
     if(bodyPushLog&&HandPushNative::Matches(base)) {
@@ -3052,12 +3054,13 @@ const char* const pushRejectName[RejCount]={"noPair","noOther","noBody","duplica
 const char* const pushForceName[HandPush::ForceWhyCount]={"ok","input","notToward","receding","magnitude"};
 const char* const pushStepName[HandPush::StepWhyCount]={"ok","invalid","sameSample","noHistory","tooSoon","jump","tooFast","tooSlow"};
 struct PushStats {
-    unsigned queries{},raw{},pairs{},withBody{},eligible{},pushed{},forceAdded{},forceNotAdded{},centreFallback{};
+    unsigned queries{},raw{},pairs{},withBody{},eligible{},pushed{},forceAdded{},forceNotAdded{},centreFallback{},shoves{};
+    float lastShoveCmS{NAN};
     unsigned reject[RejCount]{},force[HandPush::ForceWhyCount]{},kind1{},kind2{},kindOther{};
     uintptr_t lastOwner{};int lastKind{-99},lastForce{-1};float lastMass{NAN},lastInwardCmS{NAN},lastMagnitude{NAN};
     void Add(const PushStats& o) {
         queries+=o.queries;raw+=o.raw;pairs+=o.pairs;withBody+=o.withBody;eligible+=o.eligible;pushed+=o.pushed;
-        forceAdded+=o.forceAdded;forceNotAdded+=o.forceNotAdded;centreFallback+=o.centreFallback;
+        forceAdded+=o.forceAdded;forceNotAdded+=o.forceNotAdded;centreFallback+=o.centreFallback;shoves+=o.shoves;
         for(int i=0;i<RejCount;i++)reject[i]+=o.reject[i];
         for(int i=0;i<HandPush::ForceWhyCount;i++)force[i]+=o.force[i];
         kind1+=o.kind1;kind2+=o.kind2;kindOther+=o.kindOther;
@@ -3077,10 +3080,20 @@ void HandPushLine(const char* format,...) {
     fputc('\n',f);fclose(f);
 }
 void PushStatsText(char* out,size_t size,const PushStats& s) {
-    int used=sprintf_s(out,size,"searches=%u found=%u paired=%u withBody=%u kind1=%u kind2=%u kindOther=%u eligible=%u pushed=%u forceAdded=%u forceNotAdded=%u atCentre=%u",
-        s.queries,s.raw,s.pairs,s.withBody,s.kind1,s.kind2,s.kindOther,s.eligible,s.pushed,s.forceAdded,s.forceNotAdded,s.centreFallback);
+    int used=sprintf_s(out,size,"searches=%u found=%u paired=%u withBody=%u kind1=%u kind2=%u kindOther=%u eligible=%u pushed=%u forceAdded=%u forceNotAdded=%u atCentre=%u shoves=%u",
+        s.queries,s.raw,s.pairs,s.withBody,s.kind1,s.kind2,s.kindOther,s.eligible,s.pushed,s.forceAdded,s.forceNotAdded,s.centreFallback,s.shoves);
     for(int i=0;i<RejCount&&used>0&&size_t(used)<size;i++)if(s.reject[i])used+=sprintf_s(out+used,size-used," refused.%s=%u",pushRejectName[i],s.reject[i]);
     for(int i=1;i<HandPush::ForceWhyCount&&used>0&&size_t(used)<size;i++)if(s.force[i])used+=sprintf_s(out+used,size-used," force.%s=%u",pushForceName[i],s.force[i]);
+}
+// Bodies a hand touched recently (either hand), so only a new contact gets the shove.
+struct ShoveRecent{uintptr_t body{};uint64_t tick{};};
+ShoveRecent shoveRecent[8]{};
+bool ShoveNewContact(uintptr_t body,uint64_t now) {
+    ShoveRecent* same=nullptr;ShoveRecent* oldest=&shoveRecent[0];
+    for(auto& r:shoveRecent){if(r.body==body)same=&r;if(r.tick<oldest->tick)oldest=&r;}
+    const bool fresh=!(same&&now>=same->tick&&now-same->tick<=HandPush::ShoveAgainMs);
+    ShoveRecent* slot=same?same:oldest;slot->body=body;slot->tick=now;
+    return fresh;
 }
 // The game's walk push finds objects with the body's collision shape: no search filter,
 // shape settings 08/2B, no owner value (BodyPushLog, November 24). The usable-item filter
@@ -3143,6 +3156,9 @@ int HandPushRaw(void* player,const float* palm,const float* velocity,bool moving
             if(!HandPush::Finite(centre)){++st.reject[RejCentre];continue;}
             alignas(16) float point[4]{centre[0],centre[1],centre[2],1},bodyVelocity[4]{},force[4]{};
             reinterpret_cast<void*(__thiscall*)(void*,float*)>(VA(0x4f8aa0))(body,bodyVelocity);
+            // The velocity field is not in world units per second (see VelocityFieldFactor).
+            alignas(16) float field[4]{bodyVelocity[0],bodyVelocity[1],bodyVelocity[2],bodyVelocity[3]};
+            for(int j=0;j<3;j++)bodyVelocity[j]*=HandPush::VelocityFieldFactor;
             float inward=NAN,magnitude=NAN;
             const int why=HandPush::HorizontalForce(palm,point,velocity,bodyVelocity,mass,scale,dt,force,&inward,&magnitude,handPushStrength);
             // Push where the hand is, as the walk push pushes off-centre: a hand high on
@@ -3160,6 +3176,13 @@ int HandPushRaw(void* player,const float* palm,const float* velocity,bool moving
             reinterpret_cast<void(__thiscall*)(void*,const float*,const float*)>(VA(0x4f9020))(body,force,point);
             memcpy(after,body+0xe0,sizeof(after));
             if(memcmp(before,after,sizeof(before)))++st.forceAdded;else ++st.forceNotAdded;
+            // First contact: an instant shove with the game's own set-velocity call.
+            alignas(16) float shoved[4]{};float target=NAN;
+            if(handPushShove&&ShoveNewContact(reinterpret_cast<uintptr_t>(body),GetTickCount64())&&
+               HandPush::Shove(velocity,field,mass,handPushStrength,shoved,&target)) {
+                reinterpret_cast<void(__thiscall*)(void*,const float*)>(VA(0x4f8e30))(body,shoved);
+                ++st.shoves;st.lastShoveCmS=target*HandPush::VelocityFieldFactor*100.f/scale;
+            }
             pushed[pushedCount++]=reinterpret_cast<uintptr_t>(body);++result;++st.pushed;
             handPushLastBody=reinterpret_cast<uintptr_t>(body);handPushLastTick=GetTickCount64();
             if(handPushLog) {
@@ -3226,8 +3249,9 @@ void UpdateHandPush(float dt) {
         }
     }
     if(handPushLog&&handPushLogLines==0)
-        HandPushLine("startup enabled=%d signatures=%d search=bodyStyle radiusCm=%.1f strength=%.2f maxForce=%.0f maxPerMass=%.1f pushPoint=hand maxSpeedCmS=%.0f bodyPushLog=%d",
-            int(handPush),int(handPushReady),handPushRadiusMetres*100.f,handPushStrength,HandPush::NativeMaxForce*handPushStrength,HandPush::NativeMaxPerMass*handPushStrength,HandPush::MaxSpeedMetres*100.f,int(bodyPushReady));
+        HandPushLine("startup enabled=%d signatures=%d search=bodyStyle radiusCm=%.1f strength=%.2f maxForce=%.0f maxPerMass=%.1f pushPoint=hand maxSpeedCmS=%.0f shove=%d lightMass=%.0f velocityFactor=%.1f bodyPushLog=%d",
+            int(handPush),int(handPushReady),handPushRadiusMetres*100.f,handPushStrength,HandPush::NativeMaxForce*handPushStrength,HandPush::NativeMaxPerMass*handPushStrength,HandPush::MaxSpeedMetres*100.f,
+            int(handPushShove),HandPush::LightMass,HandPush::VelocityFieldFactor,int(bodyPushReady));
     if(handPushLog) {
         // About 0.3 s after a push: did the object's centre move?
         for(auto& t:pushTracked) {
@@ -3292,10 +3316,10 @@ void UpdateHandPush(float dt) {
             if(st.eligible&&(st.pushed||now>=lastEvent[hand]+200)) {
                 lastEvent[hand]=now;
                 char a[900]{};PushStatsText(a,sizeof(a),st);
-                HandPushLine("hand=%s move=%s speedCmS=%.0f object=%p kind=%d mass=%.2f inwardCmS=%.1f force=%s magnitude=%.2f | %s",
+                HandPushLine("hand=%s move=%s speedCmS=%.0f object=%p kind=%d mass=%.2f inwardCmS=%.1f force=%s magnitude=%.2f shoveCmS=%.0f | %s",
                     hand?"left":"right",pushStepName[motion[hand].why],moving?std::sqrt(HandPush::Dot(velocity,velocity))*100.f/scale:0.f,
                     reinterpret_cast<void*>(st.lastOwner),st.lastKind,st.lastMass,st.lastInwardCmS,
-                    st.lastForce>=0?pushForceName[st.lastForce]:"-",st.lastMagnitude,a);
+                    st.lastForce>=0?pushForceName[st.lastForce]:"-",st.lastMagnitude,st.shoves?st.lastShoveCmS:0.f,a);
             }
         }
     }

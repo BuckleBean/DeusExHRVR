@@ -174,6 +174,10 @@ HandPushCm=8
 ; Push strength: 1 matches the most the game's own walk push uses (0.25 to 4).
 ; Raise it if light objects need too much effort. Restart after editing.
 HandPushStrength=1
+; Instant shove: the moment a hand touches an object, the object takes the hand's
+; sideways speed (light objects about the same speed, a dumpster about a fifth), using
+; the same game call a throw uses. 0 turns it off. Restart after editing.
+HandPushShove=1
 ; Diagnostic log DeusExHRVR-hand-push.log (at most 6000 lines: a summary each second,
 ; hand lines while touching something pushable, and whether pushed objects moved).
 ; 0 (default) turns it off. Restart after editing.

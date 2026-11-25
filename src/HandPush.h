@@ -40,6 +40,30 @@ struct Motion {
         why=StepOk;return true;
     }
 };
+// Instant shove on first contact ([VR] HandPushShove=1). The game's own set-velocity
+// call (0x4F8E30, used by the carried throw) gives the object the hand's horizontal
+// speed at once, shared by weight: objects of LightMass or less move at hand speed,
+// heavier ones proportionally less (a 350 dumpster about a fifth). It only adds speed
+// along the hand's direction and never slows an object already moving faster.
+// VelocityFieldFactor: real movement in world units per second per unit of the body's
+// velocity field, measured from walk contacts (November 24: median 12.6, p10 10.4,
+// p90 14.8). Not a documented unit.
+constexpr float VelocityFieldFactor=12.6f,LightMass=75.f;
+constexpr uint64_t ShoveAgainMs=250;   // a body touched again within this is the same contact
+inline float ShoveShare(float mass){return std::isfinite(mass)&&mass>0?std::min(1.f,LightMass/mass):0.f;}
+inline bool Shove(const float* handVelocity,const float* field,float mass,float strength,float* out,float* targetOut=nullptr) {
+    if(!Finite(handVelocity)||!Finite(field)||!std::isfinite(strength)||strength<=0)return false;
+    const float speed=std::sqrt(handVelocity[0]*handVelocity[0]+handVelocity[1]*handVelocity[1]);
+    if(!std::isfinite(speed)||speed<=0)return false;
+    const float d[2]{handVelocity[0]/speed,handVelocity[1]/speed};
+    const float target=speed*ShoveShare(mass)*strength/VelocityFieldFactor;
+    if(targetOut)*targetOut=target;
+    const float along=field[0]*d[0]+field[1]*d[1];
+    if(!(target>along))return false;
+    for(int i=0;i<4;i++)out[i]=field[i];
+    out[0]+=d[0]*(target-along);out[1]+=d[1]*(target-along);
+    return std::isfinite(out[0])&&std::isfinite(out[1]);
+}
 // Why HorizontalForce refused, for the optional log.
 enum ForceWhy:int{ForceOk=0,ForceInput,ForceNotInward,ForceReceding,ForceMagnitude,ForceWhyCount};
 // A push like the walk push: horizontal, along the hand's horizontal movement, only

@@ -41,5 +41,19 @@ int main(){
         check(std::abs(mg1-300.f)<.01f&&std::abs(mg2-600.f)<.01f,"HandPushStrength=2 doubles the cap");
         check(HandPush::HorizontalForce(pa,ce,hv,bv,75,300,.01f,fo,nullptr,nullptr,0.f)==HandPush::ForceInput,"zero strength rejected");
     }
+    // Instant shove on first contact.
+    {
+        const float hv[3]{300,0,0},still[4]{};float out[4]{},target=0;
+        check(HandPush::Shove(hv,still,75,1,out,&target)&&std::abs(out[0]*HandPush::VelocityFieldFactor-300.f)<.01f&&out[1]==0,"a light object takes the hand's speed at once");
+        check(HandPush::Shove(hv,still,350,1,out)&&std::abs(out[0]*HandPush::VelocityFieldFactor-300.f*75.f/350.f)<.01f,"a dumpster takes about a fifth of it");
+        check(HandPush::Shove(hv,still,75,2,out)&&std::abs(out[0]*HandPush::VelocityFieldFactor-600.f)<.01f,"strength scales the shove");
+        const float fast[4]{100,0,-5,0};
+        check(!HandPush::Shove(hv,fast,75,1,out),"an object already moving faster is not slowed");
+        const float falling[4]{0,0,-9,0};
+        check(HandPush::Shove(hv,falling,75,1,out)&&out[2]==-9,"falling speed is kept; only sideways speed is added");
+        const float up[3]{0,0,300};
+        check(!HandPush::Shove(up,still,75,1,out),"straight up or down gives no shove");
+        check(!HandPush::Shove(hv,still,0,1,out),"zero mass gives no shove");
+    }
     return fail?1:0;
 }
