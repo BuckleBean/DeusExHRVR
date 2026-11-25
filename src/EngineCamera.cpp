@@ -2027,8 +2027,8 @@ bool leftHanded{},leftHandedCull{};
 std::atomic<unsigned> leftHandedMirrored{},leftHandedMirrorFailed{};
 void LeftHandedCullFlip(void* state,bool begin);
 bool leftHandedLog{}; // [VR] LeftHandedLog=1 (default 0)
-// Ctrl+F12 cycles how mirrored hands are culled, for testing: 0 flip (default), 1 none
-// (both faces), 2 unchanged. Logged to the camera log and the left-handed log.
+// How mirrored hands are culled: 0 flip (default), 1 none (both faces), 2 unchanged.
+// While LeftHandedLog=1 it cycles automatically every 8 s for testing (logged).
 std::atomic<int> leftHandedCullMode{0};
 ID3D11Device* leftHandedDevice{};
 float handPushRadiusMetres=HandPush::DefaultRadiusMetres,handPushStrength=1.f;
@@ -7459,11 +7459,16 @@ Transport::RenderInfo OnPresent(uint64_t frame,bool capture) {
     // via [Luma] SubstituteShaders=1). Lets you A/B the swap in-headset without
     // restarting. Matches the existing F3/F4/F7 toggle pattern.
     bool f12=(GetAsyncKeyState(VK_F12)&0x8000)!=0;
-    if(f12&&!f12Down && (GetAsyncKeyState(VK_CONTROL)&0x8000) && leftHanded) {
-        const int mode=(leftHandedCullMode.load()+1)%3;leftHandedCullMode=mode;
-        static const char* const names[3]={"flip","none","unchanged"};
-        FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")){fprintf(f,"leftHanded cullMode=%s frame=%llu\n",names[mode],frame);fclose(f);}
-        LeftHandedLine("cullMode=%s (Ctrl+F12)",names[mode]);
+    // Test aid: with LeftHanded=1 and LeftHandedLog=1 the mirrored hands' culling moves
+    // to the next mode every 8 s (flip, none, unchanged), so no key press is needed in VR.
+    if(leftHanded&&leftHandedLog) {
+        static uint64_t cycleStart{};const auto cycleNow=GetTickCount64();
+        if(!cycleStart)cycleStart=cycleNow;
+        const int mode=int(((cycleNow-cycleStart)/8000)%3);
+        if(leftHandedCullMode.exchange(mode)!=mode) {
+            static const char* const names[3]={"flip","none","unchanged"};
+            LeftHandedLine("cullMode=%s (automatic, every 8 s)",names[mode]);
+        }
     }
     if(f12&&!f12Down && !(GetAsyncKeyState(VK_CONTROL)&0x8000)){
         bool on=ToggleShaderSubstitution();
