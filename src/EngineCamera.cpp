@@ -3004,6 +3004,24 @@ int HandPushRaw(void* player,const float* palm,const float* velocity,float scale
     } __except(EXCEPTION_EXECUTE_HANDLER) {result=-1;}
     return result;
 }
+// Comparison for the log only: the pickup search's own code (ForgivingQueryRaw, contact
+// only, 15 cm) at each hand, run just before the game's update (0, where the nudge now
+// searches) and just after it (1, where the nudge searched until 657793a). Never pushes.
+struct PushControl{unsigned queries{},failed{},usable{},candidates{};};
+PushControl pushControl[2][2]{};
+void HandPushControl(void* self,int moment) {
+    float scale{};{std::lock_guard lock(stateMutex);scale=current.scale;}
+    if(!std::isfinite(scale)||scale<=0)return;
+    for(int hand=0;hand<2;hand++) {
+        float p[3]{};if(!HandPosition(hand==1,p))continue;
+        ForgivingAim::Candidate out[32]{};unsigned count{};bool may=false;
+        const float dir[3]{0,0,1.f};
+        auto& c=pushControl[moment][hand];++c.queries;
+        if(!ForgivingQueryRaw(self,p,dir,ForgivingAim::MinRadiusMetres*scale,p,.15f*scale,out,count,.15f*scale,&may)){++c.failed;continue;}
+        if(may)++c.usable;
+        c.candidates+=count;
+    }
+}
 // Gates in the order they are checked; the log names the first one that failed.
 enum PushGate{GateReady,GateRequested,GateMotion,GateHands,GateActive,GateReference,GateScreen,GateMenu,GateScope,
     GateSuspended,GateCarrying,GateRecenter,GateCamera,GateTracking,GateCombat,GateDt,GateCount};
@@ -3055,7 +3073,7 @@ void UpdateHandPush(float dt) {
         }
     }
     if(handPushLog&&handPushLogLines==0)
-        HandPushLine("startup enabled=%d signatures=%d radiusCm=%.1f wideRadiusCm=15 (log on: summary each second, hand lines while something is near)",
+        HandPushLine("startup enabled=%d signatures=%d radiusCm=%.1f wideRadiusCm=15 searches=beforeGameUpdate (log on: summary each second, hand lines while something is near, pickup-search comparison)",
             int(handPush),int(handPushReady),HandPush::RadiusMetres*100.f);
     if(handPushLog) {
         // About 0.3 s after a push: did the object's centre move?
@@ -3092,6 +3110,13 @@ void UpdateHandPush(float dt) {
             HandPushLine("second hand=%s notUsableHand=%u maxSpeedCmS=%.0f%s | small: %s | wide: %s",hand?"left":"right",
                 second.handInvalid[hand],second.maxSpeedCmS[hand],steps,a,b);
         }
+        for(int hand=0;hand<2;hand++) {
+            const auto& c0=pushControl[0][hand];const auto& c1=pushControl[1][hand];
+            if(!c0.queries&&!c1.queries)continue;
+            HandPushLine("second hand=%s pickupSearchBeforeUpdate: queries=%u failed=%u foundUsable=%u candidates=%u | pickupSearchAfterUpdate: queries=%u failed=%u foundUsable=%u candidates=%u",
+                hand?"left":"right",c0.queries,c0.failed,c0.usable,c0.candidates,c1.queries,c1.failed,c1.usable,c1.candidates);
+        }
+        memset(pushControl,0,sizeof(pushControl));
         second={};second.start=now;
     };
     if(handPushLog&&!second.start)second.start=now;
@@ -3162,8 +3187,14 @@ void __fastcall SenseUpdateHook(void* self,void*,float dt) {
         interactionSample.scale=current.scale;interactionSample.source=unsigned(interactionAim.load());
     }
     const bool pushUpdate=!previous&&senseQueries;
+    // Hand nudges search at the same moment as the pickup search (before the game's
+    // update). Until 657793a they ran after it and the search never found anything.
+    if(pushUpdate&&handPush) {
+        if(handPushLog)HandPushControl(self,0);
+        UpdateHandPush(dt);
+    }
     originalSenseUpdate(self,dt);senseQueries=previous;
-    if(pushUpdate&&handPush)UpdateHandPush(dt);
+    if(pushUpdate&&handPush&&handPushLog)HandPushControl(self,1);
     if(forgivingDrive&&interactionTimingLog)timingAfterGame=TimingNow();
     if(forgivingDrive)ForgivingEnd();
     if(forgivingDrive&&interactionTimingLog)TimingFinish(timingBegin,timingAfterBegin,timingAfterGame);
