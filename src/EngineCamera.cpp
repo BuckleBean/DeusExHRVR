@@ -2606,7 +2606,7 @@ void InstallInteractionProbes(){
         if(std::isfinite(cm)&&cm>=3.f&&cm<=20.f)handPushRadiusMetres=cm*.01f;
         wchar_t strengthText[32]{};GetPrivateProfileStringW(L"VR",L"HandPushStrength",L"1",strengthText,32,diagConfig);
         const float strength=float(_wtof(strengthText));
-        if(std::isfinite(strength)&&strength>=.25f&&strength<=10.f)handPushStrength=strength;
+        if(std::isfinite(strength)&&strength>=.25f&&strength<=4.f)handPushStrength=strength;
     }
     bodyPushLog=GetPrivateProfileIntW(L"VR",L"BodyPushLog",0,diagConfig)!=0;
     if(bodyPushLog&&HandPushNative::Matches(base)) {
@@ -2991,12 +2991,12 @@ const char* const pushRejectName[RejCount]={"noPair","noOther","noBody","duplica
 const char* const pushForceName[HandPush::ForceWhyCount]={"ok","input","notToward","receding","magnitude"};
 const char* const pushStepName[HandPush::StepWhyCount]={"ok","invalid","sameSample","noHistory","tooSoon","jump","tooFast","tooSlow"};
 struct PushStats {
-    unsigned queries{},raw{},pairs{},withBody{},eligible{},pushed{},forceAdded{},forceNotAdded{},centreFallback{},swipeKept{};
+    unsigned queries{},raw{},pairs{},withBody{},eligible{},pushed{},forceAdded{},forceNotAdded{},centreFallback{};
     unsigned reject[RejCount]{},force[HandPush::ForceWhyCount]{},kind1{},kind2{},kindOther{};
     uintptr_t lastOwner{};int lastKind{-99},lastForce{-1};float lastMass{NAN},lastInwardCmS{NAN},lastMagnitude{NAN};
     void Add(const PushStats& o) {
         queries+=o.queries;raw+=o.raw;pairs+=o.pairs;withBody+=o.withBody;eligible+=o.eligible;pushed+=o.pushed;
-        forceAdded+=o.forceAdded;forceNotAdded+=o.forceNotAdded;centreFallback+=o.centreFallback;swipeKept+=o.swipeKept;
+        forceAdded+=o.forceAdded;forceNotAdded+=o.forceNotAdded;centreFallback+=o.centreFallback;
         for(int i=0;i<RejCount;i++)reject[i]+=o.reject[i];
         for(int i=0;i<HandPush::ForceWhyCount;i++)force[i]+=o.force[i];
         kind1+=o.kind1;kind2+=o.kind2;kindOther+=o.kindOther;
@@ -3016,8 +3016,8 @@ void HandPushLine(const char* format,...) {
     fputc('\n',f);fclose(f);
 }
 void PushStatsText(char* out,size_t size,const PushStats& s) {
-    int used=sprintf_s(out,size,"searches=%u found=%u paired=%u withBody=%u kind1=%u kind2=%u kindOther=%u eligible=%u pushed=%u forceAdded=%u forceNotAdded=%u atCentre=%u inSwipe=%u",
-        s.queries,s.raw,s.pairs,s.withBody,s.kind1,s.kind2,s.kindOther,s.eligible,s.pushed,s.forceAdded,s.forceNotAdded,s.centreFallback,s.swipeKept);
+    int used=sprintf_s(out,size,"searches=%u found=%u paired=%u withBody=%u kind1=%u kind2=%u kindOther=%u eligible=%u pushed=%u forceAdded=%u forceNotAdded=%u atCentre=%u",
+        s.queries,s.raw,s.pairs,s.withBody,s.kind1,s.kind2,s.kindOther,s.eligible,s.pushed,s.forceAdded,s.forceNotAdded,s.centreFallback);
     for(int i=0;i<RejCount&&used>0&&size_t(used)<size;i++)if(s.reject[i])used+=sprintf_s(out+used,size-used," refused.%s=%u",pushRejectName[i],s.reject[i]);
     for(int i=1;i<HandPush::ForceWhyCount&&used>0&&size_t(used)<size;i++)if(s.force[i])used+=sprintf_s(out+used,size-used," force.%s=%u",pushForceName[i],s.force[i]);
 }
@@ -3027,7 +3027,7 @@ void PushStatsText(char* out,size_t size,const PushStats& s) {
 // same way and pushes what the walk push would: physics bodies of kind 1 or 2, kind 2
 // only with the augmentation the game checks. Returns pushes, or -1 on a fault.
 int HandPushRaw(void* player,const float* palm,const float* velocity,bool moving,float scale,float dt,
-                uintptr_t* pushed,unsigned& pushedCount,PushStats& st,HandPush::SwipeMemory& swipes,uint64_t now) {
+                uintptr_t* pushed,unsigned& pushedCount,PushStats& st) {
     uintptr_t world{},savedFilter{};void* shape{};bool filterSet{};
     alignas(16) unsigned char hits[0x80*32]{};
     alignas(16) float position[4]{palm[0],palm[1],palm[2],1};
@@ -3083,10 +3083,7 @@ int HandPushRaw(void* player,const float* palm,const float* velocity,bool moving
             alignas(16) float point[4]{centre[0],centre[1],centre[2],1},bodyVelocity[4]{},force[4]{};
             reinterpret_cast<void*(__thiscall*)(void*,float*)>(VA(0x4f8aa0))(body,bodyVelocity);
             float inward=NAN,magnitude=NAN;
-            const auto* swipe=swipes.Find(reinterpret_cast<uintptr_t>(body),now);
-            if(swipe)++st.swipeKept;
-            const int why=HandPush::HorizontalForce(palm,point,velocity,bodyVelocity,mass,scale,dt,force,&inward,&magnitude,handPushStrength,swipe?swipe->dir:nullptr);
-            if(why==HandPush::ForceOk)swipes.Note(reinterpret_cast<uintptr_t>(body),velocity,now);
+            const int why=HandPush::HorizontalForce(palm,point,velocity,bodyVelocity,mass,scale,dt,force,&inward,&magnitude,handPushStrength);
             // Push where the hand is, as the walk push pushes off-centre: a hand high on
             // a barrel tips it. Falls back to the centre if the hand is implausibly far.
             {
@@ -3129,7 +3126,6 @@ struct PushSecond {
 };
 void UpdateHandPush(float dt) {
     static HandPush::Motion motion[2];
-    static HandPush::SwipeMemory swipes[2];
     static CameraMath::Matrix oldBase{};static Transport::Pose oldReference{};
     static bool haveBase{};static uint64_t lastTick{};
     static PushSecond second{};static uint64_t lastEvent[2]{};
@@ -3153,7 +3149,7 @@ void UpdateHandPush(float dt) {
             bool discontinuity=!haveBase||memcmp(&reference,&oldReference,sizeof(reference))!=0||
                 HandPush::Dot(baseDelta,baseDelta)>.05f*.05f*scale*scale;
             if(haveBase)for(int j=0;j<12;j++)if(std::abs(frame.m[j]-oldBase.m[j])>.03f)discontinuity=true;
-            if(discontinuity){for(auto& m:motion)m.Reset();for(auto& w:swipes)w.Reset();}
+            if(discontinuity)for(auto& m:motion)m.Reset();
             oldBase=frame;oldReference=reference;haveBase=true;
             for(int hand=0;hand<2;hand++) {
                 const auto& grip=hand?current.tracking.leftGrip:current.tracking.rightGrip;
@@ -3208,7 +3204,7 @@ void UpdateHandPush(float dt) {
     };
     if(handPushLog&&!second.start)second.start=now;
     if(!eligible||!gameTime) {
-        for(auto& m:motion)m.Reset();for(auto& w:swipes)w.Reset();haveBase=false;lastTick=0;flush();return;
+        for(auto& m:motion)m.Reset();haveBase=false;lastTick=0;flush();return;
     }
     if(tick==lastTick){flush();return;}
     lastTick=tick;
@@ -3223,7 +3219,7 @@ void UpdateHandPush(float dt) {
             if(moving)second.maxSpeedCmS[hand]=std::max(second.maxSpeedCmS[hand],std::sqrt(HandPush::Dot(velocity,velocity))*100.f/scale);
         }
         PushStats st{};
-        const int result=HandPushRaw(player,points[hand],velocity,moving,scale,dt,pushed,count,st,swipes[hand],now);
+        const int result=HandPushRaw(player,points[hand],velocity,moving,scale,dt,pushed,count,st);
         if(result<0){
             handPushReady=false;for(auto& m:motion)m.Reset();
             if(handPushLog)HandPushLine("fault: hand pushing turned off for this launch");
