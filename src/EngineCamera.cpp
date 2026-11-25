@@ -6324,7 +6324,9 @@ void __fastcall UpdateHook(void* self,void*) {
                         bool targetValid=nativeRequested && ModelHandAlignment::GripTarget(t,now,renderBase,reference,worldScale,modelTarget);
                         // Left-handed mode: the gun is mirrored across the controller as it is,
                         // not as two-handed steering turns it, the same plane the hands use.
-                        const auto mirrorTarget=modelTarget;
+                        // Read on its own, so it is there while scoped too (hands aside).
+                        CameraMath::Matrix mirrorTarget{};
+                        if(leftHanded)ModelHandAlignment::GripTarget(t,now,renderBase,reference,worldScale,mirrorTarget);
                         if(twoHandedAim) {
                             // The hand, barrel, shots and crosshair all derive from these.
                             static TwoHandSteer::Steer steer;
@@ -6411,7 +6413,14 @@ void __fastcall UpdateHook(void* self,void*) {
             current.world=CameraMath::HeadWorld(renderBase,reference,t.head,worldScale);
             if(immersiveScopeActive) {
                 // Use the same calibrated firing line as the rendered rifle and shots.
-                if(weaponPose.active && (!weaponPose.nativeRequested || weaponPose.nativeValid))current.world=WeaponCalibration::Camera(weaponPose.muzzle);
+                if(weaponPose.active && (!weaponPose.nativeRequested || weaponPose.nativeValid)) {
+                    // Left-handed mode: the scope looks along the mirrored gun, like the shots
+                    // (ReadWeaponPose), so two-handed steering turns the view the right way.
+                    auto muzzle=weaponPose.muzzle;CameraMath::Matrix c{};
+                    if(leftHanded&&!weaponPose.nativeCover&&ModelHandAlignment::MirrorGun(muzzle,weaponPose.mirrorTarget,c))
+                        muzzle=CameraMath::Multiply(muzzle,c);
+                    current.world=WeaponCalibration::Camera(muzzle);
+                }
             }
             current.view=CameraMath::InverseRigid(current.world);
             current.manager=CameraMath::Load(manager+0x13b0);
