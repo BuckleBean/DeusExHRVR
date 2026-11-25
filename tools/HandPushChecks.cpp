@@ -29,5 +29,17 @@ int main(){
     check(HandPush::HorizontalForce(palm,centre,hand,body,75,300,0,f)==HandPush::ForceInput,"paused update cannot push");
     check(HandPush::HorizontalForce(palm,centre,hand,body,75,300,.5f,f)==HandPush::ForceInput,"long game update cannot push");
     centre[0]=std::numeric_limits<float>::quiet_NaN();check(HandPush::HorizontalForce(palm,centre,hand,body,75,300,.01f,f)==HandPush::ForceInput,"invalid native position rejected");
+    // Swipes and strength (November 24 headset result).
+    {
+        HandPush::Motion s;float q[3]{},w[3]{};
+        s.Step(q,300,1000,w);q[0]=9.f;
+        check(s.Step(q,300,1010,w)&&std::abs(w[0]-900.f)<.01f,"a 3 m/s swipe counts at its full speed");
+        q[0]=9.f+60.f;check(!s.Step(q,300,1020,w)&&s.why==HandPush::StepJump,"a 20 cm tracking jump is still refused");
+        float pa[3]{},ce[3]{30,0,0},hv[3]{900,0,0},bv[3]{},fo[4]{},mg1=0,mg2=0;
+        HandPush::HorizontalForce(pa,ce,hv,bv,75,300,.01f,fo,nullptr,&mg1,1.f);
+        HandPush::HorizontalForce(pa,ce,hv,bv,75,300,.01f,fo,nullptr,&mg2,2.f);
+        check(std::abs(mg1-300.f)<.01f&&std::abs(mg2-600.f)<.01f,"HandPushStrength=2 doubles the cap");
+        check(HandPush::HorizontalForce(pa,ce,hv,bv,75,300,.01f,fo,nullptr,nullptr,0.f)==HandPush::ForceInput,"zero strength rejected");
+    }
     return fail?1:0;
 }

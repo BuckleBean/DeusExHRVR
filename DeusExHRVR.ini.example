@@ -171,6 +171,9 @@ HandPointers=Off
 HandPush=0
 ; Size of the search around each hand, in cm (3 to 20). Restart after editing.
 HandPushCm=8
+; Push strength: 1 matches the most the game's own walk push uses (0.25 to 4).
+; Raise it if light objects need too much effort. Restart after editing.
+HandPushStrength=1
 ; Diagnostic log DeusExHRVR-hand-push.log (at most 6000 lines: a summary each second,
 ; hand lines while touching something pushable, and whether pushed objects moved).
 ; 0 (default) turns it off. Restart after editing.
