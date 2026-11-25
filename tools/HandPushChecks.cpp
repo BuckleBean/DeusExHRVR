@@ -36,6 +36,20 @@ int main(){
         nm[0]=-1;hv[0]=-150;check(HandPush::ForceReason(pa,pt,nm,hv,bv,10,300,.01f,fo)==HandPush::ForceNotInward,"log names a withdrawing hand");
         hv[0]=150;bv[0]=200;check(HandPush::ForceReason(pa,pt,nm,hv,bv,10,300,.01f,fo)==HandPush::ForceReceding,"log names a receding object");
     }
+    // Pushes from items the pickup search met (no surface normal).
+    {
+        const float hand[3]{0,0,0};float centre[3]{30,0,0},hit[3]{200,0,0};
+        check(HandPush::Touching(hand,centre,hit,300),"object position 10 cm from the hand counts as touching");
+        centre[0]=90;check(!HandPush::Touching(hand,centre,hit,300),"object 30 cm away with a far hit point is not touching");
+        hit[0]=30;check(HandPush::Touching(hand,centre,hit,300),"large object touching by its hit point");
+        float v[3]{150,0,0},bv[3]{},fo[4]{},in=0,mg=0;centre[0]=30;
+        check(HandPush::TowardForce(hand,centre,v,bv,10,300,.01f,fo,&in,&mg)==HandPush::ForceOk&&fo[0]>0&&mg>0,"hand moving toward object pushes along the hand's motion");
+        v[0]=-150;check(HandPush::TowardForce(hand,centre,v,bv,10,300,.01f,fo)==HandPush::ForceNotInward,"hand moving away does not push");
+        v[0]=0;v[1]=150;check(HandPush::TowardForce(hand,centre,v,bv,10,300,.01f,fo)==HandPush::ForceNotInward,"sideways hand past the object does not push");
+        v[0]=150;v[1]=0;bv[0]=300;check(HandPush::TowardForce(hand,centre,v,bv,10,300,.01f,fo)==HandPush::ForceReceding,"object moving away faster is not pushed");
+        bv[0]=0;check(HandPush::TowardForce(hand,centre,v,bv,10,300,.01f,fo,&in,&mg)==HandPush::ForceOk&&mg<=10*300*.5f+.01f,"force capped by mass and world scale");
+        check(HandPush::TowardForce(hand,centre,v,bv,10,300,.5f,fo)==HandPush::ForceInput,"long game update cannot push");
+    }
     return fail?1:0;
 }
 

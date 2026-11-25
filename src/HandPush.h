@@ -56,6 +56,41 @@ inline int ForceReason(const float* palm,const float* point,const float* outward
     for(int i=0;i<3;i++)force[i]=-n[i]*magnitude;
     force[3]=0;return ForceOk;
 }
+// Items met by the pickup search (no surface normal). Touching: the object's own
+// position within CentreTouchMetres of the hand, or the search's hit point within
+// HitTouchMetres (large objects). Only motion toward the object's position pushes, and
+// the push follows the hand's movement. Same force formula and caps as Force.
+constexpr float CentreTouchMetres=.21f,HitTouchMetres=.12f;
+inline bool Touching(const float* palm,const float* centre,const float* hit,float scale,float* centreCm=nullptr,float* hitCm=nullptr) {
+    float c[3]{},h[3]{};for(int i=0;i<3;i++){c[i]=centre[i]-palm[i];h[i]=hit[i]-palm[i];}
+    const float dc=std::sqrt(Dot(c,c)),dh=std::sqrt(Dot(h,h));
+    if(centreCm)*centreCm=dc*100.f/scale;
+    if(hitCm)*hitCm=dh*100.f/scale;
+    return (std::isfinite(dc)&&dc<=CentreTouchMetres*scale)||(std::isfinite(dh)&&dh<=HitTouchMetres*scale);
+}
+inline int TowardForce(const float* palm,const float* centre,const float* handVelocity,const float* bodyVelocity,
+                       float mass,float scale,float dt,float* force,float* inwardOut=nullptr,float* magnitudeOut=nullptr) {
+    if(!Finite(palm)||!Finite(centre)||!Finite(handVelocity)||!Finite(bodyVelocity)||
+       !std::isfinite(mass)||mass<=0||mass>100000||!std::isfinite(scale)||scale<=0||
+       !std::isfinite(dt)||dt<.001f||dt>.1f)return ForceInput;
+    const float speed=std::sqrt(Dot(handVelocity,handVelocity));
+    if(!std::isfinite(speed)||speed<=0)return ForceNotInward;
+    float n[3]{};for(int i=0;i<3;i++)n[i]=centre[i]-palm[i];
+    float length=std::sqrt(Dot(n,n));
+    // Hand at the object's own position: any movement counts as toward it.
+    if(!std::isfinite(length)||length<.01f*scale){for(int i=0;i<3;i++)n[i]=handVelocity[i];length=speed;}
+    for(int i=0;i<3;i++)n[i]/=length;
+    const float inward=Dot(handVelocity,n);
+    if(inwardOut)*inwardOut=inward;
+    if(inward<.025f*scale)return ForceNotInward;
+    const float closing=inward-Dot(bodyVelocity,n);
+    if(closing<=0)return ForceReceding;
+    const float magnitude=std::min({mass*closing/(dt*30.f),mass*scale*.5f,20.f*scale});
+    if(magnitudeOut)*magnitudeOut=magnitude;
+    if(!std::isfinite(magnitude)||magnitude<=0)return ForceMagnitude;
+    for(int i=0;i<3;i++)force[i]=handVelocity[i]/speed*magnitude;
+    force[3]=0;return ForceOk;
+}
 // Normal points out of the object toward the hand. Only inward motion pushes.
 // Preserve the native body's force response (dt*30), with conservative caps.
 inline bool Force(const float* palm,const float* point,const float* outward,

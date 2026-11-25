@@ -173,6 +173,10 @@ HandPush=0
 ; lines while something is near, and whether pushed objects moved). While on, it also
 ; runs a wider 15 cm search that never pushes. 0 (default) turns it off. Restart after editing.
 HandPushLog=0
+; Observation only: what the game's own walk-into-object push does (what it finds, how
+; hard it pushes), plus a test search at each hand set up like it. Writes
+; DeusExHRVR-body-push.log (at most 4000 lines). 0 (default) turns it off. Restart after editing.
+BodyPushLog=0
 HandContactInteract=1
 HandContactExact=1
 HandContactThroughItems=1
