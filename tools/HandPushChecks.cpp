@@ -22,6 +22,20 @@ int main(){
     check(!HandPush::Force(palm,point,normal,hand,body,10,300,0,f),"paused update cannot push");
     check(!HandPush::Force(palm,point,normal,hand,body,10,300,.5f,f),"long game update cannot push");
     point[0]=std::numeric_limits<float>::quiet_NaN();check(!HandPush::Force(palm,point,normal,hand,body,10,300,.01f,f),"invalid native hit rejected");
+    // Log reasons (HandPushLog): the same decisions, now named.
+    {
+        HandPush::Motion r;float q[3]{},w[3]{};
+        r.Step(q,300,1000,w);check(r.why==HandPush::StepNoHistory,"log names missing history");
+        q[0]=.01f;r.Step(q,300,1010,w);check(r.why==HandPush::StepTooSlow,"log names a resting hand");
+        q[0]=1.5f;check(r.Step(q,300,1020,w)&&r.why==HandPush::StepOk,"log names a moving hand");
+        q[0]=200;r.Step(q,300,1030,w);check(r.why==HandPush::StepJump,"log names a tracking jump");
+        float pa[3]{},pt[3]{9,0,0},nm[3]{-1,0,0},hv[3]{150,0,0},bv[3]{},fo[4]{},in=0,mg=0;
+        check(HandPush::ForceReason(pa,pt,nm,hv,bv,10,300,.01f,fo,&in,&mg)==HandPush::ForceOk&&in>0&&mg>0,"log reports accepted force and its size");
+        pt[0]=30;check(HandPush::ForceReason(pa,pt,nm,hv,bv,10,300,.01f,fo)==HandPush::ForceFar,"log names a hit beyond the palm");
+        pt[0]=9;nm[0]=1;check(HandPush::ForceReason(pa,pt,nm,hv,bv,10,300,.01f,fo)==HandPush::ForceBehind,"log names an inverted normal");
+        nm[0]=-1;hv[0]=-150;check(HandPush::ForceReason(pa,pt,nm,hv,bv,10,300,.01f,fo)==HandPush::ForceNotInward,"log names a withdrawing hand");
+        hv[0]=150;bv[0]=200;check(HandPush::ForceReason(pa,pt,nm,hv,bv,10,300,.01f,fo)==HandPush::ForceReceding,"log names a receding object");
+    }
     return fail?1:0;
 }
 

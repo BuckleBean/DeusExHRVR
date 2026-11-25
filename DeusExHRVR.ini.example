@@ -169,7 +169,9 @@ HandPointers=Off
 ; Experimental physical nudges from empty hands; restart after changing.
 ; Off by default until tested in the headset. No grip press needed.
 HandPush=0
-; Bounded diagnostic (200 moving-hand samples); 0 disables logging.
+; Diagnostic log DeusExHRVR-hand-push.log (at most 6000 lines: a summary each second, hand
+; lines while something is near, and whether pushed objects moved). While on, it also
+; runs a wider 15 cm search that never pushes. 0 (default) turns it off. Restart after editing.
 HandPushLog=0
 HandContactInteract=1
 HandContactExact=1
