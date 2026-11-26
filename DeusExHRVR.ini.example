@@ -289,7 +289,7 @@ CeilingGuardLookAhead=1
 TwoHandedWeapons=1
 TwoHandedAim=1
 TwoHandedWeaponsLog=0
-; EXPERIMENTAL left-handed mode, stage 1 (hands). 1 mirrors the hands: Jensen's left
+; Left-handed mode (also VR Settings > Hands, applied at once). 1 mirrors the hands: Jensen's left
 ; hand holds at the left controller, posed as the mirror image of his right hand, and his
 ; right hand rests at the right controller. The gun is held as the mirror image of a
 ; right-handed hold. Two-handed weapons work mirrored: the right grip takes the weapon (the left grip keeps
