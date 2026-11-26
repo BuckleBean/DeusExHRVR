@@ -11,6 +11,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <chrono>
+#include <array>
 #include "DirectionConfig.h"
 #include "ButtonBindings.h"
 #include "CoverCrosshair.h"
@@ -23,11 +24,15 @@ class SettingsPersistence {
     std::mutex mutex;std::condition_variable wake;
     std::chrono::steady_clock::time_point saveAfter{};
     std::wstring path;bool pending{},anglePending{};float angle{};double counts{};uint32_t sequence{};int snapMode{-1},movementMode{-1},responseMode{-1},interactionMode{-1};bool resetPending{};float pendingScale{-1};int pendingDialogue{-1};float pendingZoom{-1};int pendingHandHud{-1};int pendingThrowAim{-1},pendingThrowMarker{-1},pendingCoverFollow{-1},pendingScope{-1},pendingCrosshair{-1},pendingHandPointers{-1},pendingQuickBar{-1};uint32_t pendingBrightness{},pendingContrast{};
+    int pendingLeftHanded{-1},pendingSwapSticks{-1};std::array<uint32_t,8> pendingHolds{};uint32_t pendingHoldMask{};
     ButtonBindings::Layout bindings{};uint32_t bindingMask{};
 public:
     std::atomic<uint32_t> completed{},failed{};
-    static bool Save(const std::wstring& path,bool angle,float degrees,double count,int snap=-1,int movement=-1,const ButtonBindings::Layout& bindings={},uint32_t mask=0,int response=-1,int interaction=-1,bool reset=false,float worldScale=-1,int dialogue=-1,float scopeZoom=-1,int handHud=-1,int throwAim=-1,int throwMarker=-1,int coverFollow=-1,int immersiveScope=-1,int crosshair=-1,int quickBar=-1,uint32_t brightness=0,uint32_t contrast=0,int handPointers=-1) {
+    static bool Save(const std::wstring& path,bool angle,float degrees,double count,int snap=-1,int movement=-1,const ButtonBindings::Layout& bindings={},uint32_t mask=0,int response=-1,int interaction=-1,bool reset=false,float worldScale=-1,int dialogue=-1,float scopeZoom=-1,int handHud=-1,int throwAim=-1,int throwMarker=-1,int coverFollow=-1,int immersiveScope=-1,int crosshair=-1,int quickBar=-1,uint32_t brightness=0,uint32_t contrast=0,int handPointers=-1,
+                     int leftHanded=-1,int swapSticks=-1,const std::array<uint32_t,8>& holds={},uint32_t holdMask=0) {
         if(dialogue < -1 || dialogue > 1)return false;
+        if(leftHanded < -1 || leftHanded > 1 || swapSticks < -1 || swapSticks > 1 || (holdMask>>8))return false;
+        for(size_t i=0;i<8;++i)if((holdMask&(1u<<i))&&holds[i]>5000)return false;
         if(throwAim < -1 || throwAim > 3)return false;
         for(int v:{throwMarker,coverFollow,immersiveScope})if(v < -1 || v > 1)return false;
         if(handHud < -1 || handHud > 1)return false;
@@ -64,6 +69,9 @@ public:
         if(angle&&response>=0&&!WritePrivateProfileStringW(L"VR",L"MovementResponse",response==2?L"2":response==1?L"1":L"0",path.c_str()))return false;
         if(angle&&interaction>=0&&!WritePrivateProfileStringW(L"VR",L"InteractionAim",DirectionConfig::Value(unsigned(interaction)),path.c_str()))return false;
         if(angle&&reset)for(size_t i=0;i<8;++i){wchar_t key[48];swprintf_s(key,L"%lsHoldMs",ButtonBindings::Keys[i]);if(!WritePrivateProfileStringW(L"Buttons",key,L"0",path.c_str()))return false;}
+        if(angle)for(size_t i=0;i<8;++i)if(holdMask&(1u<<i)){wchar_t key[48],value[16];swprintf_s(key,L"%lsHoldMs",ButtonBindings::Keys[i]);swprintf_s(value,L"%u",holds[i]);if(!WritePrivateProfileStringW(L"Buttons",key,value,path.c_str()))return false;}
+        if(angle&&leftHanded>=0&&!WritePrivateProfileStringW(L"VR",L"LeftHanded",leftHanded?L"1":L"0",path.c_str()))return false;
+        if(angle&&swapSticks>=0&&!WritePrivateProfileStringW(L"VR",L"SwapSticks",swapSticks?L"1":L"0",path.c_str()))return false;
         if(angle&&movement>=0&&!WritePrivateProfileStringW(L"VR",L"MovementDirection",DirectionConfig::Value(unsigned(movement)),path.c_str()))return false;
         if(angle)for(size_t i=0;i<ButtonBindings::Count;++i)if(mask&(1u<<i)){
             if(!WritePrivateProfileStringW(L"Buttons",ButtonBindings::Keys[i],ButtonBindings::Find(bindings[i])->key,path.c_str()))return false;
@@ -77,6 +85,9 @@ public:
         if(angle&&scopeZoom>=0){GetPrivateProfileStringW(L"VR",L"ScopeMagnification",L"",text,40,path.c_str());if(std::abs(_wtof(text)-scopeZoom)>.001)return false;}
         if(angle&&interaction>=0&&unsigned(DirectionConfig::Read(path.c_str(),L"InteractionAim"))!=unsigned(interaction))return false;
         if(angle&&reset)for(size_t i=0;i<8;++i){wchar_t key[48];swprintf_s(key,L"%lsHoldMs",ButtonBindings::Keys[i]);if(GetPrivateProfileIntW(L"Buttons",key,1,path.c_str())!=0)return false;}
+        if(angle)for(size_t i=0;i<8;++i)if(holdMask&(1u<<i)){wchar_t key[48];swprintf_s(key,L"%lsHoldMs",ButtonBindings::Keys[i]);if(GetPrivateProfileIntW(L"Buttons",key,9999,path.c_str())!=holds[i])return false;}
+        if(angle&&leftHanded>=0&&GetPrivateProfileIntW(L"VR",L"LeftHanded",2,path.c_str())!=unsigned(leftHanded))return false;
+        if(angle&&swapSticks>=0&&GetPrivateProfileIntW(L"VR",L"SwapSticks",2,path.c_str())!=unsigned(swapSticks))return false;
         if(angle&&response>=0&&GetPrivateProfileIntW(L"VR",L"MovementResponse",3,path.c_str())!=unsigned(response))return false;
         if(angle&&movement>=0&&unsigned(DirectionConfig::Read(path.c_str(),L"MovementDirection"))!=unsigned(movement))return false;
         if(angle&&dialogue>=0&&GetPrivateProfileIntW(L"VR",L"FixedDialogueCamera",2,path.c_str())!=unsigned(dialogue))return false;
@@ -100,14 +111,17 @@ public:
             // Coalesce rapid adjustments without holding the producer lock during IO.
             while(std::chrono::steady_clock::now()<saveAfter){auto deadline=saveAfter;wake.wait_until(lock,deadline);}
             auto file=path;auto a=angle;auto c=counts;auto seq=sequence;bool saveAngle=anglePending;auto snap=snapMode;auto movement=movementMode;auto response=responseMode;auto interaction=interactionMode;auto scale=pendingScale;auto dialogue=pendingDialogue;auto zoom=pendingZoom;auto handHud=pendingHandHud;auto throwAimMode=pendingThrowAim;auto marker=pendingThrowMarker;auto follow=pendingCoverFollow;auto scope=pendingScope;auto crosshair=pendingCrosshair;auto pointers=pendingHandPointers;auto quickBarMode=pendingQuickBar;auto brightnessWire=pendingBrightness;auto contrastWire=pendingContrast;auto reset=resetPending;resetPending=false;
+            auto leftHandedMode=pendingLeftHanded;auto swapMode=pendingSwapSticks;auto holds=pendingHolds;auto holdMask=pendingHoldMask;pendingHoldMask=0;
             auto layout=bindings;auto mask=bindingMask;bindingMask=0;
             pending=anglePending=false;lock.unlock();
-            bool ok=Save(file,saveAngle,a,c,snap,movement,layout,mask,response,interaction,reset,scale,dialogue,zoom,handHud,throwAimMode,marker,follow,scope,crosshair,quickBarMode,brightnessWire,contrastWire,pointers);
+            bool ok=Save(file,saveAngle,a,c,snap,movement,layout,mask,response,interaction,reset,scale,dialogue,zoom,handHud,throwAimMode,marker,follow,scope,crosshair,quickBarMode,brightnessWire,contrastWire,pointers,leftHandedMode,swapMode,holds,holdMask);
             if(saveAngle){if(!ok)failed=seq;completed=seq;}
         }}).detach();
     }
-    void Queue(const wchar_t* file,double count,uint32_t seq=0,float degrees=0,int snap=-1,int movement=-1,const ButtonBindings::Layout& layout={},uint32_t mask=0,int response=-1,int interaction=-1,bool reset=false,float worldScale=-1,int dialogue=-1,float scopeZoom=-1,int handHud=-1,int throwAim=-1,int throwMarker=-1,int coverFollow=-1,int immersiveScope=-1,int crosshair=-1,int quickBar=-1,uint32_t brightness=0,uint32_t contrast=0,int handPointers=-1) {
+    void Queue(const wchar_t* file,double count,uint32_t seq=0,float degrees=0,int snap=-1,int movement=-1,const ButtonBindings::Layout& layout={},uint32_t mask=0,int response=-1,int interaction=-1,bool reset=false,float worldScale=-1,int dialogue=-1,float scopeZoom=-1,int handHud=-1,int throwAim=-1,int throwMarker=-1,int coverFollow=-1,int immersiveScope=-1,int crosshair=-1,int quickBar=-1,uint32_t brightness=0,uint32_t contrast=0,int handPointers=-1,
+               int leftHanded=-1,int swapSticks=-1,const std::array<uint32_t,8>& holds={},uint32_t holdMask=0) {
         std::lock_guard lock(mutex);path=file;counts=count;pending=true;
+        if(seq){pendingLeftHanded=leftHanded;pendingSwapSticks=swapSticks;for(size_t i=0;i<8;++i)if(holdMask&(1u<<i))pendingHolds[i]=holds[i];pendingHoldMask|=holdMask;}
         if(seq){sequence=seq;angle=degrees;anglePending=true;snapMode=snap;movementMode=movement;responseMode=response;interactionMode=interaction;resetPending|=reset;pendingScale=worldScale;pendingDialogue=dialogue;pendingZoom=scopeZoom;pendingHandHud=handHud;pendingThrowAim=throwAim;pendingThrowMarker=throwMarker;pendingCoverFollow=coverFollow;pendingScope=immersiveScope;pendingCrosshair=crosshair;pendingHandPointers=handPointers;pendingQuickBar=quickBar;pendingBrightness=brightness;pendingContrast=contrast;
             for(size_t i=0;i<ButtonBindings::Count;++i)if(mask&(1u<<i))bindings[i]=layout[i];bindingMask|=mask;}
         saveAfter=std::chrono::steady_clock::now()+std::chrono::milliseconds(500);

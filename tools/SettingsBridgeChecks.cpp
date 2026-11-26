@@ -46,7 +46,7 @@ bool leftOwns{};bool LeftHandOwnsPrompt(){return leftOwns;}
 bool leftCarry{};bool LeftHandCarrying(){return leftCarry;}bool rightCarry{};bool RightHandCarrying(){return rightCarry;}
 bool leftNear{},leftOnWeapon{};bool LeftHandNearWeapon(){return leftNear;}void SetLeftHandOnWeapon(bool v){leftOnWeapon=v;}bool gameSprint{};void SetGameSprintHeld(bool v){gameSprint=v;}
 bool TwoHandSprintBlocked(){return gameSprint;}
-bool leftHanded{};bool LeftHanded(){return leftHanded;}
+bool leftHanded{};bool LeftHanded(){return leftHanded;}void SetLeftHanded(bool v){leftHanded=v;}
 bool DetonateReady(){return detonate;}void NoteDetonatePress(uint64_t ms){detonateHeld=ms;}
 unsigned CurrentScreenReasons(){return reasons;}
 bool SnapTurnView(float&){return reasons==0;}

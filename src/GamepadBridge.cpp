@@ -164,6 +164,9 @@ bool CarrySwap(bool wheel) {
     return false;
 }
 bool remapActive{};
+// [VR] SwapSticks=1 (default 0): the thumbsticks change roles (move with the right, turn
+// with the left). Only the stick axes swap; the stick clicks keep their own bindings.
+bool swapSticks{};
 // [ScreenButtons]: layout for everything that is not gameplay (menus, readers,
 // terminals, hacking, videos, game over, loading screens).
 uint32_t screenTarget[buttonCount]{};uint32_t screenLeftTrigger=TargetLT,screenRightTrigger=TargetRT;
@@ -204,6 +207,8 @@ void LoadButtons() {
     leftTriggerTarget=ParseTarget(L"LeftTrigger",TargetLT);
     rightTriggerTarget=ParseTarget(L"RightTrigger",TargetRT);
     if(leftTriggerTarget!=TargetLT || rightTriggerTarget!=TargetRT)remapActive=true;
+    swapSticks=GetPrivateProfileIntW(L"VR",L"SwapSticks",0,configPath)!=0;
+    if(swapSticks)InputLog("swap sticks on");
     for(size_t i=0;i<buttonCount;i++) {
         screenTarget[i]=ParseTarget(buttonSources[i].key,buttonSources[i].bit,L"ScreenButtons");
         if(screenTarget[i]!=buttonSources[i].bit)screenRemapActive=true;
@@ -428,6 +433,7 @@ bool Read(XINPUT_GAMEPAD& pad) {
     if(fresh && latest.gamepad.valid) {
         static_assert(sizeof(pad)==sizeof(Transport::Gamepad)-sizeof(uint32_t));
         std::memcpy(&pad,&latest.gamepad.buttons,sizeof(pad));connected=true;
+        if(swapSticks){std::swap(pad.sThumbLX,pad.sThumbRX);std::swap(pad.sThumbLY,pad.sThumbRY);}
         if(latest.controllerButtons==3)calibrationInputBlocked=true;
         if(calibrationInputBlocked){
             PublishInteraction(false,0);
@@ -531,6 +537,7 @@ void MenuTick(unsigned screenReasons) {
     m.brightness=ImageAdjust::Encode(imageBrightness);m.contrast=ImageAdjust::Encode(imageContrast);
     m.quickBar=EngineCamera::QuickBarSetting();m.crosshair=EngineCamera::CrosshairSetting();m.handPointers=EngineCamera::HandPointerSetting();m.coverFollow=EngineCamera::CoverFollowSetting();m.immersiveScope=EngineCamera::ImmersiveScopeSetting();
     m.response=EngineCamera::MovementResponse();
+    m.leftHanded=EngineCamera::LeftHanded()?2:1;m.swapSticks=swapSticks?2:1;
     m.interaction=EngineCamera::InteractionAim();
     m.worldScale=EngineCamera::ConfiguredWorldScale();m.activeWorldScale=EngineCamera::ActiveWorldScale();
     m.scopeZoom=EngineCamera::ScopeMagnification();
@@ -545,7 +552,8 @@ void MenuTick(unsigned screenReasons) {
     m.bindings[18]=stickUpTarget;m.bindings[19]=stickDownTarget;
     if(m.request!=m.acknowledged && Transport::Fresh(m.hostTick,now)) {
         m.acknowledged=m.request;
-        if(m.eligible&&m.blocked&&ImageAdjust::ValidWire(m.requestedBrightness)&&ImageAdjust::ValidWire(m.requestedContrast)&&m.requestedQuickBar<=2&&(!m.requestedQuickBar||m.quickBar)&&m.requestedCrosshair<=4&&m.requestedHandPointers<=4&&(!m.requestedHandPointers||m.handPointers)&&(m.requestedScopeZoom==0||(std::isfinite(m.requestedScopeZoom)&&m.requestedScopeZoom>=1&&m.requestedScopeZoom<=12))&&m.requestedDialogue<=1&&(!m.requestedDialogue||m.dialogueAvailable)&&m.requestedHandHud<=2&&m.requestedThrowAim<=4&&(!m.requestedThrowAim||m.throwAim)&&m.requestedThrowMarker<=2&&(!m.requestedThrowMarker||m.throwMarker)&&m.requestedCoverFollow<=2&&(!m.requestedCoverFollow||m.coverFollow)&&m.requestedImmersiveScope<=2&&(!m.requestedImmersiveScope||m.immersiveScope)&&std::isfinite(m.requestedWorldScale)&&m.requestedWorldScale>=10&&m.requestedWorldScale<=1000&&m.resetBindings<=1&&m.requestedInteraction<=3&&(m.requestedInteraction==1||m.requestedInteraction==2||m.requestedInteraction==m.interaction)&&m.requestedResponse<=2&&m.requestedSnap<=1&&m.requestedMovement<=3&&(m.requestedMovement!=0||m.movement==0)&&ButtonBindings::Valid(m.requestedBindings,m.bindingMask)&&SettingsMenu::ApplyAngle(m.requestedDegrees,snapDegrees,snapCounts)) {
+        bool holdsValid=!(m.holdMask>>8);for(size_t i=0;i<8;++i)if((m.holdMask&(1u<<i))&&m.requestedHoldMs[i]>5000)holdsValid=false;
+        if(m.eligible&&m.blocked&&holdsValid&&m.requestedLeftHanded<=2&&m.requestedSwapSticks<=2&&ImageAdjust::ValidWire(m.requestedBrightness)&&ImageAdjust::ValidWire(m.requestedContrast)&&m.requestedQuickBar<=2&&(!m.requestedQuickBar||m.quickBar)&&m.requestedCrosshair<=4&&m.requestedHandPointers<=4&&(!m.requestedHandPointers||m.handPointers)&&(m.requestedScopeZoom==0||(std::isfinite(m.requestedScopeZoom)&&m.requestedScopeZoom>=1&&m.requestedScopeZoom<=12))&&m.requestedDialogue<=1&&(!m.requestedDialogue||m.dialogueAvailable)&&m.requestedHandHud<=2&&m.requestedThrowAim<=4&&(!m.requestedThrowAim||m.throwAim)&&m.requestedThrowMarker<=2&&(!m.requestedThrowMarker||m.throwMarker)&&m.requestedCoverFollow<=2&&(!m.requestedCoverFollow||m.coverFollow)&&m.requestedImmersiveScope<=2&&(!m.requestedImmersiveScope||m.immersiveScope)&&std::isfinite(m.requestedWorldScale)&&m.requestedWorldScale>=10&&m.requestedWorldScale<=1000&&m.resetBindings<=1&&m.requestedInteraction<=3&&(m.requestedInteraction==1||m.requestedInteraction==2||m.requestedInteraction==m.interaction)&&m.requestedResponse<=2&&m.requestedSnap<=1&&m.requestedMovement<=3&&(m.requestedMovement!=0||m.movement==0)&&ButtonBindings::Valid(m.requestedBindings,m.bindingMask)&&SettingsMenu::ApplyAngle(m.requestedDegrees,snapDegrees,snapCounts)) {
             snapArmed=false;EngineCamera::CancelDirectSnap();
             EngineCamera::SetDialogueEnabled(m.requestedDialogue!=0);m.dialogue=m.requestedDialogue;
             if(m.requestedHandHud){EngineCamera::SetHandHudConfigured(m.requestedHandHud==2);m.handHud=m.requestedHandHud;}
@@ -565,6 +573,21 @@ void MenuTick(unsigned screenReasons) {
             if(m.requestedScopeZoom!=0){EngineCamera::SetScopeMagnification(m.requestedScopeZoom);m.scopeZoom=m.requestedScopeZoom;}
             EngineCamera::SetInteractionAim(m.requestedInteraction);m.interaction=m.requestedInteraction;
             if(m.resetBindings)for(auto& hold:buttonHoldMs)hold=0;
+            // Hands tab (transport 30). A hold delay turned on picks up its saved tap action.
+            for(size_t i=0;i<buttonCount;++i)if(m.holdMask&(1u<<i)) {
+                const bool was=buttonHoldMs[i]>0;buttonHoldMs[i]=int(m.requestedHoldMs[i]);m.holdMs[i]=m.requestedHoldMs[i];
+                if(!was&&buttonHoldMs[i]>0&&!(m.bindingMask&(1u<<(10+i)))){wchar_t key[48]{};swprintf_s(key,L"%lsTap",buttonSources[i].key);buttonTapTarget[i]=ParseTarget(key,0);m.bindings[10+i]=buttonTapTarget[i];}
+                buttonWasDown[i]=false;buttonTapUntil[i]=buttonDownAt[i]=0;throwHold[i].Reset();
+            }
+            if(m.holdMask){remapActive=leftTriggerTarget!=TargetLT||rightTriggerTarget!=TargetRT;for(size_t i=0;i<buttonCount;++i)if(buttonTarget[i]!=buttonSources[i].bit||buttonHoldMs[i]>0)remapActive=true;}
+            if(m.requestedSwapSticks){swapSticks=m.requestedSwapSticks==2;m.swapSticks=m.requestedSwapSticks;snapArmed=false;EngineCamera::CancelDirectSnap();}
+            if(m.requestedLeftHanded) {
+                EngineCamera::SetLeftHanded(m.requestedLeftHanded==2);m.leftHanded=m.requestedLeftHanded;
+                // Any grip press in progress is held back until released.
+                if(leftGripWeapon||leftGripInteract)leftGripWait=true;
+                if(supportGripWeapon)supportGripWait=true;
+                leftGripWeapon=leftGripInteract=supportGripWeapon=false;
+            }
             EngineCamera::SetMovementResponse(m.requestedResponse);m.response=m.requestedResponse;
             snapEnabled=m.requestedSnap!=0;EngineCamera::SetDirectSnapEnabled(snapEnabled);m.snapEnabled=snapEnabled;
             EngineCamera::SetMovementDirection(m.requestedMovement);m.movement=m.requestedMovement;
@@ -582,7 +605,9 @@ void MenuTick(unsigned screenReasons) {
             m.degrees=snapDegrees;m.result=1;
             SettingsWriter().Queue(configPath,snapCounts,m.request,snapDegrees,int(snapEnabled),int(m.movement),m.bindings,m.bindingMask,int(m.response),int(m.interaction),m.resetBindings!=0,m.worldScale,int(m.dialogue),m.requestedScopeZoom!=0?m.scopeZoom:-1.f,m.requestedHandHud?int(m.requestedHandHud==2):-1,
                 m.requestedThrowAim?int(m.requestedThrowAim)-1:-1,m.requestedThrowMarker?int(m.requestedThrowMarker==2):-1,
-                m.requestedCoverFollow?int(m.requestedCoverFollow==2):-1,m.requestedImmersiveScope?int(m.requestedImmersiveScope==2):-1,m.requestedCrosshair?int(m.requestedCrosshair):-1,m.requestedQuickBar?int(m.requestedQuickBar==2):-1,m.requestedBrightness,m.requestedContrast,m.requestedHandPointers?int(m.requestedHandPointers):-1);
+                m.requestedCoverFollow?int(m.requestedCoverFollow==2):-1,m.requestedImmersiveScope?int(m.requestedImmersiveScope==2):-1,m.requestedCrosshair?int(m.requestedCrosshair):-1,m.requestedQuickBar?int(m.requestedQuickBar==2):-1,m.requestedBrightness,m.requestedContrast,m.requestedHandPointers?int(m.requestedHandPointers):-1,
+                m.requestedLeftHanded?int(m.requestedLeftHanded==2):-1,m.requestedSwapSticks?int(m.requestedSwapSticks==2):-1,
+                [&]{std::array<uint32_t,8> h{};for(size_t i=0;i<8;++i)h[i]=m.requestedHoldMs[i];return h;}(),m.holdMask);
         } else m.result=2;
     }
     auto& writer=SettingsWriter();

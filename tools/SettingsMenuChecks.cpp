@@ -226,6 +226,32 @@ int wmain(int argc,wchar_t** argv) {
      click(SettingsMenu::Response);assert(ui.draftResponse==1);
      click(SettingsMenu::Response);click(SettingsMenu::Save);assert(ui.requestedResponse==2&&ui.saving);
     }
+    // Hands tab (transport 30): left-handed moves plain fire to the left trigger and back;
+    // swap sticks; hold delays page in 50 ms steps; an older DLL leaves the rows inert.
+    {SettingsMenu::State ui;Transport::MenuState gm{};gm.degrees=30;gm.worldScale=gm.activeWorldScale=300;
+     gm.bindings=ButtonBindings::Defaults;gm.leftHanded=1;gm.swapSticks=1;gm.holdMs[0]=300;
+     GamepadMapping::Input input{};input.active=true;
+     auto click=[&](SettingsMenu::Rect rect){input.rightTrigger=0;ui.Update(true,true,true,float(rect.x+30),float(rect.y+25),input,gm);input.rightTrigger=1;ui.Update(true,true,true,float(rect.x+30),float(rect.y+25),input,gm);};
+     static_assert(SettingsMenu::Tab(SettingsMenu::Tabs-1).x+SettingsMenu::Tab(SettingsMenu::Tabs-1).w<=SettingsMenu::Panel.x+SettingsMenu::Panel.w-40);
+     click(SettingsMenu::Entry);click(SettingsMenu::Tab(SettingsMenu::TabHands));assert(ui.tab==SettingsMenu::TabHands&&!ui.Dirty());
+     click(SettingsMenu::LeftHandedRow);assert(ui.draftLeftHanded&&ui.draftBindings[8]==SettingsMenu::TriggerRT&&ui.draftBindings[9]==SettingsMenu::TriggerLT&&ui.Dirty());
+     click(SettingsMenu::LeftHandedRow);assert(!ui.draftLeftHanded&&ui.draftBindings==gm.bindings&&!ui.Dirty()); // back exactly
+     click(SettingsMenu::LeftHandedRow);click(SettingsMenu::SwapSticksRow);assert(ui.draftSwapSticks);
+     click(SettingsMenu::HoldDelaysRow);assert(ui.holdPage);
+     click(SettingsMenu::HoldPlus(0));assert(ui.draftHold[0]==350);
+     click(SettingsMenu::HoldMinus(1));assert(ui.draftHold[1]==0);
+     click(SettingsMenu::HoldPlus(1));assert(ui.draftHold[1]==50);
+     for(int i=0;i<30;++i)click(SettingsMenu::HoldPlus(2));assert(ui.draftHold[2]==SettingsMenu::HoldMenuMax);
+     click(SettingsMenu::ListSave);
+     assert(ui.requestedLeftHanded==2&&ui.requestedSwapSticks==2&&ui.requestedHoldMask==0x7u&&ui.requestedHold[0]==350&&ui.requestedHold[1]==50&&ui.requestedHold[2]==1000);
+     assert((ui.requestedBindingMask&0x300u)==0x300u&&ui.requestedBindings[8]==SettingsMenu::TriggerRT);
+    }
+    {SettingsMenu::State ui;Transport::MenuState gm{};gm.degrees=30;gm.worldScale=gm.activeWorldScale=300;gm.bindings=ButtonBindings::Defaults; // older DLL
+     GamepadMapping::Input input{};input.active=true;
+     auto click=[&](SettingsMenu::Rect rect){input.rightTrigger=0;ui.Update(true,true,true,float(rect.x+30),float(rect.y+25),input,gm);input.rightTrigger=1;ui.Update(true,true,true,float(rect.x+30),float(rect.y+25),input,gm);};
+     click(SettingsMenu::Entry);click(SettingsMenu::Tab(SettingsMenu::TabHands));click(SettingsMenu::LeftHandedRow);click(SettingsMenu::SwapSticksRow);
+     assert(!ui.leftHandedAvailable&&!ui.draftLeftHanded&&!ui.draftSwapSticks&&!ui.Dirty());
+    }
     // Menu tabs (Nov 17): rows act only on their own tab; one Save covers all tabs.
     {SettingsMenu::State ui;Transport::MenuState gm{};gm.degrees=30;gm.worldScale=gm.activeWorldScale=300;
      gm.throwAim=3;gm.throwMarker=2;gm.coverFollow=2;gm.immersiveScope=1;gm.handHud=gm.activeHandHud=2;gm.scopeZoom=4;gm.dialogueAvailable=1;
@@ -618,6 +644,10 @@ int wmain(int argc,wchar_t** argv) {
     s.tab=SettingsMenu::TabImage;s.imageAvailable=true;s.draftBrightness=s.originalBrightness=15;s.draftContrast=s.originalContrast=-10;
     assert(draw.Save((out/L"menu-tab-image.bmp").c_str(),s,game));
     s.imageAvailable=false;s.draftBrightness=s.originalBrightness=0;s.draftContrast=s.originalContrast=0;
+    s.tab=SettingsMenu::TabHands;s.leftHandedAvailable=s.swapSticksAvailable=true;s.draftLeftHanded=true;s.draftBindings=ButtonBindings::Defaults;SettingsMenu::MoveFire(s.draftBindings,true);
+    assert(draw.Save((out/L"menu-tab-hands.bmp").c_str(),s,game));
+    s.holdPage=true;s.draftHold={300,0,0,0,150,0,0,0};assert(draw.Save((out/L"menu-hold-delays.bmp").c_str(),s,game));
+    s.holdPage=false;s.draftHold={};s.draftLeftHanded=false;s.leftHandedAvailable=s.swapSticksAvailable=false;s.draftBindings=s.originalBindings;
     s.tab=SettingsMenu::TabView;game.scopeZoom=4;s.draftZoom=s.originalZoom=3;assert(draw.Save((out/L"menu-scope-zoom.bmp").c_str(),s,game));
     pixels=static_cast<const uint32_t*>(draw.Draw(s,game));assert(pixels);
     assert(bright({870,SettingsMenu::MainRowY(2),310,52})>100&&bright(SettingsMenu::ZoomMinus)>5&&bright(SettingsMenu::ZoomPlus)>20); // "3x", "-", "+" (measured 299/14/52)

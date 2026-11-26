@@ -251,6 +251,8 @@ struct Bridge {
             m.requestedInteraction=menuUI.requestedInteraction;m.resetBindings=menuUI.requestedReset;
             m.request=menuUI.request;m.requestedDegrees=menuUI.requested;m.requestedSnap=menuUI.requestedSnap;m.requestedMovement=menuUI.requestedMovement;
             m.requestedBindings=menuUI.requestedBindings;m.bindingMask=menuUI.requestedBindingMask;
+            m.requestedLeftHanded=menuUI.requestedLeftHanded;m.requestedSwapSticks=menuUI.requestedSwapSticks;
+            for(size_t i=0;i<8;++i)m.requestedHoldMs[i]=menuUI.requestedHold[i];m.holdMask=menuUI.requestedHoldMask;
             m.pointerX=menuUI.x/SettingsMenu::Width;m.pointerY=menuUI.y/SettingsMenu::Height;
             m.pointerActive=menuUI.nativePointer;m.pointerDown=menuUI.nativeDown;
             Transport::UnlockMenu(trackingChannel);

@@ -63,7 +63,7 @@ public:
     bool srgb=true; // set by NativeBridge from the swapchain format
     std::vector<uint32_t> plate; // closed shortcut before its label, Entry+-2
     const void* Draw(const SettingsMenu::State& s,const Transport::MenuState& live) {
-        auto game=live;if(s.draftReset)for(auto& hold:game.holdMs)hold=0;
+        auto game=live;if(s.open)for(size_t i=0;i<8;++i)game.holdMs[i]=s.draftHold[i];
         if(!Init())return nullptr;
         drawError=false;
         // Complete any pending GDI work before direct writes to the DIB.
@@ -116,6 +116,25 @@ public:
             if(s.Dirty())Button(SettingsMenu::Discard,s.committed?L"BACK":L"DISCARD & BACK",!s.saving&&hovered(SettingsMenu::Discard));
             Button(SettingsMenu::Save,s.saving?L"SAVING...":s.Dirty()?L"SAVE & BACK":L"NO CHANGES",!s.saving&&s.Dirty()&&hovered(SettingsMenu::Save));
         }
+        else if(s.holdPage) {
+            Text(L"HOLD DELAYS",240,105,1120,55,true,true);
+            Text(L"BUTTON",240,170,470,40,true,true);Text(L"HOLD BEFORE IT ACTS",760,170,530,40,true);
+            for(int i=0;i<SettingsMenu::HoldRows;++i){
+                const int y=220+i*57;
+                Text(ButtonBindings::Labels[i],240,y,470,49,false,true);
+                wchar_t value[32];const auto v=s.draftHold[size_t(i)];
+                if(v)swprintf_s(value,L"%u ms",v);else wcscpy_s(value,L"OFF");
+                Text(value,870,y,310,49,true);
+                Button(SettingsMenu::HoldMinus(i),L"-",!s.saving&&v>0&&hovered(SettingsMenu::HoldMinus(i)));
+                Button(SettingsMenu::HoldPlus(i),L"+",!s.saving&&v<uint32_t(SettingsMenu::HoldMenuMax)&&hovered(SettingsMenu::HoldPlus(i)));
+            }
+            const wchar_t* status=s.saving?L"Saving...":s.committed&&game.result==3?L"Applied; save failed. Select Save to retry.":s.committed&&game.result==2?L"Change refused. Select Save to retry.":
+                L"With a delay, a quick tap can do something else: set it in Button Remapping.";
+            Text(status,220,685,1160,40);
+            Button(SettingsMenu::ListBack,L"SETTINGS",hovered(SettingsMenu::ListBack));
+            Button(SettingsMenu::ListDiscard,s.committed?L"BACK":L"DISCARD & BACK",!s.saving&&hovered(SettingsMenu::ListDiscard));
+            Button(SettingsMenu::ListSave,s.saving?L"SAVING...":s.Dirty()?L"SAVE & BACK":L"NO CHANGES",!s.saving&&s.Dirty()&&hovered(SettingsMenu::ListSave));
+        }
         else if(s.remapping) {
             Text(L"GAMEPLAY BUTTON MAPPING",240,105,770,55,true);
             Button(SettingsMenu::ResetBindings,L"RESTORE DEFAULTS",!s.saving&&hovered(SettingsMenu::ResetBindings));
@@ -165,7 +184,7 @@ public:
             using SettingsMenu::MainRowY;
             Text(heading,240,60,1120,55,true,true);
             // Tabs: the shown one is drawn lit, with a gold bar under it.
-            static const wchar_t* tabNames[SettingsMenu::Tabs]{L"MOVEMENT",L"CONTROLS",L"VIEW",L"IMAGE"};
+            static const wchar_t* tabNames[SettingsMenu::Tabs]{L"MOVEMENT",L"CONTROLS",L"VIEW",L"IMAGE",L"HANDS"};
             for(int i=0;i<SettingsMenu::Tabs;++i){
                 const auto r=SettingsMenu::Tab(i);
                 Button(r,tabNames[i],s.tab==i||(!s.saving&&hovered(r)));
@@ -200,6 +219,17 @@ public:
                 row(SettingsMenu::ThrowAimRow,s.originalThrowAim!=0,s.draftThrowAim==2?L"HEAD":s.draftThrowAim==3?L"RIGHT HAND":s.draftThrowAim==4?L"LEFT HAND":L"DEFAULT");
                 row(SettingsMenu::ThrowMarkerRow,s.throwMarkerAvailable,s.draftThrowMarker?L"ON":L"OFF");
                 Button(SettingsMenu::Remap,L"BUTTON REMAPPING",!s.saving&&hovered(SettingsMenu::Remap));
+            }else if(s.tab==SettingsMenu::TabHands){
+                label(0,L"Left-handed");
+                label(1,L"Swap sticks");
+                label(2,L"Hold delays");
+                row(SettingsMenu::LeftHandedRow,s.leftHandedAvailable,s.draftLeftHanded?L"ON":L"OFF");
+                row(SettingsMenu::SwapSticksRow,s.swapSticksAvailable,s.draftSwapSticks?L"ON":L"OFF");
+                Button(SettingsMenu::HoldDelaysRow,L"ADJUST",!s.saving&&hovered(SettingsMenu::HoldDelaysRow));
+                Text(s.draftBindings[9]==SettingsMenu::TriggerLT&&s.draftBindings[8]==SettingsMenu::TriggerRT?L"Fire: left trigger. Aim: right trigger.":
+                     s.draftBindings[8]==SettingsMenu::TriggerLT&&s.draftBindings[9]==SettingsMenu::TriggerRT?L"Fire: right trigger. Aim: left trigger.":L"Triggers: as set in Button Remapping.",
+                     240,MainRowY(3),1120,52);
+                Text(L"Swap sticks: move with the right stick, turn with the left.",240,MainRowY(4),1120,52);
             }else if(s.tab==SettingsMenu::TabImage){
                 label(0,L"Brightness");
                 label(1,L"Contrast");

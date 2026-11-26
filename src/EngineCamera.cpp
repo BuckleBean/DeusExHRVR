@@ -7588,6 +7588,13 @@ bool RightHandCarrying(){return leftCarryThrow&&grabActive.load()&&!grabLeft.loa
 bool LeftHandNearWeapon(){const auto tick=leftNearWeaponTick.load(std::memory_order_relaxed);const auto now=GetTickCount64();return twoHandedWeapons&&!SprintBlocksTwoHand()&&tick&&now>=tick&&now-tick<250;}
 void SetLeftHandOnWeapon(bool on){leftOnWeapon=on;}
 bool LeftHanded(){return leftHanded;}
+void SetLeftHanded(bool on){
+    if(on==leftHanded)return;
+    leftHanded=on;ModelHandAlignment::swapHands=on;ModelWristHud::swapWrists=on;
+    leftOnWeapon=false;++twoHandCancelGeneration;
+    PublishTwoHandHud(0,nullptr);PublishTwoHandHud(1,nullptr);
+    FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")){fprintf(f,"leftHanded set=%d (menu)\n",int(on));fclose(f);}
+}
 void SetGameSprintHeld(bool on){const bool was=gameSprintHeld.exchange(on);if(on&&!was)CancelTwoHandForSprint();}
 bool TwoHandSprintBlocked(){return twoHandedWeapons&&SprintBlocksTwoHand();}
 bool LeftHandOwnsPrompt(){const auto tick=leftPromptTick.load(std::memory_order_relaxed);const auto now=GetTickCount64();return forgivingAimEnabled&&leftHandInteract&&tick&&now>=tick&&now-tick<250;}

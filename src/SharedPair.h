@@ -5,7 +5,7 @@
 #include <cstddef>
 #include "ButtonBindings.h"
 namespace Transport {
-inline constexpr uint32_t Magic=0x52485844, Version=29;
+inline constexpr uint32_t Magic=0x52485844, Version=30;
 struct alignas(8) MenuState {
     uint64_t gameTick,hostTick;
     uint32_t eligible,blocked,snapEnabled,request;
@@ -41,8 +41,12 @@ struct alignas(8) MenuState {
     uint32_t brightness,contrast,requestedBrightness,requestedContrast;
     // Transport 29: HandPointer mode. 0 unavailable or keep.
     uint32_t handPointers,requestedHandPointers;
+    // Transport 30: Hands tab. leftHanded / swapSticks: 0 unavailable, 1 off, 2 on;
+    // requests 0 = keep. requestedHoldMs[i] (0-5000 ms) applies where holdMask bit i is set.
+    uint32_t leftHanded,requestedLeftHanded,swapSticks,requestedSwapSticks;
+    uint32_t requestedHoldMs[8],holdMask,reserved30;
 };
-static_assert(sizeof(MenuState)==456 && offsetof(MenuState,throwAim)==388);
+static_assert(sizeof(MenuState)==512 && offsetof(MenuState,throwAim)==388 && offsetof(MenuState,leftHanded)==452);
 struct Quaternion {float x,y,z,w;};
 struct Vector {float x,y,z;};
 struct Pose {Quaternion orientation;Vector position;};
@@ -96,7 +100,7 @@ struct alignas(8) Header {
     uint32_t menuPadding;
     MenuState menu;
 };
-static_assert(sizeof(Header)==1200);
+static_assert(sizeof(Header)==1256);
 static_assert(offsetof(Header,tracking)==72 && offsetof(Header,rendered)==360);
 inline bool Compatible(const Header* h,DWORD pid) {
     return h && h->magic==Magic && h->version==Version && h->pid==pid;

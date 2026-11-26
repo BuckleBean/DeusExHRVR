@@ -296,6 +296,10 @@ TwoHandedWeaponsLog=0
 ; Interact and sprint). The wrist HUD pieces change wrists. For firing with the left
 ; trigger, add to [Buttons]: LeftTrigger=RT and RightTrigger=LT. 0 (default) turns it off.
 LeftHanded=0
+; Swap the thumbsticks' roles: move with the right stick, turn with the left. Only the
+; stick axes swap; the stick clicks keep their bindings. Also in VR Settings > Hands.
+; 0 (default) turns it off.
+SwapSticks=0
 ; Diagnostic log DeusExHRVR-left-handed.log (mirrored/failed hand poses and why, every 2 s, at
 ; most 400 lines). 0 (default) turns it off.
 LeftHandedLog=0
