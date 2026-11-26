@@ -142,6 +142,10 @@ ControllerHandsNeutralWrist=1
 ; a fully holstered weapon state. Enabled by default; set 0 to turn it off. Restart
 ; after changing. No calibration or pose capture.
 ControllerHandsInteractCurl=1
+; Hands before Jensen has any weapon (the return to Sarif Industries, until Pritchard).
+; Without a weapon the hands follow the controllers anyway. 0 restores the old behaviour:
+; no weapon, no hands (the game's own arms at his sides). Default 1. Restart after changing.
+ControllerHandsUnarmed=1
 ; Fingers on both hands follow how far you squeeze the grip. 0 returns to the
 ; earlier gentle right-hand curl on Interact. Restart after editing.
 HandGripClose=1

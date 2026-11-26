@@ -385,6 +385,12 @@ std::atomic<uint64_t> handDriveRejected{};
 // off until it has tests that do not depend on them.
 bool controllerHandsPose=false;
 bool controllerHandsInteractCurl=false;
+// [VR] ControllerHandsUnarmed (default 1): draw the hands from the controllers when Jensen
+// has no weapon at all (the return to Sarif Industries, "6 months later", before Pritchard).
+// Jensen's body is found through the player entity instead of the weapon's owner. 0 restores
+// the earlier behaviour: no weapon, no hands (the game's own arms at his sides).
+bool controllerHandsUnarmed=true;
+std::atomic<uint64_t> handsUnarmedFrames{};
 // [VR] CeilingGuard=0 turns it off; CeilingGuardCm is the gap kept below a ceiling;
 // CeilingGuardLookAhead=0 stops it checking just ahead of the player.
 std::atomic<bool> ceilingGuardOn{true},ceilingLookAhead{true},ceilingCrouched{};float ceilingMarginMetres=.20f;
@@ -1608,6 +1614,10 @@ std::atomic<bool> wheelOpen{};
 // hand: the offset is a property of the weapon, not of where Mark's hand is.
 struct WeaponPose {void* weapon{};void* instance{};CameraMath::Matrix muzzle;uint64_t tick{};bool active{};void* owner{};CameraMath::Matrix controllerRaw;bool nativeRequested{},nativeValid{},nativeCover{};CameraMath::Matrix gripTarget{},mirrorTarget{},nativeSkin{},delta{};uint64_t equippedTick{};uint32_t buttons{};Transport::Gamepad diagnosticPad{};float scale=LiveWorldScale::Default;void* holder{};};
 WeaponPose weaponPose;
+// The pose the hands use when no weapon pose exists this frame (ControllerHandsUnarmed).
+// Read only by the hand drawing (ActorDrawHook, TryModelHand); the gun, its shots and
+// its aim never see it. weapon and instance are null; owner is the player entity.
+WeaponPose unarmedHandPose;
 void* diagnosticWeapon{};void* diagnosticInstance{};uint64_t diagnosticEquippedTick{};
 std::atomic<uint64_t> controllerDraws{},controllerMuzzles{};
 std::atomic<uint64_t> controllerAimQueries{},controllerHiddenArms{},coverPointingQueries{};
@@ -3708,10 +3718,11 @@ float __fastcall InputAxisHook(void* self,void*,uint32_t index,bool requireActiv
     return self==strafe?axes.strafe:axes.walk;
 }
 bool ResolveNativePair(WeaponPose& pose,MuzzleQueryDiagnostic::Site site=MuzzleQueryDiagnostic::Camera,void* subject=nullptr);
-WeaponPose ReadWeaponPose(bool resolve=true,MuzzleQueryDiagnostic::Site site=MuzzleQueryDiagnostic::Camera,void* subject=nullptr) {
+WeaponPose ReadWeaponPose(bool resolve=true,MuzzleQueryDiagnostic::Site site=MuzzleQueryDiagnostic::Camera,void* subject=nullptr,bool hands=false) {
     WeaponPose pose;
     {
         std::lock_guard lock(stateMutex);pose=weaponPose;
+        if(hands && !pose.weapon && unarmedHandPose.active)pose=unarmedHandPose;
         auto now=GetTickCount64();
         pose.active=pose.active && (!drawing.active || drawing.scale==pose.scale) && current.active && requested && !screenReasons && now>=pose.tick && now-pose.tick<250;
     }
@@ -4356,7 +4367,7 @@ void __fastcall ActorDrawHook(void* self,void*,void* matrix,void* args) {
            *reinterpret_cast<void**>(static_cast<unsigned char*>(self)+8)==current.playerInstance)return;
     }
     if(experimentalMotionControls && (controllerHideArms || controllerHands)) {
-        auto pose=ReadWeaponPose(false);
+        auto pose=ReadWeaponPose(false,MuzzleQueryDiagnostic::Camera,nullptr,true);
         const float worldScale=pose.scale; // one scale for the entire actor draw
         // A holstered/missing muzzle must not hide the unarmed hand.
         // Suppress only the equipped weapon owner's actor mesh in tracked
@@ -4624,7 +4635,7 @@ bool TryModelHand(void* model,unsigned char* data,CameraMath::Matrix* palette,ui
     CameraMath::Matrix frame{};ModelHandAlignment::V pivot{};
     InteractionCurl::Definition curl;
     if(!NativeModelFrame(model,plan,frame,pivot,controllerHandsInteractCurl?&curl:nullptr)){if(DiagnosticOptions::hands)++modelHandBadModel;return false;}
-    auto pose=ReadWeaponPose(false);
+    auto pose=ReadWeaponPose(false,MuzzleQueryDiagnostic::Camera,nullptr,true);
     bool capture=HandWeaponMotionDiagnostic::enabled && HandWeaponMotionDiagnostic::Wanted(0,frameId.load());
     HandWeaponMotionDiagnostic::Sample motion{};
     if(capture){MotionContext(motion,pose,0);motion.count=2;motion.before[0]=palette[129];motion.before[1]=palette[130];}
@@ -5827,7 +5838,7 @@ void __fastcall UpdateHook(void* self,void*) {
         current.nativeHeading=false;
         current.leveled=false;
         current.inputIndex=~0u;
-        weaponPose={};
+        weaponPose={};unarmedHandPose={};
         auto manager=static_cast<unsigned char*>(self);
         auto active=*reinterpret_cast<unsigned char**>(manager+0x30);
         const bool nativeScope=ScreenMode::Scope(base,manager);
@@ -6471,6 +6482,16 @@ void __fastcall UpdateHook(void* self,void*) {
                             }
                         }
                     }
+                }
+                // No weapon pose this frame (no weapon at all, or not a gun): the hands
+                // still follow the controllers. Jensen's body is the player entity,
+                // the same match the crosshair and takedown code already rely on.
+                if(controllerHands && controllerHandsUnarmed && !weaponPose.weapon && entity) {
+                    auto raw=CameraMath::ControllerMuzzle(renderBase,reference,GunController(t).aim,worldScale,controllerMuzzleForward);
+                    unarmedHandPose={nullptr,nullptr,raw,t.tick,true,entity,raw};
+                    unarmedHandPose.scale=worldScale;unarmedHandPose.holder=holder;
+                    unarmedHandPose.buttons=t.controllerButtons;unarmedHandPose.diagnosticPad=t.gamepad;
+                    if(DiagnosticOptions::runtime)++handsUnarmedFrames;
                 }
             }
             current.controllerBase=renderBase;
@@ -7228,6 +7249,7 @@ void Install() {
     controllerHandsLeft=GetPrivateProfileIntW(L"VR",L"ControllerHandsLeft",1,config)!=0;
     controllerHandsNeutralWrist=GetPrivateProfileIntW(L"VR",L"ControllerHandsNeutralWrist",1,config)!=0;
     controllerHandsInteractCurl=GetPrivateProfileIntW(L"VR",L"ControllerHandsInteractCurl",1,config)!=0;
+    controllerHandsUnarmed=GetPrivateProfileIntW(L"VR",L"ControllerHandsUnarmed",1,config)!=0;
     handGripClose=GetPrivateProfileIntW(L"VR",L"HandGripClose",1,config)!=0;
     {wchar_t crosshairText[32]{};GetPrivateProfileStringW(L"VR",L"Crosshair",L"ThirdPerson",crosshairText,32,config);crosshairMode=CoverCrosshair::Parse(crosshairText);}
     {wchar_t pointerText[32]{};GetPrivateProfileStringW(L"VR",L"HandPointers",L"Off",pointerText,32,config);handPointerMode=HandPointer::Parse(pointerText);}
@@ -7486,9 +7508,10 @@ Transport::RenderInfo OnPresent(uint64_t frame,bool capture) {
                 DirectionConfig::Name(interactionAim),DirectionConfig::Name(movementDirection),
                 interactionQueries.load(),movementAxes.load(),motionControls,current.inputIndex,walkAction.load(),strafeAction.load(),
                 lastMoveInput[0],lastMoveInput[1],lastMoveOutput[0],lastMoveOutput[1],lastMoveHeading);
-            fprintf(motion,"controllerHands enabled=%d mode=%d bone=%d bone2=%d draws=%llu skeletons=%llu miss=%llu bones=%u\n",
+            fprintf(motion,"controllerHands enabled=%d mode=%d bone=%d bone2=%d draws=%llu skeletons=%llu miss=%llu bones=%u unarmed=%d unarmedFrames=%llu\n",
                 int(controllerHands),controllerHandsMode,controllerHandBone,controllerHandBone2,
-                handDraws.load(),handSkeletons.load(),handSkeletonMiss.load(),handBoneCount.load());
+                handDraws.load(),handSkeletons.load(),handSkeletonMiss.load(),handBoneCount.load(),
+                int(controllerHandsUnarmed),handsUnarmedFrames.load());
             fprintf(motion,"controllerHandsDrive calibrated=%d bindBones=%u drive=%d trim=%g/%g/%g armed=%d holdUnits=%.1f\n",
                 int(handCalibrated),handBindCount,controllerHandsDriveBone,
                 handTrim[0],handTrim[1],handTrim[2],handCalibrateArmed.load(),handCalibrateQuality);

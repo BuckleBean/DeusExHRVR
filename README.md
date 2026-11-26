@@ -305,6 +305,7 @@ These are new in 0.8.0 and on by default unless noted. Each has an off switch in
 - **Crosshair** (VR Settings > View > Crosshair: Off, 1st person, 3rd person or Both; `Crosshair=ThirdPerson` by default).
 - **Quickbar** (VR Settings > Controls > Quickbar). Auto-hide or always shown; the tilde key also changes it.
 - **Brightness and contrast** (VR Settings > Image, or `Brightness` and `Contrast`, -50 to 50). Changes preview while the menu is open. They affect the game image and its HUD, not the VR menu.
+- **Hands before Jensen has a weapon** (`ControllerHandsUnarmed=1`, default). In the "6 months later" return to Sarif Industries Jensen carries no weapon, and the hands used to stay at his sides with the wrist HUD on an invisible hand. They now follow the controllers there too. `ControllerHandsUnarmed=0` restores the old behaviour.
 - **HUD size** (VR Settings > Image > HUD size, or `HudSize`, 50-100 percent; default 100, the original size). Shrinks the HUD that stays in front of you (interaction prompts, objectives and messages, or the whole HUD with HUD set to DEFAULT) toward the middle of your view. The wrist pieces are not affected, and the scope, in-game menu and wheel stay full size.
 - **Ceiling guard** (`CeilingGuard=1`). While crouched, the view eases down to stay below low ceilings such as vents. `CeilingGuardCm` is the gap (20) and `CeilingGuardLookAhead=0` stops it checking just ahead of you.
 
