@@ -277,6 +277,10 @@ CoverCameraFollow=1
 ; Off also hides the game's crosshair in cover, where it would mark the camera's
 ; aim rather than the controller's. VR Settings > View > Crosshair; applies when saved.
 Crosshair=ThirdPerson
+; When the Crosshair setting hides the game's crosshair, still show the scope reticles
+; (and the rocket launcher's), as the game does with its own Show Reticle turned off.
+; 0 hides those too, as v0.8.1 did. Default 1. Restart after changing.
+KeepScopeReticle=1
 ; Keeps the view below low ceilings such as vents while crouched, including when your
 ; real head is higher than when you recentered. 0 turns it off. CeilingGuardCm is the
 ; gap to keep (3 to 40). CeilingGuardLookAhead=1 starts easing down just before you

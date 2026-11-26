@@ -4312,17 +4312,28 @@ void UpdateCeilingRoom() {
 // state gets the game's own answer.
 using ReticleType=uint32_t(__thiscall*)(void*,void*);
 ReticleType originalReticleType{};
+// [VR] KeepScopeReticle (default 1): see CoverCrosshair::KeptWithReticleOff. 0 hides the
+// scope reticles too when the Crosshair setting hides the game's crosshair (v0.8.1).
+bool keepScopeReticle=true;
 uint32_t __fastcall ReticleTypeHook(void* self,void*,void* descriptor) {
-    bool hide{};
+    bool hide{},keepScope{};
     {
         std::lock_guard lock(stateMutex);
         // Ours replaces the game's whenever it is showing. In cover the game's would mark
         // the camera's aim, not the controller's, so "off" there hides it too.
         const auto mode=crosshairMode.load();
         const bool ours=current.coverTargetValid && (current.tracking.reserved&1);
-        // Off means no crosshair at all, including the game's in first person.
-        hide=NativeCoverActiveLocked()?(!CoverCrosshair::ShowsThird(mode)||ours):
-            (mode==CoverCrosshair::Off||(CoverCrosshair::ShowsFirst(mode)&&ours&&FirstPersonAimLocked()));
+        // Off means no ordinary crosshair, including the game's in first person.
+        const bool cover=NativeCoverActiveLocked();
+        const bool bySetting=cover?!CoverCrosshair::ShowsThird(mode):mode==CoverCrosshair::Off;
+        const bool byOurs=cover?ours:(CoverCrosshair::ShowsFirst(mode)&&ours&&FirstPersonAimLocked());
+        hide=bySetting||byOurs;
+        // Hidden only by the setting: keep what the game keeps with its own reticle off.
+        keepScope=keepScopeReticle&&bySetting&&!byOurs;
+    }
+    if(hide&&keepScope) {
+        const uint32_t type=originalReticleType(self,descriptor);
+        if(CoverCrosshair::KeptWithReticleOff(type))return type;
     }
     static int last=-1;
     if(last!=int(hide)) {
@@ -7252,6 +7263,7 @@ void Install() {
     controllerHandsUnarmed=GetPrivateProfileIntW(L"VR",L"ControllerHandsUnarmed",1,config)!=0;
     handGripClose=GetPrivateProfileIntW(L"VR",L"HandGripClose",1,config)!=0;
     {wchar_t crosshairText[32]{};GetPrivateProfileStringW(L"VR",L"Crosshair",L"ThirdPerson",crosshairText,32,config);crosshairMode=CoverCrosshair::Parse(crosshairText);}
+    keepScopeReticle=GetPrivateProfileIntW(L"VR",L"KeepScopeReticle",1,config)!=0;
     {wchar_t pointerText[32]{};GetPrivateProfileStringW(L"VR",L"HandPointers",L"Off",pointerText,32,config);handPointerMode=HandPointer::Parse(pointerText);}
     ceilingGuardOn=GetPrivateProfileIntW(L"VR",L"CeilingGuard",1,config)!=0;
     ceilingLookAhead=GetPrivateProfileIntW(L"VR",L"CeilingGuardLookAhead",1,config)!=0;

@@ -10,6 +10,11 @@ inline constexpr uint32_t Off=1,First=2,Third=3,Both=4;
 inline constexpr bool ShowsFirst(uint32_t m){return m==First||m==Both;}
 inline constexpr bool ShowsThird(uint32_t m){return m==Third||m==Both;}
 inline constexpr uint32_t Next(uint32_t m){return m==Off?First:m==First?Third:m==Third?Both:Off;}
+// The game's own "Show Reticle" off (0x804A30) still keeps these reticle types: 5 default
+// scope, 6 crossbow scope, 9 scope with distance metering, 10 rocket launcher (reticle
+// movie 87499). [VR] KeepScopeReticle=1 keeps them when the VR Crosshair setting hides
+// the game's crosshair, as the game would.
+inline constexpr bool KeptWithReticleOff(uint32_t type){return type==5||type==6||type==9||type==10;}
 inline uint32_t Parse(const wchar_t* v) {
     if(!_wcsicmp(v,L"Off")||!_wcsicmp(v,L"0"))return Off;
     if(!_wcsicmp(v,L"FirstPerson"))return First;

@@ -12,5 +12,7 @@ int main() {
     Check(round,"every setting survives being saved and read back");
     Check(Parse(L"")==Third&&Parse(L"nonsense")==Third,"a missing or unknown setting keeps today's behaviour");
     Check(Parse(L"off")==Off&&Parse(L"0")==Off&&Parse(L"BOTH")==Both,"the INI value ignores upper and lower case");
+    {bool kept=true;for(uint32_t t=0;t<16;t++)kept=kept&&KeptWithReticleOff(t)==(t==5||t==6||t==9||t==10);
+     Check(kept,"with the crosshair off, exactly the game's own kept reticles stay: scope, crossbow scope, metering scope, rocket launcher");}
     return failures?1:0;
 }
