@@ -28,7 +28,11 @@ inline Vector Cross(Vector a,Vector b){return {a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a
 //   cuff like health and energy, at the same size per HUD unit.
 enum class Piece { HealthEnergy, Ammo, Consumable, Radar, AugCross, MarkTrack };
 inline bool OnCuff(Piece p){return p==Piece::HealthEnergy || p==Piece::AugCross || p==Piece::MarkTrack;}
-inline bool LeftHand(Piece p){return p==Piece::HealthEnergy || p==Piece::Radar || p==Piece::MarkTrack;}
+// Left-handed mode ([VR] LeftHanded=1): every piece moves to the other wrist, so ammo,
+// consumable and the aug cross sit on the gun hand (the left) and health, energy, radar
+// and Mark & Track on the right. Each wrist's own (mirrored) geometry is used.
+inline bool swapWrists=false;
+inline bool LeftHand(Piece p){return (p==Piece::HealthEnergy || p==Piece::Radar || p==Piece::MarkTrack)!=swapWrists;}
 
 // The right wrist's open end, measured from the hand mesh
 // (2026-11-13-hand-hud-fit-candidate/wrist-mesh.npz). Its rim (the outermost

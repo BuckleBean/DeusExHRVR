@@ -283,7 +283,7 @@ TwoHandedWeaponsLog=0
 ; hand holds at the left controller, posed as the mirror image of his right hand, and his
 ; right hand rests at the right controller. The gun is held as the mirror image of a
 ; right-handed hold. Two-handed weapons work mirrored: the right grip takes the weapon (the left grip keeps
-; Interact and sprint). Not yet mirrored: the wrist HUD sides. For firing with the left
+; Interact and sprint). The wrist HUD pieces change wrists. For firing with the left
 ; trigger, add to [Buttons]: LeftTrigger=RT and RightTrigger=LT. 0 (default) turns it off.
 LeftHanded=0
 ; Diagnostic log DeusExHRVR-left-handed.log (mirrored/failed hand poses and why, every 2 s, at

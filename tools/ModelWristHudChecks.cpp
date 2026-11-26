@@ -47,6 +47,17 @@ int main(){
         Check(Dot(hc,health.back)*Dot(gc,aug.back)>0 && Dot(hc,health.back)*Dot(mc,mt.back)>0,"neither new band is mirrored");
         Check(std::abs(aug.radius-health.radius)<1e-9f && std::abs(aug.metresX-health.metresX)<1e-9f && std::abs(mt.metresY-health.metresY)<1e-9f,
               "same cuff radius and size per HUD unit as health and energy");
+        // Left-handed mode: every piece on the other wrist, with that wrist's geometry.
+        ModelWristHud::swapWrists=true;
+        CameraMath::BandFrame laug,lhealth,lmt,lammo;
+        Check(ModelWristHud::Frame(t,0,grip,Piece::AugCross,300,0,0,laug)&&ModelWristHud::Frame(t,0,grip,Piece::HealthEnergy,300,0,0,lhealth)&&
+              ModelWristHud::Frame(t,0,grip,Piece::MarkTrack,300,0,0,lmt),"left-handed: cuff frames");
+        Check(std::abs(laug.axis.x-health.axis.x)<1e-7f&&std::abs(lhealth.axis.x-aug.axis.x)<1e-7f&&std::abs(lmt.axis.x-aug.axis.x)<1e-7f,
+              "left-handed: aug cross on the left cuff, health and Mark & Track on the right");
+        Check(laug.back.x<-.99f&&lhealth.back.x>.99f&&Dot(lhealth.back,lmt.back)<-.999f,"left-handed: still on the back of each hand, Mark & Track on the palm");
+        const auto lc=Cross(laug.across,laug.up),lh=Cross(lhealth.across,lhealth.up);
+        Check(Dot(lc,laug.back)*Dot(hc,health.back)>0&&Dot(lh,lhealth.back)*Dot(hc,health.back)>0,"left-handed: no band is mirrored");
+        ModelWristHud::swapWrists=false;
     }
 
     // The wrist ends (Mark, November 15). Pose: either hand pointing forward

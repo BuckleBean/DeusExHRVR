@@ -2734,6 +2734,7 @@ void InstallInteractionProbes(){
     leftHandedScopeMirror=GetPrivateProfileIntW(L"VR",L"LeftHandedScopeMirror",1,diagConfig)!=0;
     if(leftHanded) {
         ModelHandAlignment::swapHands=true; // two-handed weapons work in its mirror world
+        ModelWristHud::swapWrists=true;     // the wrist HUD pieces change wrists
         FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")){fprintf(f,"leftHanded active=1 method=poseMirror\n");fclose(f);}
     }
     float forgivingDegrees=15.f;
@@ -6676,7 +6677,10 @@ void __fastcall MatricesHook(void* self,void*) {
         const auto& t=uiSnapshot.tracking;
         // 3 ammo, 4 consumable, 6 aug cross: right wrist; 1 health, 2 energy,
         // 5 radar, 7 Mark & Track: left.
-        const bool right=uiHandTag==3 || uiHandTag==4 || uiHandTag==6;
+        // pieceRight: the piece's own wrist in right-handed play (which piece it is);
+        // right: the wrist it is drawn on, the other one in left-handed mode.
+        const bool pieceRight=uiHandTag==3 || uiHandTag==4 || uiHandTag==6;
+        const bool right=pieceRight!=leftHanded;
         const bool radar=uiHandTag==5;
         const auto& grip=right?t.rightGrip:t.leftGrip;
         const auto& controller=right?t.rightController:t.leftController;
@@ -6698,9 +6702,9 @@ void __fastcall MatricesHook(void* self,void*) {
             // ratio as the game's shader computes it.
             // Measured middles: 0 health/energy, 1 ammo, 2 radar, 3 consumable,
             // 4 aug cross, 5 Mark & Track.
-            const int band=uiHandTag==6?4:uiHandTag==7?5:radar?2:right?(uiHandTag==4?3:1):0;
+            const int band=uiHandTag==6?4:uiHandTag==7?5:radar?2:pieceRight?(uiHandTag==4?3:1):0;
             const auto piece=uiHandTag==6?ModelWristHud::Piece::AugCross:uiHandTag==7?ModelWristHud::Piece::MarkTrack:
-                             radar?ModelWristHud::Piece::Radar:!right?ModelWristHud::Piece::HealthEnergy:
+                             radar?ModelWristHud::Piece::Radar:!pieceRight?ModelWristHud::Piece::HealthEnergy:
                              uiHandTag==4?ModelWristHud::Piece::Consumable:ModelWristHud::Piece::Ammo;
             bool layout=false;float homeX=0,homeY=0;
             if(uiHandOriginValid) {
