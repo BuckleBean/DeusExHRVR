@@ -16,6 +16,27 @@ inline Matrix Camera(const Matrix& muzzle){
     for(int j=0;j<3;++j){m.m[j]=-muzzle.m[j];m.m[4+j]=-muzzle.m[8+j];m.m[8+j]=-muzzle.m[4+j];}
     return m;
 }
+// The scope picture is shown fixed to the headset, so it must carry the head's roll:
+// keeps camera's view axis (row 2) and position, and turns it about that axis so its
+// row 1 lies as close as possible to head's row 1. Same handedness as camera. Returns
+// camera unchanged if the view axis is (nearly) along the head's row 1.
+inline Matrix RollFrom(const Matrix& camera,const Matrix& head){
+    auto dot=[](const float* a,const float* b){return a[0]*b[0]+a[1]*b[1]+a[2]*b[2];};
+    auto cross=[](const float* a,const float* b,float* o){o[0]=a[1]*b[2]-a[2]*b[1];o[1]=a[2]*b[0]-a[0]*b[2];o[2]=a[0]*b[1]-a[1]*b[0];};
+    const float* r2=camera.m+8;
+    float up[3]{head.m[4],head.m[5],head.m[6]};
+    const float along=dot(up,r2)/dot(r2,r2);
+    for(int j=0;j<3;++j)up[j]-=along*r2[j];
+    const float n=std::sqrt(dot(up,up));
+    if(!(n>.1f)||!std::isfinite(n))return camera;
+    for(float& v:up)v/=n;
+    float c12[3];cross(camera.m+4,r2,c12);
+    const float s=dot(camera.m,c12)<0?-1.f:1.f;
+    float r0[3];cross(up,r2,r0);
+    Matrix out=camera;
+    for(int j=0;j<3;++j){out.m[j]=s*r0[j];out.m[4+j]=up[j];}
+    return out;
+}
 inline bool Valid(const Matrix& m){
     for(float v:m.m)if(!std::isfinite(v))return false;
     if(std::abs(m.m[3])+std::abs(m.m[7])+std::abs(m.m[11])>.001f || std::abs(m.m[15]-1)>.001f)return false;

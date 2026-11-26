@@ -495,5 +495,21 @@ int main(int argc,char** argv) {
             float tu,tv;map(panel,.93f,-.862f,tu,tv);Check(tv>v+.005f&&std::abs(tu-u)<.01f,"right band text is upright, toward the hand");
         }
     }
+    {   // Scope roll from the head: view axis kept, row 1 toward the head's, rigid.
+        const float a=.4f,b=.3f;
+        CameraMath::Matrix cam{{std::cos(a),std::sin(a),0,0, -std::sin(a),std::cos(a),0,0, 0,0,1,0, 5,6,7,1}};
+        CameraMath::Matrix head{{std::cos(b),0,-std::sin(b),0, 0,1,0,0, std::sin(b),0,std::cos(b),0, 0,0,0,1}};
+        auto r=WeaponCalibration::RollFrom(cam,head);
+        Check(r.m[8]==cam.m[8]&&r.m[9]==cam.m[9]&&r.m[10]==cam.m[10]&&r.m[12]==5&&r.m[14]==7,"scope roll keeps the view axis and position");
+        Check(Near(r.m[4],0)&&Near(r.m[5],1)&&Near(r.m[6],0),"scope row 1 follows the head's (level head: no roll)");
+        const float det=r.m[0]*(r.m[5]*r.m[10]-r.m[6]*r.m[9])-r.m[1]*(r.m[4]*r.m[10]-r.m[6]*r.m[8])+r.m[2]*(r.m[4]*r.m[9]-r.m[5]*r.m[8]);
+        Check(Near(det,1),"scope roll stays a rotation, same handedness");
+        CameraMath::Matrix rolled{{std::cos(b),std::sin(b),0,0, -std::sin(b),std::cos(b),0,0, 0,0,1,0, 0,0,0,1}};
+        auto r2=WeaponCalibration::RollFrom(cam,rolled);
+        Check(Near(r2.m[4],-std::sin(b))&&Near(r2.m[5],std::cos(b)),"a rolled head rolls the scope picture with it");
+        CameraMath::Matrix up{{1,0,0,0, 0,0,1,0, 0,-1,0,0, 0,0,0,1}};
+        auto same=WeaponCalibration::RollFrom(up,CameraMath::Matrix{{1,0,0,0, 0,0,1,0, 0,-1,0,0, 0,0,0,1}});
+        Check(Near(same.m[4],0)&&Near(same.m[6],1),"head and scope already aligned: unchanged");
+    }
     puts("PASS tracking mailbox contention/expiry, camera math, asymmetric stereo frustum, binocular HUD alignment, hand panel placement and wrist band placement");
 }

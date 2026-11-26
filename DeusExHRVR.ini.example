@@ -65,6 +65,9 @@ ScopeKeepsAim=1
 ; Diagnostic log DeusExHRVR-scope-aim.log: one line per scope entry (at most 200), how far the
 ; kept aim is from the stored offset. 0 (default) turns it off.
 ScopeKeepsAimLog=0
+; The scope picture follows your head's roll, so tilting your head does not tilt the world
+; in the scope. 0 keeps the gun's own roll. Default 1.
+ScopeLevelWithHead=1
 ; Scope zoom, 1-12. The VR settings menu (Scope zoom) offers 3-12: below 3 the
 ; game's black scope surround leaves the edges of the view uncovered.
 ScopeMagnification=4

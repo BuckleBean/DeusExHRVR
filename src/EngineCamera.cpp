@@ -2046,6 +2046,10 @@ bool leftHandedScopeMirror=true;
 // DeusExHRVR-scope-aim.log, one line per scope entry (at most 200): how far the kept aim
 // is from the stored one.
 bool scopeKeepsAim=true,scopeKeepsAimLog{};
+// [VR] ScopeLevelWithHead=1 (default 1): the immersive scope picture is turned to the
+// head's roll, so tilting the head no longer tilts the world in the scope (it is shown
+// fixed to the headset). 0 keeps the gun's own roll.
+bool scopeLevelWithHead=true;
 CameraMath::Matrix scopeAimOffset{};uint32_t scopeAimKey{};void* scopeAimInstance{};bool scopeAimKnown{};
 float AngleDegrees(const CameraMath::Vector& a,const CameraMath::Vector& b) {
     const float d=a.x*b.x+a.y*b.y+a.z*b.z,la=std::sqrt(a.x*a.x+a.y*a.y+a.z*a.z),lb=std::sqrt(b.x*b.x+b.y*b.y+b.z*b.z);
@@ -2756,6 +2760,7 @@ void InstallInteractionProbes(){
     leftHandedScopeMirror=GetPrivateProfileIntW(L"VR",L"LeftHandedScopeMirror",1,diagConfig)!=0;
     scopeKeepsAim=GetPrivateProfileIntW(L"VR",L"ScopeKeepsAim",1,diagConfig)!=0;
     scopeKeepsAimLog=GetPrivateProfileIntW(L"VR",L"ScopeKeepsAimLog",0,diagConfig)!=0;
+    scopeLevelWithHead=GetPrivateProfileIntW(L"VR",L"ScopeLevelWithHead",1,diagConfig)!=0;
     if(leftHanded) {
         ModelHandAlignment::swapHands=true; // two-handed weapons work in its mirror world
         ModelWristHud::swapWrists=true;     // the wrist HUD pieces change wrists
@@ -6472,7 +6477,9 @@ void __fastcall UpdateHook(void* self,void*) {
                     auto muzzle=weaponPose.muzzle;CameraMath::Matrix c{};
                     if(leftHanded&&leftHandedScopeMirror&&!weaponPose.nativeCover&&ModelHandAlignment::MirrorGun(muzzle,weaponPose.mirrorTarget,c))
                         muzzle=CameraMath::Multiply(muzzle,c);
-                    current.world=WeaponCalibration::Camera(muzzle);
+                    const auto scope=WeaponCalibration::Camera(muzzle);
+                    // current.world is still the head's camera here.
+                    current.world=scopeLevelWithHead?WeaponCalibration::RollFrom(scope,current.world):scope;
                 }
             }
             current.view=CameraMath::InverseRigid(current.world);
