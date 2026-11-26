@@ -44,6 +44,8 @@ bool DetonateReady();
 bool LeftHandOwnsPrompt();
 // Something the left hand grabbed is being carried (triggers swap so left throws).
 bool LeftHandCarrying();
+// Something the right hand grabbed is being carried.
+bool RightHandCarrying();
 // Two-handed weapons: the left hand is close enough to take the weapon, and the grip
 // press that is holding it there.
 bool LeftHandNearWeapon();

@@ -43,7 +43,7 @@ bool throwMarker{},throwAiming{};uint64_t throwHeld{};
 bool ThrowMarkerEnabled(){return throwMarker;}void SetThrowAiming(bool v){throwAiming=v;}void NoteThrowRelease(uint64_t ms){throwHeld=ms;}
 bool detonate{};uint64_t detonateHeld{};
 bool leftOwns{};bool LeftHandOwnsPrompt(){return leftOwns;}
-bool leftCarry{};bool LeftHandCarrying(){return leftCarry;}
+bool leftCarry{};bool LeftHandCarrying(){return leftCarry;}bool rightCarry{};bool RightHandCarrying(){return rightCarry;}
 bool leftNear{},leftOnWeapon{};bool LeftHandNearWeapon(){return leftNear;}void SetLeftHandOnWeapon(bool v){leftOnWeapon=v;}bool gameSprint{};void SetGameSprintHeld(bool v){gameSprint=v;}
 bool TwoHandSprintBlocked(){return gameSprint;}
 bool leftHanded{};bool LeftHanded(){return leftHanded;}
@@ -297,6 +297,19 @@ int wmain(int argc,wchar_t** argv) {
         assert((trig(0,0)==std::pair<int,int>(0,0)));assert((trig(0,200)==std::pair<int,int>(200,0)));        // right does the left's job
         assert((trig(0,0)==std::pair<int,int>(0,0)));assert((trig(200,0)==std::pair<int,int>(0,200)));
         EngineCamera::leftCarry=false;assert((trig(200,0)==std::pair<int,int>(0,0)));                         // carry ended mid-squeeze: no cover
+        assert((trig(0,0)==std::pair<int,int>(0,0)));
+        EngineCamera::rightCarry=true;assert((trig(0,200)==std::pair<int,int>(0,200)));                       // default layout, right carry: no swap
+        EngineCamera::rightCarry=false;assert((trig(0,0)==std::pair<int,int>(0,0)));
+        {   // Left-handed layout (LeftTrigger=RT, RightTrigger=LT): each hand's own trigger throws.
+            GamepadBridge::leftTriggerTarget=GamepadBridge::TargetRT;GamepadBridge::rightTriggerTarget=GamepadBridge::TargetLT;
+            auto fire=[&](BYTE l,BYTE r){XINPUT_GAMEPAD p{};p.bLeftTrigger=l;p.bRightTrigger=r;GamepadBridge::ApplyButtons(p);return int(p.bRightTrigger);};
+            assert(fire(0,0)==0);
+            EngineCamera::leftCarry=true;assert(fire(200,0)==200);assert(fire(0,0)==0);assert(fire(0,200)==0);    // left carry: left trigger throws
+            EngineCamera::leftCarry=false;assert(fire(0,0)==0);
+            EngineCamera::rightCarry=true;assert(fire(0,200)==0);assert(fire(0,0)==0);assert(fire(0,200)==200);  // right carry: right trigger throws
+            assert(fire(0,0)==0);EngineCamera::rightCarry=false;assert(fire(0,0)==0);
+            GamepadBridge::leftTriggerTarget=GamepadBridge::TargetLT;GamepadBridge::rightTriggerTarget=GamepadBridge::TargetRT;
+        }
         assert((trig(0,0)==std::pair<int,int>(0,0)));assert((trig(200,0)==std::pair<int,int>(200,0)));assert((trig(0,0)==std::pair<int,int>(0,0)));
         GamepadBridge::remapActive=false;EngineCamera::leftCarry=true;trig(0,0);assert((trig(200,0)==std::pair<int,int>(0,200)));   // default layout
         trig(0,0);EngineCamera::leftCarry=false;trig(0,0);GamepadBridge::remapActive=true;

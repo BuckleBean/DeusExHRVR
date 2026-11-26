@@ -289,6 +289,9 @@ LeftHanded=0
 ; Diagnostic log DeusExHRVR-left-handed.log (mirrored/failed hand poses and why, every 2 s, at
 ; most 400 lines). 0 (default) turns it off.
 LeftHandedLog=0
+; Left-handed mode: while scoped, the gun, shots and scope view stay mirrored, so two-handed
+; steering turns the scope the right way. 0 leaves all three unmirrored while scoped. Default 1.
+LeftHandedScopeMirror=1
 ; EXPERIMENTAL first-person takedowns, off by default. Set FirstPersonTakedowns=1 to try
 ; them. The game's animation still runs. Your view rides along with Jensen's eyes and turns
 ; with his body, and only his arms are shown. It can cause motion sickness, the view can

@@ -2033,6 +2033,10 @@ std::atomic<unsigned> leftHandedMirrored{},leftHandedMirrorFailed{};
 // not built, 2-6 MirrorPose's reason 1-5.
 std::atomic<unsigned> leftHandedFail[2][7]{};
 bool leftHandedLog{}; // [VR] LeftHandedLog=1 (default 0)
+// [VR] LeftHandedScopeMirror=1 (default 1): while scoped the gun, shots and scope view stay
+// mirrored. 0 restores bc72688: all three unmirrored while scoped (two-handed steering in
+// the scope then turns the wrong way).
+bool leftHandedScopeMirror=true;
 float handPushRadiusMetres=HandPush::DefaultRadiusMetres,handPushStrength=1.f;
 bool handPushShove=true;
 std::atomic<float> bodyPushScale{};
@@ -2727,6 +2731,7 @@ void InstallInteractionProbes(){
     twoHandedAim=twoHandedWeapons&&GetPrivateProfileIntW(L"VR",L"TwoHandedAim",1,diagConfig)!=0;
     leftHanded=GetPrivateProfileIntW(L"VR",L"LeftHanded",0,diagConfig)!=0;
     leftHandedLog=leftHanded&&GetPrivateProfileIntW(L"VR",L"LeftHandedLog",0,diagConfig)!=0;
+    leftHandedScopeMirror=GetPrivateProfileIntW(L"VR",L"LeftHandedScopeMirror",1,diagConfig)!=0;
     if(leftHanded) {
         ModelHandAlignment::swapHands=true; // two-handed weapons work in its mirror world
         FILE* f{};if(!fopen_s(&f,"DeusExHRVR-camera.log","a")){fprintf(f,"leftHanded active=1 method=poseMirror\n");fclose(f);}
@@ -4676,9 +4681,10 @@ bool TryModelHand(void* model,unsigned char* data,CameraMath::Matrix* palette,ui
             ++leftHandedFail[handsAsideForScope.load()?1:0][!leftMoved?0:!built?1:1+reason];
         }
         LeftHandedSummary();
-        // With both hands placed, an unmirrored pose would show each hand on the wrong side
-        // (a copy across the gun); skip the frame instead (the caller hides the hands).
-        if(leftMoved&&!mirroredPose){if(DiagnosticOptions::hands)++modelHandBadTransform;return false;}
+        // An unmirrored pose would show the wrong hand (a copy across the gun, or Jensen's
+        // right hand at the left controller when the right controller is not tracked);
+        // skip the frame instead (the caller hides the hands).
+        if(!mirroredPose){if(DiagnosticOptions::hands)++modelHandBadTransform;return false;}
     }
     HandOnlyGeometry::Activate(uintptr_t(data),frameId.load(),plan,palette[130].m,leftMoved);
 
@@ -6325,8 +6331,8 @@ void __fastcall UpdateHook(void* self,void*) {
                         // Left-handed mode: the gun is mirrored across the controller as it is,
                         // not as two-handed steering turns it, the same plane the hands use.
                         // Read on its own, so it is there while scoped too (hands aside).
-                        CameraMath::Matrix mirrorTarget{};
-                        if(leftHanded)ModelHandAlignment::GripTarget(t,now,renderBase,reference,worldScale,mirrorTarget);
+                        CameraMath::Matrix mirrorTarget=modelTarget;
+                        if(leftHanded&&leftHandedScopeMirror)ModelHandAlignment::GripTarget(t,now,renderBase,reference,worldScale,mirrorTarget);
                         if(twoHandedAim) {
                             // The hand, barrel, shots and crosshair all derive from these.
                             static TwoHandSteer::Steer steer;
@@ -6417,7 +6423,7 @@ void __fastcall UpdateHook(void* self,void*) {
                     // Left-handed mode: the scope looks along the mirrored gun, like the shots
                     // (ReadWeaponPose), so two-handed steering turns the view the right way.
                     auto muzzle=weaponPose.muzzle;CameraMath::Matrix c{};
-                    if(leftHanded&&!weaponPose.nativeCover&&ModelHandAlignment::MirrorGun(muzzle,weaponPose.mirrorTarget,c))
+                    if(leftHanded&&leftHandedScopeMirror&&!weaponPose.nativeCover&&ModelHandAlignment::MirrorGun(muzzle,weaponPose.mirrorTarget,c))
                         muzzle=CameraMath::Multiply(muzzle,c);
                     current.world=WeaponCalibration::Camera(muzzle);
                 }
@@ -7521,6 +7527,7 @@ void SetThrowAiming(bool aiming){throwAiming=aiming;}
 void NoteThrowRelease(uint64_t heldMs){throwHeldMs=heldMs;}
 bool DetonateReady(){return detonateReady.load();}
 bool LeftHandCarrying(){return leftCarryThrow&&grabActive.load()&&grabLeft.load();}
+bool RightHandCarrying(){return leftCarryThrow&&grabActive.load()&&!grabLeft.load();}
 bool LeftHandNearWeapon(){const auto tick=leftNearWeaponTick.load(std::memory_order_relaxed);const auto now=GetTickCount64();return twoHandedWeapons&&!SprintBlocksTwoHand()&&tick&&now>=tick&&now-tick<250;}
 void SetLeftHandOnWeapon(bool on){leftOnWeapon=on;}
 bool LeftHanded(){return leftHanded;}

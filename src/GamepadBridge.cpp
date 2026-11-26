@@ -153,6 +153,16 @@ bool ThrowInput(size_t i) {
 }
 void ResetThrowHold(){for(auto& h:throwHold)h.Reset();EngineCamera::SetThrowAiming(false);}
 uint32_t leftTriggerTarget=TargetLT,rightTriggerTarget=TargetRT;
+// A carried object is thrown with the game's RT. While one hand carries, the triggers swap
+// only if that puts RT on the carrying hand's own trigger: with the default layout a
+// left-hand carry swaps; with LeftTrigger=RT and RightTrigger=LT (left-handed), a
+// right-hand carry does.
+bool CarrySwap(bool wheel) {
+    if(wheel)return false;
+    if(EngineCamera::LeftHandCarrying())return leftTriggerTarget!=TargetRT&&rightTriggerTarget==TargetRT;
+    if(EngineCamera::RightHandCarrying())return rightTriggerTarget!=TargetRT&&leftTriggerTarget==TargetRT;
+    return false;
+}
 bool remapActive{};
 // [ScreenButtons]: layout for everything that is not gameplay (menus, readers,
 // terminals, hacking, videos, game over, loading screens).
@@ -261,7 +271,7 @@ void ApplyButtons(XINPUT_GAMEPAD& pad) {
         if(grip==LeftGrip::Interact)pad.wButtons|=XINPUT_GAMEPAD_X;
         if(EngineCamera::LeftHanded()&&SupportGripStep((pad.wButtons&XINPUT_GAMEPAD_RIGHT_SHOULDER)!=0,(allReasons&128)!=0)!=LeftGrip::Normal)
             pad.wButtons&=~XINPUT_GAMEPAD_RIGHT_SHOULDER;
-        carryTriggers.Apply(EngineCamera::LeftHandCarrying()&&!(allReasons&128),pad.bLeftTrigger,pad.bRightTrigger);
+        carryTriggers.Apply(CarrySwap((allReasons&128)!=0),pad.bLeftTrigger,pad.bRightTrigger);
         return;
     }
     const XINPUT_GAMEPAD in=pad;
@@ -320,7 +330,7 @@ void ApplyButtons(XINPUT_GAMEPAD& pad) {
     }
     EngineCamera::SetThrowAiming(aiming);
     BYTE leftValue=in.bLeftTrigger,rightValue=in.bRightTrigger;
-    carryTriggers.Apply(EngineCamera::LeftHandCarrying()&&!wheel,leftValue,rightValue);
+    carryTriggers.Apply(CarrySwap(wheel),leftValue,rightValue);
     Emit(pad,leftTriggerTarget,leftValue>127,leftValue);
     Emit(pad,rightTriggerTarget,rightValue>127,rightValue);
 }
