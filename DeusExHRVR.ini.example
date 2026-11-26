@@ -176,9 +176,9 @@ HandPointers=Off
 ; and only a real hit on your item counts. Walls still stop the line. It can also pass
 ; a closed door, since doors are usable items. 0 turns it off. Needs HandContactExact=1.
 ; Restart after editing.
-; Experimental hand nudges: an empty hand moving into a box, barrel or dumpster pushes
-; it, like walking into it does. No grip press needed. Off by default; restart after changing.
-HandPush=0
+; Hand nudges: an empty hand moving into a box, barrel or dumpster pushes it, like
+; walking into it does. No grip press needed. 1 (default) on, 0 off; restart after changing.
+HandPush=1
 ; Size of the search around each hand, in cm (3 to 20). Restart after editing.
 HandPushCm=8
 ; Push strength: 1 matches the most the game's own walk push uses (0.25 to 4).
@@ -220,8 +220,9 @@ CarriedThrowAim=1
 ; object's surface gap; it does not offset body dragging. Missing surface data
 ; uses a fixed palm offset. CarriedItemAtHand=0 disables both. Restart to apply.
 CarriedItemAtHand=1
-; Experimental; 0 keeps existing placement, 1 attaches surface and wrist rotation.
-CarriedAttachment=0
+; 1 (default) holds a carried object where the hand grabbed it, turning with the wrist;
+; 0 keeps the older placement.
+CarriedAttachment=1
 ; Suppress the native held-object fade only in attachment mode; 0 keeps it.
 CarriedOpaque=1
 CarriedItemHandCm=3

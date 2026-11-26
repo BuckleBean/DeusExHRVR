@@ -167,7 +167,7 @@ void __cdecl AttachmentFadeHook(void* owner,int mode,float amount,int duration,i
     originalAttachmentFade(owner,mode,amount,duration,flags);
 }
 void InstallCarryAttachment(const wchar_t* config) {
-    carriedAttachment=GetPrivateProfileIntW(L"VR",L"CarriedAttachment",0,config)!=0;
+    carriedAttachment=GetPrivateProfileIntW(L"VR",L"CarriedAttachment",1,config)!=0; // on by default from v0.8.1
     carriedOpaque=GetPrivateProfileIntW(L"VR",L"CarriedOpaque",1,config)!=0;
     if(!carriedAttachment||!carriedItemAtHand)return;
     if(!CarryAttachmentNative::Matches(base)){if(interactionTimingLog)TimingLine("attachment native signatures unavailable");return;}

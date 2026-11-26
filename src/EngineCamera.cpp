@@ -2715,7 +2715,7 @@ void InstallInteractionProbes(){
         if(std::isfinite(cm)&&cm>=0.f&&cm<=40.f)carriedItemHandMetres=cm*.01f;
     }
     handContact=GetPrivateProfileIntW(L"VR",L"HandContactInteract",1,diagConfig)!=0;
-    handPush=GetPrivateProfileIntW(L"VR",L"HandPush",0,diagConfig)!=0;
+    handPush=GetPrivateProfileIntW(L"VR",L"HandPush",1,diagConfig)!=0; // on by default from v0.8.1
     handPushLog=GetPrivateProfileIntW(L"VR",L"HandPushLog",0,diagConfig)!=0;
     handPushReady=handPush&&HandPushNative::Matches(base);
     {
