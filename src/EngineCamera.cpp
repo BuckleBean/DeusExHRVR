@@ -2037,6 +2037,28 @@ bool leftHandedLog{}; // [VR] LeftHandedLog=1 (default 0)
 // mirrored. 0 restores bc72688: all three unmirrored while scoped (two-handed steering in
 // the scope then turns the wrong way).
 bool leftHandedScopeMirror=true;
+// [VR] ScopeKeepsAim=1 (default 1): the immersive scope keeps the gun where the hand held
+// it. Out of the scope the gun follows Jensen's hand animation; in the scope that is off
+// (hands aside), and the view used to fall back to the controller plus the stored grip or
+// DeusExHRVR-weapons.ini offset, which can point a few degrees away and roll. Now the
+// gun's last hold relative to the controller is kept through the scope, for the view and
+// the shots. 0 restores the stored offsets. ScopeKeepsAimLog=1 (default 0) writes
+// DeusExHRVR-scope-aim.log, one line per scope entry (at most 200): how far the kept aim
+// is from the stored one.
+bool scopeKeepsAim=true,scopeKeepsAimLog{};
+CameraMath::Matrix scopeAimOffset{};uint32_t scopeAimKey{};void* scopeAimInstance{};bool scopeAimKnown{};
+float AngleDegrees(const CameraMath::Vector& a,const CameraMath::Vector& b) {
+    const float d=a.x*b.x+a.y*b.y+a.z*b.z,la=std::sqrt(a.x*a.x+a.y*a.y+a.z*a.z),lb=std::sqrt(b.x*b.x+b.y*b.y+b.z*b.z);
+    if(!(la>0&&lb>0))return NAN;
+    return std::acos(std::clamp(d/(la*lb),-1.f,1.f))*57.29578f;
+}
+void ScopeAimLine(const char* format,...) {
+    static unsigned lines{};
+    if(!scopeKeepsAimLog||lines>=200)return;
+    FILE* f{};if(fopen_s(&f,"DeusExHRVR-scope-aim.log",lines?"a":"w"))return;
+    ++lines;fprintf(f,"%llu ",GetTickCount64());
+    va_list args;va_start(args,format);vfprintf(f,format,args);va_end(args);fputc('\n',f);fclose(f);
+}
 float handPushRadiusMetres=HandPush::DefaultRadiusMetres,handPushStrength=1.f;
 bool handPushShove=true;
 std::atomic<float> bodyPushScale{};
@@ -2732,6 +2754,8 @@ void InstallInteractionProbes(){
     leftHanded=GetPrivateProfileIntW(L"VR",L"LeftHanded",0,diagConfig)!=0;
     leftHandedLog=leftHanded&&GetPrivateProfileIntW(L"VR",L"LeftHandedLog",0,diagConfig)!=0;
     leftHandedScopeMirror=GetPrivateProfileIntW(L"VR",L"LeftHandedScopeMirror",1,diagConfig)!=0;
+    scopeKeepsAim=GetPrivateProfileIntW(L"VR",L"ScopeKeepsAim",1,diagConfig)!=0;
+    scopeKeepsAimLog=GetPrivateProfileIntW(L"VR",L"ScopeKeepsAimLog",0,diagConfig)!=0;
     if(leftHanded) {
         ModelHandAlignment::swapHands=true; // two-handed weapons work in its mirror world
         ModelWristHud::swapWrists=true;     // the wrist HUD pieces change wrists
@@ -6401,6 +6425,24 @@ void __fastcall UpdateHook(void* self,void*) {
                             }
                             raw=WeaponCalibration::Units(result.muzzle,worldScale);
                         }
+                        {   // The scope keeps the hand's last hold (ScopeKeepsAim).
+                            static bool wasScoped{};
+                            const bool keep=scopeKeepsAim&&immersiveScopeActive&&!nativeRequested&&!weaponCalibrationEnabled;
+                            const bool known=scopeAimKnown&&scopeAimKey==key&&scopeAimInstance==instance;
+                            if(keep&&known) {
+                                const auto kept=CameraMath::Multiply(scopeAimOffset,rawController);
+                                if(!wasScoped) {
+                                    const CameraMath::Vector oldBarrel{-raw.m[4],-raw.m[5],-raw.m[6]},newBarrel{-kept.m[4],-kept.m[5],-kept.m[6]};
+                                    const CameraMath::Vector oldSide{raw.m[0],raw.m[1],raw.m[2]},newSide{kept.m[0],kept.m[1],kept.m[2]};
+                                    ScopeAimLine("scope entry weapon=%08x kept=1 storedSource=%s barrelDeg=%.2f sideAxisDeg=%.2f moved=%.1f units leftHanded=%d",
+                                        key,grip?"learnedGrip":key<0x18000?"weaponsIni":"none",AngleDegrees(oldBarrel,newBarrel),AngleDegrees(oldSide,newSide),
+                                        std::sqrt((raw.m[12]-kept.m[12])*(raw.m[12]-kept.m[12])+(raw.m[13]-kept.m[13])*(raw.m[13]-kept.m[13])+(raw.m[14]-kept.m[14])*(raw.m[14]-kept.m[14])),
+                                        int(leftHanded));
+                                }
+                                raw=kept;
+                            } else if(keep&&!wasScoped)ScopeAimLine("scope entry weapon=%08x kept=0 (no hand hold seen for this weapon)",key);
+                            wasScoped=immersiveScopeActive;
+                        }
                         weaponPose={weapon,instance,raw,t.tick,true,*reinterpret_cast<void**>(weapon+0x64),rawController};
                         weaponPose.scale=worldScale;weaponPose.holder=holder;
                         weaponPose.nativeRequested=nativeRequested;weaponPose.gripTarget=modelTarget;weaponPose.mirrorTarget=mirrorTarget;
@@ -6411,7 +6453,11 @@ void __fastcall UpdateHook(void* self,void*) {
                         weaponPose.buttons=t.controllerButtons;weaponPose.diagnosticPad=t.gamepad;
                         if(nativeRequested){
                             weaponPose.active=targetValid;
-                            if(targetValid)ResolveNativePair(weaponPose);
+                            if(targetValid&&ResolveNativePair(weaponPose)&&scopeKeepsAim&&!immersiveScopeActive) {
+                                // The hold to keep through the scope: the gun relative to the controller.
+                                scopeAimOffset=CameraMath::Multiply(weaponPose.muzzle,CameraMath::InverseRigid(weaponPose.controllerRaw));
+                                scopeAimKey=key;scopeAimInstance=instance;scopeAimKnown=true;
+                            }
                         }
                     }
                 }

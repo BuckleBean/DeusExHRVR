@@ -58,6 +58,13 @@ MotionControls=1
 ; Optional full-headset scope with right-controller aiming; requires weapon motion.
 ; Also available in VR Settings > View > Immersive scope.
 ImmersiveScope=0
+; With the hands on (ControllerHandsModelAlignment=1), the immersive scope keeps the gun where
+; the hand held it just before the scope, so the view neither jumps nor tilts. 0 uses the
+; stored grip or DeusExHRVR-weapons.ini offset in the scope instead. Default 1.
+ScopeKeepsAim=1
+; Diagnostic log DeusExHRVR-scope-aim.log: one line per scope entry (at most 200), how far the
+; kept aim is from the stored offset. 0 (default) turns it off.
+ScopeKeepsAimLog=0
 ; Scope zoom, 1-12. The VR settings menu (Scope zoom) offers 3-12: below 3 the
 ; game's black scope surround leaves the edges of the view uncovered.
 ScopeMagnification=4
