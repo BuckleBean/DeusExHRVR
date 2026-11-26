@@ -243,6 +243,12 @@ public:
                 stepper(SettingsMenu::BrightnessMinus,SettingsMenu::BrightnessPlus,0,s.draftBrightness);
                 stepper(SettingsMenu::ContrastMinus,SettingsMenu::ContrastPlus,1,s.draftContrast);
                 row(SettingsMenu::ImageReset,s.imageAvailable,L"RESET TO 0");
+                label(3,L"HUD size");
+                if(s.originalHudSize){
+                    wchar_t size[16];swprintf_s(size,L"%u%%",s.draftHudSize);Text(size,870,MainRowY(3),310,52,true);
+                    Button(SettingsMenu::HudSizeMinus,L"-",!s.saving&&s.draftHudSize>SettingsMenu::HudSizeMin&&hovered(SettingsMenu::HudSizeMinus));
+                    Button(SettingsMenu::HudSizePlus,L"+",!s.saving&&s.draftHudSize<SettingsMenu::HudSizeMax&&hovered(SettingsMenu::HudSizePlus));
+                }else Text(L"UNAVAILABLE",870,MainRowY(3),310,52,true);
             }else{
                 label(0,L"HUD");
                 label(1,L"Immersive scope");

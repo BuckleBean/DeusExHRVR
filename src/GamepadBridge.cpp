@@ -540,7 +540,7 @@ void MenuTick(unsigned screenReasons) {
     m.leftHanded=EngineCamera::LeftHanded()?2:1;m.swapSticks=swapSticks?2:1;
     m.interaction=EngineCamera::InteractionAim();
     m.worldScale=EngineCamera::ConfiguredWorldScale();m.activeWorldScale=EngineCamera::ActiveWorldScale();
-    m.scopeZoom=EngineCamera::ScopeMagnification();
+    m.scopeZoom=EngineCamera::ScopeMagnification();m.hudSize=uint16_t(EngineCamera::HudSize());
     m.snapEnabled=snapEnabled;m.degrees=snapDegrees;m.movement=EngineCamera::MovementDirection();
     if(m.recenterRequest!=m.recenterAck&&Transport::Fresh(m.hostTick,now)){
         m.recenterAck=m.recenterRequest;
@@ -553,7 +553,7 @@ void MenuTick(unsigned screenReasons) {
     if(m.request!=m.acknowledged && Transport::Fresh(m.hostTick,now)) {
         m.acknowledged=m.request;
         bool holdsValid=!(m.holdMask>>8);for(size_t i=0;i<8;++i)if((m.holdMask&(1u<<i))&&m.requestedHoldMs[i]>5000)holdsValid=false;
-        if(m.eligible&&m.blocked&&holdsValid&&m.requestedLeftHanded<=2&&m.requestedSwapSticks<=2&&ImageAdjust::ValidWire(m.requestedBrightness)&&ImageAdjust::ValidWire(m.requestedContrast)&&m.requestedQuickBar<=2&&(!m.requestedQuickBar||m.quickBar)&&m.requestedCrosshair<=4&&m.requestedHandPointers<=4&&(!m.requestedHandPointers||m.handPointers)&&(m.requestedScopeZoom==0||(std::isfinite(m.requestedScopeZoom)&&m.requestedScopeZoom>=1&&m.requestedScopeZoom<=12))&&m.requestedDialogue<=1&&(!m.requestedDialogue||m.dialogueAvailable)&&m.requestedHandHud<=2&&m.requestedThrowAim<=4&&(!m.requestedThrowAim||m.throwAim)&&m.requestedThrowMarker<=2&&(!m.requestedThrowMarker||m.throwMarker)&&m.requestedCoverFollow<=2&&(!m.requestedCoverFollow||m.coverFollow)&&m.requestedImmersiveScope<=2&&(!m.requestedImmersiveScope||m.immersiveScope)&&std::isfinite(m.requestedWorldScale)&&m.requestedWorldScale>=10&&m.requestedWorldScale<=1000&&m.resetBindings<=1&&m.requestedInteraction<=3&&(m.requestedInteraction==1||m.requestedInteraction==2||m.requestedInteraction==m.interaction)&&m.requestedResponse<=2&&m.requestedSnap<=1&&m.requestedMovement<=3&&(m.requestedMovement!=0||m.movement==0)&&ButtonBindings::Valid(m.requestedBindings,m.bindingMask)&&SettingsMenu::ApplyAngle(m.requestedDegrees,snapDegrees,snapCounts)) {
+        if(m.eligible&&m.blocked&&holdsValid&&(m.requestedHudSize==0||(m.requestedHudSize>=50&&m.requestedHudSize<=100))&&m.requestedLeftHanded<=2&&m.requestedSwapSticks<=2&&ImageAdjust::ValidWire(m.requestedBrightness)&&ImageAdjust::ValidWire(m.requestedContrast)&&m.requestedQuickBar<=2&&(!m.requestedQuickBar||m.quickBar)&&m.requestedCrosshair<=4&&m.requestedHandPointers<=4&&(!m.requestedHandPointers||m.handPointers)&&(m.requestedScopeZoom==0||(std::isfinite(m.requestedScopeZoom)&&m.requestedScopeZoom>=1&&m.requestedScopeZoom<=12))&&m.requestedDialogue<=1&&(!m.requestedDialogue||m.dialogueAvailable)&&m.requestedHandHud<=2&&m.requestedThrowAim<=4&&(!m.requestedThrowAim||m.throwAim)&&m.requestedThrowMarker<=2&&(!m.requestedThrowMarker||m.throwMarker)&&m.requestedCoverFollow<=2&&(!m.requestedCoverFollow||m.coverFollow)&&m.requestedImmersiveScope<=2&&(!m.requestedImmersiveScope||m.immersiveScope)&&std::isfinite(m.requestedWorldScale)&&m.requestedWorldScale>=10&&m.requestedWorldScale<=1000&&m.resetBindings<=1&&m.requestedInteraction<=3&&(m.requestedInteraction==1||m.requestedInteraction==2||m.requestedInteraction==m.interaction)&&m.requestedResponse<=2&&m.requestedSnap<=1&&m.requestedMovement<=3&&(m.requestedMovement!=0||m.movement==0)&&ButtonBindings::Valid(m.requestedBindings,m.bindingMask)&&SettingsMenu::ApplyAngle(m.requestedDegrees,snapDegrees,snapCounts)) {
             snapArmed=false;EngineCamera::CancelDirectSnap();
             EngineCamera::SetDialogueEnabled(m.requestedDialogue!=0);m.dialogue=m.requestedDialogue;
             if(m.requestedHandHud){EngineCamera::SetHandHudConfigured(m.requestedHandHud==2);m.handHud=m.requestedHandHud;}
@@ -571,6 +571,7 @@ void MenuTick(unsigned screenReasons) {
             if(m.requestedContrast){imageContrast=ImageAdjust::Decode(m.requestedContrast);m.contrast=m.requestedContrast;}
             EngineCamera::SetConfiguredWorldScale(m.requestedWorldScale);m.worldScale=m.requestedWorldScale;
             if(m.requestedScopeZoom!=0){EngineCamera::SetScopeMagnification(m.requestedScopeZoom);m.scopeZoom=m.requestedScopeZoom;}
+            if(m.requestedHudSize){EngineCamera::SetHudSize(m.requestedHudSize);m.hudSize=m.requestedHudSize;}
             EngineCamera::SetInteractionAim(m.requestedInteraction);m.interaction=m.requestedInteraction;
             if(m.resetBindings)for(auto& hold:buttonHoldMs)hold=0;
             // Hands tab (transport 30). A hold delay turned on picks up its saved tap action.
@@ -607,7 +608,7 @@ void MenuTick(unsigned screenReasons) {
                 m.requestedThrowAim?int(m.requestedThrowAim)-1:-1,m.requestedThrowMarker?int(m.requestedThrowMarker==2):-1,
                 m.requestedCoverFollow?int(m.requestedCoverFollow==2):-1,m.requestedImmersiveScope?int(m.requestedImmersiveScope==2):-1,m.requestedCrosshair?int(m.requestedCrosshair):-1,m.requestedQuickBar?int(m.requestedQuickBar==2):-1,m.requestedBrightness,m.requestedContrast,m.requestedHandPointers?int(m.requestedHandPointers):-1,
                 m.requestedLeftHanded?int(m.requestedLeftHanded==2):-1,m.requestedSwapSticks?int(m.requestedSwapSticks==2):-1,
-                [&]{std::array<uint32_t,8> h{};for(size_t i=0;i<8;++i)h[i]=m.requestedHoldMs[i];return h;}(),m.holdMask);
+                [&]{std::array<uint32_t,8> h{};for(size_t i=0;i<8;++i)h[i]=m.requestedHoldMs[i];return h;}(),m.holdMask,m.requestedHudSize?int(m.requestedHudSize):-1);
         } else m.result=2;
     }
     auto& writer=SettingsWriter();

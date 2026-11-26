@@ -176,8 +176,8 @@ int main() {
     }
     // 8. Transport 22 added the cover target; 23 adds the hand HUD setting to the
     // menu state at the END of the header, so RenderInfo and its offsets are unchanged.
-    static_assert(Transport::Version==30);
-    static_assert(sizeof(Transport::MenuState)==512 && offsetof(Transport::MenuState,leftHanded)==452 && offsetof(Transport::MenuState,requestedHoldMs)==468 && offsetof(Transport::MenuState,handHud)==372 && offsetof(Transport::MenuState,throwAim)==388 && offsetof(Transport::Header,menu)==744 && offsetof(Transport::RenderInfo,handPointer)==344 && offsetof(Transport::RenderInfo,handPointerState)==368 && offsetof(Transport::MenuState,handPointers)==444);
+    static_assert(Transport::Version==31);
+    static_assert(sizeof(Transport::MenuState)==512 && offsetof(Transport::MenuState,leftHanded)==452 && offsetof(Transport::MenuState,requestedHoldMs)==468 && offsetof(Transport::MenuState,handHud)==372 && offsetof(Transport::MenuState,throwAim)==388 && offsetof(Transport::Header,menu)==744 && offsetof(Transport::RenderInfo,handPointer)==344 && offsetof(Transport::RenderInfo,handPointerState)==368 && offsetof(Transport::MenuState,handPointers)==444 && offsetof(Transport::MenuState,hudSize)==504);
     static_assert(sizeof(Transport::RenderInfo)==376 && sizeof(Transport::Header)==1256);
     static_assert(offsetof(Transport::RenderInfo,markerPosition)==296 && offsetof(Transport::RenderInfo,markerState)==308 &&
                   offsetof(Transport::RenderInfo,markerNormal)==312);

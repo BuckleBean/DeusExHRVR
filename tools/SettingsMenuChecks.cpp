@@ -321,7 +321,23 @@ int wmain(int argc,wchar_t** argv) {
      click(SettingsMenu::BrightnessPlus);click(SettingsMenu::BrightnessPlus);assert(ui.draftBrightness==50&&ui.Dirty());
      click(SettingsMenu::ContrastMinus);assert(ui.draftContrast==-5);
      click(SettingsMenu::ImageReset);assert(ui.draftBrightness==0&&ui.draftContrast==0);
-     click(SettingsMenu::BrightnessPlus);click(SettingsMenu::Save);assert(ui.saving&&ui.requestedBrightness==ImageAdjust::Encode(5)&&ui.requestedContrast==0);
+     click(SettingsMenu::BrightnessPlus);click(SettingsMenu::Save);assert(ui.saving&&ui.requestedBrightness==ImageAdjust::Encode(5)&&ui.requestedContrast==0&&ui.requestedHudSize==0);
+    }
+    // HUD size on the Image tab: 5% steps, 50-100, one Save; nothing sent when unchanged; inert from an older game side.
+    {SettingsMenu::State ui;Transport::MenuState gm{};gm.degrees=30;gm.worldScale=gm.activeWorldScale=300;gm.hudSize=100;
+     GamepadMapping::Input input{};input.active=true;
+     auto click=[&](SettingsMenu::Rect rect){input.rightTrigger=0;ui.Update(true,true,true,float(rect.x+30),float(rect.y+25),input,gm);input.rightTrigger=1;ui.Update(true,true,true,float(rect.x+30),float(rect.y+25),input,gm);};
+     click(SettingsMenu::Entry);click(SettingsMenu::Tab(SettingsMenu::TabImage));assert(ui.draftHudSize==100&&!ui.Dirty());
+     click(SettingsMenu::HudSizePlus);assert(ui.draftHudSize==100&&!ui.Dirty());
+     click(SettingsMenu::HudSizeMinus);click(SettingsMenu::HudSizeMinus);click(SettingsMenu::HudSizeMinus);assert(ui.draftHudSize==85&&ui.Dirty());
+     for(int i=0;i<12;++i)click(SettingsMenu::HudSizeMinus);assert(ui.draftHudSize==50);
+     click(SettingsMenu::HudSizePlus);click(SettingsMenu::Save);assert(ui.saving&&ui.requestedHudSize==55&&ui.requestedBrightness==0);
+     printf("PASS HUD size: 5%% steps between 50 and 100, saved once, unchanged sends nothing\n");
+    }
+    {SettingsMenu::State ui;Transport::MenuState gm{};gm.degrees=30;gm.worldScale=gm.activeWorldScale=300;
+     GamepadMapping::Input input{};input.active=true;
+     auto click=[&](SettingsMenu::Rect rect){input.rightTrigger=0;ui.Update(true,true,true,float(rect.x+30),float(rect.y+25),input,gm);input.rightTrigger=1;ui.Update(true,true,true,float(rect.x+30),float(rect.y+25),input,gm);};
+     click(SettingsMenu::Entry);click(SettingsMenu::Tab(SettingsMenu::TabImage));click(SettingsMenu::HudSizeMinus);assert(!ui.draftHudSize&&!ui.Dirty());
     }
     {SettingsMenu::State ui;Transport::MenuState gm{};gm.degrees=30;gm.worldScale=gm.activeWorldScale=300;
      GamepadMapping::Input input{};input.active=true;
@@ -641,9 +657,9 @@ int wmain(int argc,wchar_t** argv) {
     s.draftResponse=2;assert(draw.Save((out/L"menu-gentler.bmp").c_str(),s,game));s.draftResponse=0;
     s.draftDialogue=true;assert(draw.Save((out/L"menu-dialogue.bmp").c_str(),s,game));s.draftDialogue=false;
     s.scalePage=true;assert(draw.Save((out/L"menu-world-scale.bmp").c_str(),s,game));s.scalePage=false;
-    s.tab=SettingsMenu::TabImage;s.imageAvailable=true;s.draftBrightness=s.originalBrightness=15;s.draftContrast=s.originalContrast=-10;
+    s.tab=SettingsMenu::TabImage;s.imageAvailable=true;s.draftBrightness=s.originalBrightness=15;s.draftContrast=s.originalContrast=-10;s.draftHudSize=s.originalHudSize=85;
     assert(draw.Save((out/L"menu-tab-image.bmp").c_str(),s,game));
-    s.imageAvailable=false;s.draftBrightness=s.originalBrightness=0;s.draftContrast=s.originalContrast=0;
+    s.imageAvailable=false;s.draftBrightness=s.originalBrightness=0;s.draftContrast=s.originalContrast=0;s.draftHudSize=s.originalHudSize=0;
     s.tab=SettingsMenu::TabHands;s.leftHandedAvailable=s.swapSticksAvailable=true;s.draftLeftHanded=true;s.draftBindings=ButtonBindings::Defaults;SettingsMenu::MoveFire(s.draftBindings,true);
     assert(draw.Save((out/L"menu-tab-hands.bmp").c_str(),s,game));
     s.holdPage=true;s.draftHold={300,0,0,0,150,0,0,0};assert(draw.Save((out/L"menu-hold-delays.bmp").c_str(),s,game));

@@ -305,6 +305,7 @@ These are new in 0.8.0 and on by default unless noted. Each has an off switch in
 - **Crosshair** (VR Settings > View > Crosshair: Off, 1st person, 3rd person or Both; `Crosshair=ThirdPerson` by default).
 - **Quickbar** (VR Settings > Controls > Quickbar). Auto-hide or always shown; the tilde key also changes it.
 - **Brightness and contrast** (VR Settings > Image, or `Brightness` and `Contrast`, -50 to 50). Changes preview while the menu is open. They affect the game image and its HUD, not the VR menu.
+- **HUD size** (VR Settings > Image > HUD size, or `HudSize`, 50-100 percent; default 100, the original size). Shrinks the HUD that stays in front of you (interaction prompts, objectives and messages, or the whole HUD with HUD set to DEFAULT) toward the middle of your view. The wrist pieces are not affected, and the scope, in-game menu and wheel stay full size.
 - **Ceiling guard** (`CeilingGuard=1`). While crouched, the view eases down to stay below low ceilings such as vents. `CeilingGuardCm` is the gap (20) and `CeilingGuardLookAhead=0` stops it checking just ahead of you.
 
 **Known limitations:** your hand is not stopped by walls or doors, so you can sometimes reach through them and pick up what is behind. Carried boxes and other objects can still feel finicky, and because the game checks for obstacles at its original carry spot, they may pass through walls. Smoke and fog can tilt with your head. Interaction through glass, losing controller tracking during interaction, and frame rate in very crowded rooms have not been specifically tested.

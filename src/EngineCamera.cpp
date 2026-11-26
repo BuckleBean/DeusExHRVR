@@ -89,6 +89,12 @@ inline DirectionConfig::Source GunSource(){return leftHanded?DirectionConfig::So
 // ImmersiveScope: atomic since the VR settings menu switches it (transport 24).
 std::atomic<bool> immersiveScope{},immersiveScopeReady{};bool immersiveScopeActive{};
 std::atomic<float> scopeMagnification{4.f}; // also set from the VR settings menu
+// [VR] HudSize, percent (50-100, default 100 = the full 3.2 m x 1.8 m HUD plane): shrinks the
+// HUD that stays on the screen (prompts, objectives, messages; the whole HUD with HUD = DEFAULT)
+// toward the middle of the view. Wrist pieces are placed separately and are not affected. Kept
+// at full size while immersively scoped (the scope surround must cover the view) and in the
+// in-game menu and wheel. Also set from VR Settings > Image > HUD size (transport 31).
+std::atomic<unsigned> hudSizePercent{100};
 ImmersiveScope::Gesture scopeGesture;
 std::atomic<uint64_t> scopePulseUntil{};
 uint64_t scopeToggleAfter{};
@@ -6723,7 +6729,8 @@ void __fastcall MatricesHook(void* self,void*) {
     // Scaleform uses a perspective override here too. The correction operates
     // on its resulting clip coordinates, so the source projection may be either.
     unsigned eye=state[0x5ea]?0:1;
-    auto clipTransform=CameraMath::HudClipTransform(uiSnapshot.tracking,eye);
+    const bool fullHud=uiSnapshot.immersiveScoped||gameMenuOpen.load(std::memory_order_relaxed)||wheelOpen.load(std::memory_order_relaxed);
+    auto clipTransform=CameraMath::HudClipTransform(uiSnapshot.tracking,eye,fullHud?1.f:hudSizePercent.load(std::memory_order_relaxed)/100.f);
     if(uiHandTag) {
         // Carry this element on a tracked hand. Without a usable pose, hide
         // the block rather than jumping it back to the original screen corner.
@@ -7348,6 +7355,7 @@ void Install() {
     immersiveScopeReady=motionControls && experimentalMotionControls;
     GetPrivateProfileStringW(L"VR",L"ScopeMagnification",L"4",scaleText,32,config);
     {float value=static_cast<float>(_wtof(scaleText));if(std::isfinite(value)&&value>=1&&value<=12)scopeMagnification=value;}
+    {const unsigned size=GetPrivateProfileIntW(L"VR",L"HudSize",100,config);hudSizePercent=size>=50&&size<=100?size:100;}
     GetPrivateProfileStringW(L"VR",L"ControllerMuzzleForwardMetres",L"0.25",scaleText,32,config);
     float muzzleForward=static_cast<float>(_wtof(scaleText));
     if(std::isfinite(muzzleForward) && muzzleForward>=0 && muzzleForward<=1)controllerMuzzleForward=muzzleForward;
@@ -7544,6 +7552,8 @@ void SetChannel(Transport::Header* header){std::lock_guard lock(stateMutex);chan
 float ConfiguredWorldScale(){return liveWorldScale.Configured();}
 float ScopeMagnification(){return scopeMagnification.load();}
 bool SetScopeMagnification(float value){if(!std::isfinite(value)||value<1||value>12)return false;scopeMagnification.store(value);return true;}
+unsigned HudSize(){return hudSizePercent.load();}
+bool SetHudSize(unsigned percent){if(percent<50||percent>100)return false;hudSizePercent.store(percent);return true;}
 float ActiveWorldScale(){return liveWorldScale.Active();}
 void SetConfiguredWorldScale(float value){liveWorldScale.Request(value);}
 unsigned InteractionAim(){return unsigned(interactionAim.load());}

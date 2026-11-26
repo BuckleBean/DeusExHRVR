@@ -152,10 +152,12 @@ inline Matrix DepthToWorld(const Matrix& viewportWorld,const Transport::Tracking
 inline Matrix Load(const void* p){Matrix m;std::memcpy(m.m,p,64);return m;}
 // Map the UI's original clip rectangle to one head-relative plane, then project
 // that SAME plane through each eye. Equal eye pixels are not equal headset rays.
-inline Matrix HudClipTransform(const Transport::Tracking& t,unsigned eye) {
+// size (HudSize / 100) shrinks the plane about its centre, at the same 2 m; 1 = 3.2 m x 1.8 m.
+inline Matrix HudClipTransform(const Transport::Tracking& t,unsigned eye,float size=1.f) {
     Matrix depth;depth.m[10]=1;depth.m[14]=-.01f;
     auto projection=EyeProjection(depth,t,eye,1.f);
-    Matrix plane;plane.m[0]=1.6f;plane.m[5]=.9f;plane.m[14]=2.f;plane.m[15]=1;
+    if(!(size>0&&size<=1))size=1;
+    Matrix plane;plane.m[0]=1.6f*size;plane.m[5]=.9f*size;plane.m[14]=2.f;plane.m[15]=1;
     auto result=Multiply(plane,projection);
     // This is an overlay, at the near clip depth. Preserve UI stencil ordering.
     for(int i=0;i<4;i++)result.m[i*4+2]=0;

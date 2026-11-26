@@ -322,6 +322,11 @@ FirstPersonTakedownsLog=1
 ; Also at VR Settings > Image.
 Brightness=0
 Contrast=0
+; Size of the HUD that stays in front of you (prompts such as "press X", objectives, messages;
+; the whole HUD with VR Settings > View > HUD = DEFAULT), 50-100 percent. Smaller pulls it toward
+; the middle of your view. Wrist pieces are not affected; the scope, in-game menu and wheel stay
+; full size. 100 (default) is the original size. Also at VR Settings > Image > HUD size.
+HudSize=100
 ; EXPERIMENTAL, USE AT YOUR OWN RISK. Multiplies the resolution your VR runtime asks for
 ; (1.0 to 2.0). Costs far more GPU power: 1.25 is 56% more pixels, 1.5 is 125% more.
 ; This 32-bit game can stutter, run out of memory or crash at higher values. If it

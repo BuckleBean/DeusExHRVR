@@ -74,6 +74,9 @@ void SetConfiguredWorldScale(float value);
 // Immersive scope magnification (ScopeMagnification, 1-12); applies on the next frame.
 float ScopeMagnification();
 bool SetScopeMagnification(float value);
+// HUD size in percent (HudSize, 50-100); applies on the next frame.
+unsigned HudSize();
+bool SetHudSize(unsigned percent);
 // VR settings menu tabs (transport 24). Each returns 0 when the feature could
 // not start (its hook was refused); otherwise ThrowAimSetting is the
 // DirectionConfig::Source + 1 and the others 1 off / 2 on. The setters apply

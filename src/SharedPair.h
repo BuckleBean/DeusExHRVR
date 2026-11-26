@@ -5,7 +5,7 @@
 #include <cstddef>
 #include "ButtonBindings.h"
 namespace Transport {
-inline constexpr uint32_t Magic=0x52485844, Version=30;
+inline constexpr uint32_t Magic=0x52485844, Version=31;
 struct alignas(8) MenuState {
     uint64_t gameTick,hostTick;
     uint32_t eligible,blocked,snapEnabled,request;
@@ -44,9 +44,12 @@ struct alignas(8) MenuState {
     // Transport 30: Hands tab. leftHanded / swapSticks: 0 unavailable, 1 off, 2 on;
     // requests 0 = keep. requestedHoldMs[i] (0-5000 ms) applies where holdMask bit i is set.
     uint32_t leftHanded,requestedLeftHanded,swapSticks,requestedSwapSticks;
-    uint32_t requestedHoldMs[8],holdMask,reserved30;
+    uint32_t requestedHoldMs[8],holdMask;
+    // Transport 31: HUD size in percent (HudSize). hudSize: 0 unavailable, else 50-100;
+    // requestedHudSize: 0 = keep. Split from the last reserved word.
+    uint16_t hudSize,requestedHudSize;
 };
-static_assert(sizeof(MenuState)==512 && offsetof(MenuState,throwAim)==388 && offsetof(MenuState,leftHanded)==452);
+static_assert(sizeof(MenuState)==512 && offsetof(MenuState,throwAim)==388 && offsetof(MenuState,leftHanded)==452 && offsetof(MenuState,hudSize)==504);
 struct Quaternion {float x,y,z,w;};
 struct Vector {float x,y,z;};
 struct Pose {Quaternion orientation;Vector position;};

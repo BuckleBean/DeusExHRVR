@@ -356,6 +356,15 @@ int main(int argc,char** argv) {
             float commonX=e.pose.position.x+2.f*ray;
             Check(Near(commonX,x*1.6f),"both HUD eye rays meet the same plane point");
         }
+        // HudSize: the plane shrinks about its centre at the same distance; out-of-range sizes are full size.
+        auto small=HudClipTransform(t,eye,.8f);
+        for(float x:{-.9f,0.f,.9f}) {
+            float clipX=x*small.m[0]+small.m[12],clipW=x*small.m[3]+small.m[15];
+            const auto& e=t.eyes[eye];float l=std::tan(e.left),r=std::tan(e.right);
+            float ray=(clipX/clipW*(r-l)+(r+l))*.5f;
+            Check(Near(e.pose.position.x+2.f*ray,x*1.6f*.8f),"an 80% HUD lands 80% as far from the centre, in both eyes");
+        }
+        for(float bad:{0.f,-1.f,1.5f}){auto same=HudClipTransform(t,eye,bad);for(int i=0;i<16;i++)Check(Near(same.m[i],hud.m[i]),"an invalid HUD size draws the full HUD");}
     }
     {
         // Hand panel: a chosen point of the UI rectangle lands on the hand

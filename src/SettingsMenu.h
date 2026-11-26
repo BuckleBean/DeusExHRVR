@@ -51,6 +51,9 @@ inline constexpr Rect CoverFollowRow=MainRow(3),Dialogue=MainRow(4),CrosshairRow
 inline constexpr Rect BrightnessMinus{760,MainRowY(0),100,52},BrightnessPlus{1190,MainRowY(0),100,52};
 inline constexpr Rect ContrastMinus{760,MainRowY(1),100,52},ContrastPlus{1190,MainRowY(1),100,52};
 inline constexpr Rect ImageReset=MainRow(2);
+// HUD size (transport 31): the HUD that stays on the screen, 50-100% in 5% steps.
+inline constexpr Rect HudSizeMinus{760,MainRowY(3),100,52},HudSizePlus{1190,MainRowY(3),100,52};
+inline constexpr uint32_t HudSizeMin=50,HudSizeMax=100,HudSizeStep=5;
 // Hands tab. Left-handed applies when saved and, if the triggers are the plain layout,
 // moves fire to the left trigger (back again when switched off).
 inline constexpr Rect LeftHandedRow=MainRow(0),SwapSticksRow=MainRow(1),HoldDelaysRow=MainRow(2);
@@ -176,13 +179,14 @@ struct State {
     uint32_t draftQuickBar{},originalQuickBar{},requestedQuickBar{}; // 1 always shown, 2 auto-hide, 0 = unavailable
     bool imageAvailable{};int draftBrightness{},originalBrightness{},draftContrast{},originalContrast{};
     uint32_t requestedBrightness{},requestedContrast{}; // ImageAdjust wire values, 0 = unchanged
+    uint32_t draftHudSize{},originalHudSize{},requestedHudSize{}; // percent; 0 = unavailable / unchanged
     // Transport 30, Hands tab.
     bool leftHandedAvailable{},draftLeftHanded{},originalLeftHanded{};uint32_t requestedLeftHanded{};
     bool swapSticksAvailable{},draftSwapSticks{},originalSwapSticks{};uint32_t requestedSwapSticks{};
     bool holdPage{};std::array<uint32_t,8> draftHold{},originalHold{},requestedHold{};uint32_t requestedHoldMask{};
     std::array<uint32_t,8> HoldBase() const {return draftReset?std::array<uint32_t,8>{}:originalHold;}
-    void ResetTabDrafts(){draftLeftHanded=originalLeftHanded;draftSwapSticks=originalSwapSticks;draftHold=originalHold;holdPage=false;draftThrowAim=originalThrowAim;draftThrowMarker=originalThrowMarker;draftCoverFollow=originalCoverFollow;draftScope=originalScope;draftCrosshair=originalCrosshair;draftHandPointers=originalHandPointers;draftQuickBar=originalQuickBar;draftBrightness=originalBrightness;draftContrast=originalContrast;}
-    bool TabDirty() const {return draftLeftHanded!=originalLeftHanded||draftSwapSticks!=originalSwapSticks||draftHold!=HoldBase()||draftThrowAim!=originalThrowAim||draftThrowMarker!=originalThrowMarker||draftCoverFollow!=originalCoverFollow||draftScope!=originalScope||draftCrosshair!=originalCrosshair||draftHandPointers!=originalHandPointers||draftQuickBar!=originalQuickBar||draftBrightness!=originalBrightness||draftContrast!=originalContrast;}
+    void ResetTabDrafts(){draftLeftHanded=originalLeftHanded;draftSwapSticks=originalSwapSticks;draftHold=originalHold;holdPage=false;draftThrowAim=originalThrowAim;draftThrowMarker=originalThrowMarker;draftCoverFollow=originalCoverFollow;draftScope=originalScope;draftCrosshair=originalCrosshair;draftHandPointers=originalHandPointers;draftQuickBar=originalQuickBar;draftBrightness=originalBrightness;draftContrast=originalContrast;draftHudSize=originalHudSize;}
+    bool TabDirty() const {return draftLeftHanded!=originalLeftHanded||draftSwapSticks!=originalSwapSticks||draftHold!=HoldBase()||draftThrowAim!=originalThrowAim||draftThrowMarker!=originalThrowMarker||draftCoverFollow!=originalCoverFollow||draftScope!=originalScope||draftCrosshair!=originalCrosshair||draftHandPointers!=originalHandPointers||draftQuickBar!=originalQuickBar||draftBrightness!=originalBrightness||draftContrast!=originalContrast||draftHudSize!=originalHudSize;}
     void LoadTabDrafts(const Transport::MenuState& game){
         leftHandedAvailable=game.leftHanded==1||game.leftHanded==2;draftLeftHanded=originalLeftHanded=game.leftHanded==2;
         swapSticksAvailable=game.swapSticks==1||game.swapSticks==2;draftSwapSticks=originalSwapSticks=game.swapSticks==2;
@@ -197,6 +201,7 @@ struct State {
         imageAvailable=game.brightness&&game.contrast&&ImageAdjust::ValidWire(game.brightness)&&ImageAdjust::ValidWire(game.contrast);
         draftBrightness=originalBrightness=imageAvailable?ImageAdjust::Decode(game.brightness):0;
         draftContrast=originalContrast=imageAvailable?ImageAdjust::Decode(game.contrast):0;
+        draftHudSize=originalHudSize=game.hudSize>=HudSizeMin&&game.hudSize<=HudSizeMax?game.hudSize:0;
     }
     float draftZoom{},originalZoom{},requestedZoom{}; // requestedZoom 0 = unchanged
     bool scalePage{};float draftScale{LiveWorldScale::Default},originalScale{LiveWorldScale::Default},requestedScale{LiveWorldScale::Default};
@@ -204,7 +209,7 @@ struct State {
     bool listening{},captureReady{},confirming{},captureRelease{},scrollArmed{};
     int candidate{-1},pressedSlot{-1};uint64_t pressAt{};
     Rect Area() const {return open?(remapping||holdPage?ListPanel:Panel):Entry;}
-    void Submit(){requestedLeftHanded=leftHandedAvailable&&draftLeftHanded!=originalLeftHanded?(draftLeftHanded?2u:1u):0u;requestedSwapSticks=swapSticksAvailable&&draftSwapSticks!=originalSwapSticks?(draftSwapSticks?2u:1u):0u;{const auto base=HoldBase();requestedHoldMask=0;for(size_t i=0;i<8;++i)if(draftHold[i]!=base[i])requestedHoldMask|=1u<<i;requestedHold=draftHold;}requestedBrightness=imageAvailable&&draftBrightness!=originalBrightness?ImageAdjust::Encode(draftBrightness):0u;requestedContrast=imageAvailable&&draftContrast!=originalContrast?ImageAdjust::Encode(draftContrast):0u;requestedQuickBar=originalQuickBar&&draftQuickBar!=originalQuickBar?draftQuickBar:0u;requestedCrosshair=originalCrosshair&&draftCrosshair!=originalCrosshair?draftCrosshair:0u;requestedHandPointers=originalHandPointers&&draftHandPointers!=originalHandPointers?draftHandPointers:0u;requestedThrowAim=originalThrowAim&&draftThrowAim!=originalThrowAim?draftThrowAim:0u;requestedThrowMarker=throwMarkerAvailable&&draftThrowMarker!=originalThrowMarker?(draftThrowMarker?2u:1u):0u;requestedCoverFollow=coverFollowAvailable&&draftCoverFollow!=originalCoverFollow?(draftCoverFollow?2u:1u):0u;requestedImmersiveScope=scopeAvailable&&draftScope!=originalScope?(draftScope?2u:1u):0u;requestedHandHud=handHudAvailable&&draftHandHud!=originalHandHud?(draftHandHud?2u:1u):0u;requestedZoom=draftZoom!=originalZoom?draftZoom:0.f;requestedDialogue=draftDialogue;requestedScale=draftScale;requestedInteraction=draftInteraction;requestedReset=draftReset;requestedResponse=draftResponse;requested=draft;requestedSnap=draftSnap;requestedMovement=draftMovement;requestedBindings=draftBindings;if(draftReset)requestedBindingMask=(1u<<ButtonBindings::Count)-1;requestedBindingMask|=ButtonBindings::Changes(draftBindings,originalBindings);++request;saving=true;committed=true;}
+    void Submit(){requestedHudSize=originalHudSize&&draftHudSize!=originalHudSize?draftHudSize:0u;requestedLeftHanded=leftHandedAvailable&&draftLeftHanded!=originalLeftHanded?(draftLeftHanded?2u:1u):0u;requestedSwapSticks=swapSticksAvailable&&draftSwapSticks!=originalSwapSticks?(draftSwapSticks?2u:1u):0u;{const auto base=HoldBase();requestedHoldMask=0;for(size_t i=0;i<8;++i)if(draftHold[i]!=base[i])requestedHoldMask|=1u<<i;requestedHold=draftHold;}requestedBrightness=imageAvailable&&draftBrightness!=originalBrightness?ImageAdjust::Encode(draftBrightness):0u;requestedContrast=imageAvailable&&draftContrast!=originalContrast?ImageAdjust::Encode(draftContrast):0u;requestedQuickBar=originalQuickBar&&draftQuickBar!=originalQuickBar?draftQuickBar:0u;requestedCrosshair=originalCrosshair&&draftCrosshair!=originalCrosshair?draftCrosshair:0u;requestedHandPointers=originalHandPointers&&draftHandPointers!=originalHandPointers?draftHandPointers:0u;requestedThrowAim=originalThrowAim&&draftThrowAim!=originalThrowAim?draftThrowAim:0u;requestedThrowMarker=throwMarkerAvailable&&draftThrowMarker!=originalThrowMarker?(draftThrowMarker?2u:1u):0u;requestedCoverFollow=coverFollowAvailable&&draftCoverFollow!=originalCoverFollow?(draftCoverFollow?2u:1u):0u;requestedImmersiveScope=scopeAvailable&&draftScope!=originalScope?(draftScope?2u:1u):0u;requestedHandHud=handHudAvailable&&draftHandHud!=originalHandHud?(draftHandHud?2u:1u):0u;requestedZoom=draftZoom!=originalZoom?draftZoom:0.f;requestedDialogue=draftDialogue;requestedScale=draftScale;requestedInteraction=draftInteraction;requestedReset=draftReset;requestedResponse=draftResponse;requested=draft;requestedSnap=draftSnap;requestedMovement=draftMovement;requestedBindings=draftBindings;if(draftReset)requestedBindingMask=(1u<<ButtonBindings::Count)-1;requestedBindingMask|=ButtonBindings::Changes(draftBindings,originalBindings);++request;saving=true;committed=true;}
     void Assign(){
         const auto target=ButtonBindings::Targets[selected].value;
         for(auto& value:draftBindings)if(value==target)value=0;
@@ -337,6 +342,10 @@ struct State {
                 draftContrast=ImageAdjust::Clean(draftContrast+(ContrastPlus.Has(x,y)?ImageAdjust::Step:-ImageAdjust::Step));
             }
             else if(!saving&&tab==TabImage&&imageAvailable&&ImageReset.Has(x,y)){draftBrightness=draftContrast=0;}
+            else if(!saving&&tab==TabImage&&originalHudSize&&(HudSizeMinus.Has(x,y)||HudSizePlus.Has(x,y))){
+                if(HudSizePlus.Has(x,y))draftHudSize=std::min(draftHudSize+HudSizeStep,HudSizeMax);
+                else draftHudSize=std::max(draftHudSize-HudSizeStep,HudSizeMin);
+            }
             // View tab.
             else if(!saving&&tab==TabView&&handHudAvailable&&HandHud.Has(x,y)){draftHandHud=!draftHandHud;}
             else if(!saving&&tab==TabView&&scopeAvailable&&ScopeRow.Has(x,y)){draftScope=!draftScope;}

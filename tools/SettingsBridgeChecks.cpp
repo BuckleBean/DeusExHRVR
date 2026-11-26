@@ -29,6 +29,9 @@ void SetConfiguredWorldScale(float value){scale.Request(value);}
 float zoom=4;
 float ScopeMagnification(){return zoom;}
 bool SetScopeMagnification(float value){if(!(value>=1&&value<=12))return false;zoom=value;return true;}
+unsigned hudSize=100;
+unsigned HudSize(){return hudSize;}
+bool SetHudSize(unsigned value){if(value<50||value>100)return false;hudSize=value;return true;}
 unsigned interaction{};
 unsigned InteractionAim(){return interaction;}
 void SetInteractionAim(unsigned value){interaction=value;}
@@ -423,6 +426,17 @@ int wmain(int argc,wchar_t** argv) {
             assert(h.menu.saved==136&&ImageAdjust::Read(L"Brightness",path.c_str())==15&&ImageAdjust::Read(L"Contrast",path.c_str())==-10);
             h.menu.requestedBrightness=108;h.menu.requestedContrast=0;request(137,30);assert(h.menu.result==2&&h.menu.brightness==ImageAdjust::Encode(15));
             h.menu.requestedBrightness=h.menu.requestedContrast=0;
+        }
+        // HUD size (transport 31): reported, nothing written until chosen, applied and saved, bad values refused.
+        {
+            GamepadBridge::MenuTick(2);assert(h.menu.hudSize==100&&GetPrivateProfileIntW(L"VR",L"HudSize",7,path.c_str())==7);
+            h.menu.requestedHudSize=85;request(138,30);assert(h.menu.result!=2&&EngineCamera::hudSize==85&&h.menu.hudSize==85);
+            for(int n=0;n<200&&h.menu.saved!=138;++n){Sleep(10);GamepadBridge::MenuTick(2);}
+            assert(h.menu.saved==138&&GetPrivateProfileIntW(L"VR",L"HudSize",7,path.c_str())==85);
+            h.menu.requestedHudSize=45;request(139,30);assert(h.menu.result==2&&EngineCamera::hudSize==85);
+            h.menu.requestedHudSize=105;request(140,30);assert(h.menu.result==2&&EngineCamera::hudSize==85);
+            h.menu.requestedHudSize=0;
+            printf("PASS %zu-bit HUD size: reported, applied and saved as HudSize=85, below 50 or above 100 refused\n",sizeof(void*)*8);
         }
         EngineCamera::throwAimSetting=3;EngineCamera::throwMarkerSetting=2;EngineCamera::scopeSetting=1;
         request(119,30);wait(119);
