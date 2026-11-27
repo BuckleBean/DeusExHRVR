@@ -65,6 +65,11 @@ ScopeKeepsAim=1
 ; Diagnostic log DeusExHRVR-scope-aim.log: one line per scope entry (at most 200), how far the
 ; kept aim is from the stored offset. 0 (default) turns it off.
 ScopeKeepsAimLog=0
+; Diagnostic log DeusExHRVR-scope-gesture.log: while the gun is near your face, where the
+; controller is relative to your head and which raise-to-eye limit it misses (at most 600
+; lines). For headsets where raising the gun to the eye does not start the scope.
+; 0 (default) turns it off.
+ScopeGestureLog=0
 ; The scope picture follows your head's roll, so tilting your head does not tilt the world
 ; in the scope. 0 keeps the gun's own roll. Default 1.
 ScopeLevelWithHead=1

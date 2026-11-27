@@ -81,6 +81,19 @@ int main(int argc,char** argv) {
         Check(!gesture.Update(t,true,300),"scope exits when rifle lowered");
         t.rightController.aim.position.z=-.18f;t.tick=400;gesture.Update(t,true,400);
         Check(!gesture.Update(t,true,700),"stale tracking cannot activate scope");
+        {   // ScopeGestureLog's measurement: each limit is named when it alone is missed.
+            Transport::Tracking g{};g.valid=1;g.rightController.valid=1;g.head.orientation.w=g.rightController.aim.orientation.w=1;
+            g.rightController.aim.position={.06f,-.08f,-.18f};
+            Check(ImmersiveScope::Measured(g,false).Aligned(),"gesture measurement: near the eye and pointing forward passes");
+            g.rightController.aim.position={0,0,-.35f};Check(ImmersiveScope::Measured(g,false).missed==1,"gesture measurement: too far from the head");
+            Check(ImmersiveScope::Measured(g,true).Aligned(),"gesture measurement: the wider limit applies once engaged");
+            g.rightController.aim.position={0,0,.1f};Check((ImmersiveScope::Measured(g,false).missed&2)!=0,"gesture measurement: behind the face");
+            g.rightController.aim.position={.23f,0,-.05f};Check(ImmersiveScope::Measured(g,false).missed==4,"gesture measurement: too far to the side");
+            g.rightController.aim.position={0,.26f,-.05f};Check((ImmersiveScope::Measured(g,false).missed&8)!=0,"gesture measurement: too high");
+            g.rightController.aim.position={.06f,-.08f,-.18f};
+            g.rightController.aim.orientation={-.5f,0,0,.8660254f}; // pointing 60 degrees down
+            Check(ImmersiveScope::Measured(g,false).missed==16,"gesture measurement: pointing too far down");
+        }
         for(auto& eye:t.eyes){eye.pose.orientation.w=1;eye.left=-.7f;eye.right=.8f;eye.up=.75f;eye.down=-.65f;}
         t.head.position={1,2,3};t.eyes[0].pose.position={.968f,2,3};t.eyes[1].pose.position={1.032f,2,3};
         auto zoomed=ImmersiveScope::Zoom(t,4);

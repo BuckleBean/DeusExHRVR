@@ -2062,6 +2062,11 @@ bool leftHandedScopeMirror=true;
 // DeusExHRVR-scope-aim.log, one line per scope entry (at most 200): how far the kept aim
 // is from the stored one.
 bool scopeKeepsAim=true,scopeKeepsAimLog{};
+// [VR] ScopeGestureLog=1 (default 0) writes DeusExHRVR-scope-gesture.log: while the gun
+// controller is within 60 cm of the head, at most five lines a second and 600 lines in
+// all, where its aim pose is relative to the head and which raise-to-eye limit it misses,
+// plus whether the scope may start (to find why the gesture never starts on a headset).
+bool scopeGestureLog{};
 // [VR] ScopeLevelWithHead=1 (default 1): the immersive scope picture is turned to the
 // head's roll, so tilting the head no longer tilts the world in the scope (it is shown
 // fixed to the headset). 0 keeps the gun's own roll.
@@ -2776,6 +2781,7 @@ void InstallInteractionProbes(){
     leftHandedScopeMirror=GetPrivateProfileIntW(L"VR",L"LeftHandedScopeMirror",1,diagConfig)!=0;
     scopeKeepsAim=GetPrivateProfileIntW(L"VR",L"ScopeKeepsAim",1,diagConfig)!=0;
     scopeKeepsAimLog=GetPrivateProfileIntW(L"VR",L"ScopeKeepsAimLog",0,diagConfig)!=0;
+    scopeGestureLog=GetPrivateProfileIntW(L"VR",L"ScopeGestureLog",0,diagConfig)!=0;
     scopeLevelWithHead=GetPrivateProfileIntW(L"VR",L"ScopeLevelWithHead",1,diagConfig)!=0;
     if(leftHanded) {
         ModelHandAlignment::swapHands=true; // two-handed weapons work in its mirror world
@@ -5889,7 +5895,25 @@ void __fastcall UpdateHook(void* self,void*) {
             scopeWeapon && !(screenReasons&~16u) && !gameMenuOpen && scopeRead && scopeTracking.rightController.valid;
         const bool calibrating=scopeTracking.controllerButtons==3 || calibration.Busy();
         if(calibrating)scopePulseUntil=0;
+        const bool wasEngaged=scopeGesture.Engaged();
         const bool nearEye=scopeGesture.Update(scopeTracking,scopeAllowed&&!calibrating,now);
+        if(scopeGestureLog && scopeRead && scopeTracking.valid && scopeTracking.rightController.valid) {
+            static unsigned lines{};static uint64_t last{};
+            const auto m=ImmersiveScope::Measured(scopeTracking,wasEngaged);
+            if(lines<600 && m.distance<.6f && now>=last+200) {
+                FILE* f{};
+                if(!fopen_s(&f,"DeusExHRVR-scope-gesture.log",lines?"a":"w")&&f) {
+                    if(!lines)fprintf(f,"# head space, metres: x right, y up, z back (in front is negative). Limits to enter: distance<0.28, z<0.08, |x|<0.22, |y|<0.25, forwardZ<-0.65 (pointing within about 49 deg of where the head looks). missed bits: 1 distance 2 notInFront 4 side 8 height 16 pointing 32 nan\n");
+                    const float pointingDeg=std::acos(std::clamp(-m.f.z,-1.f,1.f))*57.29578f;
+                    fprintf(f,"%llu distance=%.3f x=%.3f y=%.3f z=%.3f forwardZ=%.3f pointingDeg=%.1f missed=%u engaged=%d nearEye=%d"
+                        " allowed=%d immersive=%d motion=%d weaponMotion=%d fullVR=%d scopedWeapon=%d screens=%u menu=%d calibrating=%d nativeScope=%d leftHanded=%d\n",
+                        now,m.distance,m.d.x,m.d.y,m.d.z,m.f.z,pointingDeg,m.missed,int(wasEngaged),int(nearEye),
+                        int(scopeAllowed),int(immersiveScope.load()),int(motionControls),int(experimentalMotionControls),int(requested),
+                        int(scopeWeapon),screenReasons,int(gameMenuOpen.load()),int(calibrating),int(nativeScope),int(leftHanded));
+                    fclose(f);++lines;last=now;
+                }
+            }
+        }
         if(scopeAllowed && !calibrating && now>=scopeToggleAfter && ((nearEye&&!nativeScope)||(!nearEye&&nativeScope&&autoScopeOwned))) {
             scopePulseUntil=now+120;scopeToggleAfter=now+650;
             autoScopeOwned=nearEye;
